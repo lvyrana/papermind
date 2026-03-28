@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+@theme {
+  --color-cream: #F7F0E8;
+  --color-cream-dark: #EDE4D8;
+  --color-navy: #1E3A5F;
+  --color-navy-light: #2D5380;
+  --color-coral: #E8877A;
+  --color-coral-light: #F0A89E;
+  --color-mint: #A8D5BA;
+  --color-warm-white: #FFFDF9;
+  --color-warm-gray: #8E8A85;
+  --font-sans: 'DM Sans', system-ui, sans-serif;
+  --font-serif: 'Noto Serif SC', Georgia, serif;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-cream);
+  color: var(--color-navy);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Warm scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-cream);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-cream-dark);
+  border-radius: 3px;
+}
+
+/* Card hover lift */
+.card-hover {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 32px rgba(30, 58, 95, 0.08);
+}
+
+/* Wavy underline decoration */
+.wavy-underline {
+  text-decoration: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--color-coral);
+  text-underline-offset: 6px;
+}

@@ -1,0 +1,6 @@
+requests>=2.31.0
+python-dotenv>=1.0.1
+pydantic>=2.7.0
+openai>=1.40.0
+# macOS 系统 Python 3.9 + LibreSSL 下常见兼容问题
+urllib3<2; python_version < "3.10"
