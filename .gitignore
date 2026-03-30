@@ -5,6 +5,11 @@ __pycache__/
 *.pyc
 .env
 
+# Secrets - API keys and user data
+**/data/config.json
+**/data/profile.json
+**/data/paperdiary.db
+
 # Node
 node_modules/
 dist/
