@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle } from 'lucide-react'
+import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle, Download, ExternalLink } from 'lucide-react'
 
 const API = '/api'
 
@@ -15,6 +15,8 @@ export default function LibraryDetail() {
   const [activeTab, setActiveTab] = useState('notes')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [showExport, setShowExport] = useState(false)
+  const [pdfLoading, setPdfLoading] = useState(false)
 
   useEffect(() => {
     fetch(`${API}/library/${id}`)
@@ -79,6 +81,32 @@ export default function LibraryDetail() {
     }
   }
 
+  const handleExport = (format) => {
+    window.open(`${API}/export/${format}/${id}`, '_blank')
+    setShowExport(false)
+  }
+
+  const handleDownloadPdf = async () => {
+    if (!paper) return
+    setPdfLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (paper.doi) params.set('doi', paper.doi)
+      if (paper.pmid) params.set('pmid', paper.pmid)
+      const r = await fetch(`${API}/pdf-url?${params}`)
+      const data = await r.json()
+      if (data.ok) {
+        window.open(data.url, '_blank')
+      } else {
+        alert(data.error || '未找到免费全文')
+      }
+    } catch {
+      alert('查询失败，请稍后重试')
+    } finally {
+      setPdfLoading(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -119,12 +147,45 @@ export default function LibraryDetail() {
           <p className="text-warm-gray text-sm mt-2">
             {paper.authors} &middot; {paper.journal} &middot; {paper.pub_date}
           </p>
-          {paper.link && (
-            <a href={paper.link} target="_blank" rel="noopener noreferrer"
-              className="text-coral text-xs mt-2 inline-block hover:underline">
-              查看原文
-            </a>
-          )}
+          {/* 操作按钮 */}
+          <div className="flex flex-wrap items-center gap-2 mt-4">
+            {paper.link && (
+              <a href={paper.link} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all">
+                <ExternalLink size={12} />
+                查看原文
+              </a>
+            )}
+            <button
+              onClick={handleDownloadPdf}
+              disabled={pdfLoading || (!paper.doi && !paper.pmid)}
+              className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all disabled:opacity-40"
+            >
+              {pdfLoading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+              下载 PDF
+            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShowExport(!showExport)}
+                className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all"
+              >
+                <FileText size={12} />
+                导出引用
+              </button>
+              {showExport && (
+                <div className="absolute top-full left-0 mt-1 bg-white rounded-xl shadow-lg border border-cream-dark/50 py-1 z-10 min-w-[160px]">
+                  <button onClick={() => handleExport('ris')}
+                    className="w-full text-left px-4 py-2 text-sm text-navy hover:bg-cream-dark/30 transition-colors">
+                    RIS (Zotero/EndNote)
+                  </button>
+                  <button onClick={() => handleExport('bibtex')}
+                    className="w-full text-left px-4 py-2 text-sm text-navy hover:bg-cream-dark/30 transition-colors">
+                    BibTeX (LaTeX)
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
 
           {paper.summary_zh && (
             <div className="bg-warm-white rounded-2xl p-5 mt-6 border border-cream-dark/50">
@@ -189,7 +250,7 @@ export default function LibraryDetail() {
             </div>
           ) : (
             <div>
-              <div className="space-y-3 mb-4 max-h-96 overflow-y-auto">
+              <div className="space-y-3 mb-4 max-h-96 overflow-y-auto rounded-2xl bg-cream-dark/20 p-3">
                 {chats.length === 0 && (
                   <div className="text-center py-6">
                     <p className="text-sm text-warm-gray/60 italic mb-3">
@@ -209,9 +270,10 @@ export default function LibraryDetail() {
                   <div key={i}
                     className={`text-sm px-4 py-3 rounded-2xl max-w-[85%] leading-relaxed ${
                       msg.role === 'user'
-                        ? 'bg-navy text-warm-white ml-auto'
-                        : 'bg-warm-white text-navy/80 border border-cream-dark/50'
-                    }`}>
+                        ? 'bg-navy text-warm-white ml-auto breathe-in-right'
+                        : 'glass-chat text-navy/80 breathe-in-left'
+                    }`}
+                    style={{ animationDelay: `${i * 60}ms` }}>
                     {msg.content}
                   </div>
                 ))}

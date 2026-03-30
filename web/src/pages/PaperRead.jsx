@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText } from 'lucide-react'
+import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink } from 'lucide-react'
 
 const API = '/api'
 
@@ -18,6 +18,9 @@ export default function PaperRead() {
   const [bookmarked, setBookmarked] = useState(false)
   const [savedRowId, setSavedRowId] = useState(null)
   const [activeTab, setActiveTab] = useState('notes')
+  const [showExport, setShowExport] = useState(false)
+  const [pdfLoading, setPdfLoading] = useState(false)
+  const [ripple, setRipple] = useState(false)
 
   // 记录阅读
   useEffect(() => {
@@ -34,7 +37,7 @@ export default function PaperRead() {
     }
   }, [paper, id])
 
-  // 读取本地笔记
+  // 读取本地笔记 + 已收藏状态
   useEffect(() => {
     const key = `paper-notes-${paper?.pmid || paper?.paper_id || id}`
     const saved = localStorage.getItem(key)
@@ -45,7 +48,26 @@ export default function PaperRead() {
       setBookmarked(true)
       setSavedRowId(parseInt(bk))
     }
+
+    // 从 localStorage 恢复对话记录（未收藏的论文）
+    const chatKey = `paper-chat-${paper?.pmid || paper?.paper_id || id}`
+    const savedChat = localStorage.getItem(chatKey)
+    if (savedChat) {
+      try { setChatMessages(JSON.parse(savedChat)) } catch {}
+    }
   }, [paper, id])
+
+  // 如果已收藏，从后端加载对话历史（覆盖 localStorage）
+  useEffect(() => {
+    if (!savedRowId) return
+    fetch(`${API}/library/${savedRowId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.chats?.length) setChatMessages(data.chats)
+        if (data.notes?.length) setNotes(data.notes[0].content)
+      })
+      .catch(() => {})
+  }, [savedRowId])
 
   // 保存笔记到 localStorage + 后端
   useEffect(() => {
@@ -73,6 +95,18 @@ export default function PaperRead() {
     }
   }, [notes, paper, id, savedRowId])
 
+  // 对话记录自动保存到 localStorage（刷新不丢失）
+  useEffect(() => {
+    if (!paper || chatMessages.length === 0) return
+    const chatKey = `paper-chat-${paper.pmid || paper.paper_id || id}`
+    localStorage.setItem(chatKey, JSON.stringify(chatMessages))
+  }, [chatMessages, paper, id])
+
+  const triggerRipple = () => {
+    setRipple(true)
+    setTimeout(() => setRipple(false), 700)
+  }
+
   const toggleBookmark = async () => {
     if (!paper) return
 
@@ -94,6 +128,7 @@ export default function PaperRead() {
         setSavedRowId(data.id)
         localStorage.setItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`, String(data.id))
         setBookmarked(true)
+        triggerRipple()
 
         // 如果有笔记，也存到后端
         if (notes) {
@@ -170,6 +205,7 @@ export default function PaperRead() {
       const data = await r.json()
       if (data.ok) {
         setSummarized(true)
+        triggerRipple()
         // 切换到笔记 tab 并更新笔记内容
         const existingNote = notes ? notes + '\n\n---\n\n' : ''
         setNotes(existingNote + '\ud83d\udcac AI \u5bf9\u8bdd\u7b14\u8bb0\uff1a\n' + data.note)
@@ -177,6 +213,51 @@ export default function PaperRead() {
       }
     } catch {}
     finally { setSummarizing(false) }
+  }
+
+  const handleExport = async (format) => {
+    const endpoint = savedRowId
+      ? `${API}/export/${format}/${savedRowId}`
+      : null
+
+    if (savedRowId) {
+      window.open(endpoint, '_blank')
+    } else {
+      // 未收藏，用 direct 接口
+      const r = await fetch(`${API}/export/${format}-direct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paper }),
+      })
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `paper.${format === 'bibtex' ? 'bib' : 'ris'}`
+      a.click()
+      URL.revokeObjectURL(url)
+    }
+    setShowExport(false)
+  }
+
+  const handleDownloadPdf = async () => {
+    setPdfLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (paper.doi) params.set('doi', paper.doi)
+      if (paper.pmid) params.set('pmid', paper.pmid)
+      const r = await fetch(`${API}/pdf-url?${params}`)
+      const data = await r.json()
+      if (data.ok) {
+        window.open(data.url, '_blank')
+      } else {
+        alert(data.error || '未找到免费全文')
+      }
+    } catch {
+      alert('查询失败，请稍后重试')
+    } finally {
+      setPdfLoading(false)
+    }
   }
 
   if (!paper) {
@@ -198,7 +279,7 @@ export default function PaperRead() {
             <ArrowLeft size={16} />
             <span>返回</span>
           </Link>
-          <button onClick={toggleBookmark} className="p-2 rounded-full hover:bg-cream-dark/50 transition-colors">
+          <button onClick={toggleBookmark} className={`p-2 rounded-full hover:bg-cream-dark/50 transition-colors ripple-btn ${ripple ? 'ripple-active' : ''}`}>
             {bookmarked ? (
               <Bookmark size={18} className="text-coral fill-coral" />
             ) : (
@@ -226,12 +307,45 @@ export default function PaperRead() {
           <p className="text-warm-gray text-sm mt-2">
             {paper.authors} &middot; {paper.journal} &middot; {paper.pub_date}
           </p>
-          {paper.link && (
-            <a href={paper.link} target="_blank" rel="noopener noreferrer"
-              className="text-coral text-xs mt-2 inline-block hover:underline">
-              查看原文
-            </a>
-          )}
+          {/* 操作按钮 */}
+          <div className="flex flex-wrap items-center gap-2 mt-4">
+            {paper.link && (
+              <a href={paper.link} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all">
+                <ExternalLink size={12} />
+                查看原文
+              </a>
+            )}
+            <button
+              onClick={handleDownloadPdf}
+              disabled={pdfLoading || (!paper.doi && !paper.pmid)}
+              className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all disabled:opacity-40"
+            >
+              {pdfLoading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+              下载 PDF
+            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShowExport(!showExport)}
+                className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all"
+              >
+                <FileText size={12} />
+                导出引用
+              </button>
+              {showExport && (
+                <div className="absolute top-full left-0 mt-1 bg-white rounded-xl shadow-lg border border-cream-dark/50 py-1 z-10 min-w-[160px]">
+                  <button onClick={() => handleExport('ris')}
+                    className="w-full text-left px-4 py-2 text-sm text-navy hover:bg-cream-dark/30 transition-colors">
+                    RIS (Zotero/EndNote)
+                  </button>
+                  <button onClick={() => handleExport('bibtex')}
+                    className="w-full text-left px-4 py-2 text-sm text-navy hover:bg-cream-dark/30 transition-colors">
+                    BibTeX (LaTeX)
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* 中文解读 */}
           {paper.summary_zh && (
@@ -318,7 +432,7 @@ export default function PaperRead() {
             </div>
           ) : (
             <div>
-              <div className="space-y-3 mb-4 max-h-80 overflow-y-auto">
+              <div className="space-y-3 mb-4 max-h-80 overflow-y-auto rounded-2xl bg-cream-dark/20 p-3">
                 {chatMessages.length === 0 && (
                   <div className="text-center py-6">
                     <p className="text-sm text-warm-gray/60 italic mb-3">试试问我</p>
@@ -335,8 +449,11 @@ export default function PaperRead() {
                 {chatMessages.map((msg, i) => (
                   <div key={i}
                     className={`text-sm px-4 py-3 rounded-2xl max-w-[85%] leading-relaxed ${
-                      msg.role === 'user' ? 'bg-navy text-warm-white ml-auto' : 'bg-warm-white text-navy/80 border border-cream-dark/50'
-                    }`}>
+                      msg.role === 'user'
+                        ? 'bg-navy text-warm-white ml-auto breathe-in-right'
+                        : 'glass-chat text-navy/80 breathe-in-left'
+                    }`}
+                    style={{ animationDelay: `${i * 60}ms` }}>
                     {msg.content}
                   </div>
                 ))}
@@ -352,7 +469,7 @@ export default function PaperRead() {
                 <button
                   onClick={handleSummarizeChat}
                   disabled={summarizing || summarized}
-                  className={`w-full py-2.5 rounded-xl text-sm font-medium mb-3 flex items-center justify-center gap-2 transition-all ${
+                  className={`w-full py-2.5 rounded-xl text-sm font-medium mb-3 flex items-center justify-center gap-2 transition-all ripple-btn ${ripple && summarized ? 'ripple-active' : ''} ${
                     summarized
                       ? 'bg-mint/20 text-navy'
                       : 'border border-coral/20 text-coral hover:bg-coral/5'

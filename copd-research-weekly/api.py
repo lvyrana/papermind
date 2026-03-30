@@ -12,6 +12,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 from openai import OpenAI
 
@@ -289,10 +290,12 @@ def api_get_papers(
     page_papers = [p for _, p in selected]
     remaining = len([i for i in range(len(all_papers)) if i not in cache["served_indices"]])
 
-    # 只对这 10 篇跑 AI 解读
-    client, model = _get_llm_client()
-    if client and page_papers:
-        _enrich_papers_with_llm(page_papers, profile, client, model)
+    # 只对还没解读过的论文跑 AI（已解读的直接跳过）
+    unenriched = [p for p in page_papers if not p.get("summary_zh")]
+    if unenriched:
+        client, model = _get_llm_client()
+        if client:
+            _enrich_papers_with_llm(unenriched, profile, client, model)
 
     return {
         "papers": page_papers,
@@ -529,6 +532,156 @@ def api_record_reading(data: dict):
 def api_get_reading_history():
     history = get_reading_history(limit=20)
     return {"history": history}
+
+
+# ========== Export / Download ==========
+
+def _paper_to_ris(paper: dict) -> str:
+    """将论文转换为 RIS 格式（兼容 Zotero/EndNote/Mendeley）"""
+    lines = ["TY  - JOUR"]
+    lines.append(f"TI  - {paper.get('title', '')}")
+    # 作者
+    authors_str = paper.get("authors", "")
+    if authors_str:
+        for author in authors_str.replace(" 等", "").split(", "):
+            author = author.strip()
+            if author:
+                lines.append(f"AU  - {author}")
+    lines.append(f"JO  - {paper.get('journal', '')}")
+    lines.append(f"PY  - {paper.get('pub_date', '')[:4]}")
+    lines.append(f"DA  - {paper.get('pub_date', '')}")
+    if paper.get("doi"):
+        lines.append(f"DO  - {paper['doi']}")
+    if paper.get("pmid"):
+        lines.append(f"AN  - {paper['pmid']}")
+    if paper.get("link"):
+        lines.append(f"UR  - {paper['link']}")
+    if paper.get("abstract"):
+        lines.append(f"AB  - {paper['abstract']}")
+    lines.append("ER  - ")
+    return "\n".join(lines)
+
+
+def _paper_to_bibtex(paper: dict) -> str:
+    """将论文转换为 BibTeX 格式"""
+    # 生成 cite key
+    first_author = paper.get("authors", "unknown").split(",")[0].split()
+    last_name = first_author[-1] if first_author else "unknown"
+    year = paper.get("pub_date", "0000")[:4]
+    cite_key = f"{last_name.lower()}{year}"
+
+    lines = [f"@article{{{cite_key},"]
+    lines.append(f"  title = {{{paper.get('title', '')}}},")
+    lines.append(f"  author = {{{paper.get('authors', '')}}},")
+    lines.append(f"  journal = {{{paper.get('journal', '')}}},")
+    lines.append(f"  year = {{{year}}},")
+    if paper.get("doi"):
+        lines.append(f"  doi = {{{paper['doi']}}},")
+    if paper.get("pmid"):
+        lines.append(f"  pmid = {{{paper['pmid']}}},")
+    if paper.get("link"):
+        lines.append(f"  url = {{{paper['link']}}},")
+    if paper.get("abstract"):
+        abstract = paper["abstract"].replace("{", "\\{").replace("}", "\\}")
+        lines.append(f"  abstract = {{{abstract}}},")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+@app.get("/api/export/ris/{paper_id}")
+def api_export_ris(paper_id: int):
+    """导出收藏论文为 RIS 格式"""
+    paper = get_saved_paper(paper_id)
+    if not paper:
+        return PlainTextResponse("Not found", status_code=404)
+    ris = _paper_to_ris(paper)
+    return PlainTextResponse(
+        ris,
+        media_type="application/x-research-info-systems",
+        headers={"Content-Disposition": f'attachment; filename="paper_{paper_id}.ris"'},
+    )
+
+
+@app.get("/api/export/bibtex/{paper_id}")
+def api_export_bibtex(paper_id: int):
+    """导出收藏论文为 BibTeX 格式"""
+    paper = get_saved_paper(paper_id)
+    if not paper:
+        return PlainTextResponse("Not found", status_code=404)
+    bib = _paper_to_bibtex(paper)
+    return PlainTextResponse(
+        bib,
+        media_type="application/x-bibtex",
+        headers={"Content-Disposition": f'attachment; filename="paper_{paper_id}.bib"'},
+    )
+
+
+@app.post("/api/export/ris-direct")
+def api_export_ris_direct(data: SavePaperRequest):
+    """导出未收藏论文为 RIS 格式（直接传论文数据）"""
+    ris = _paper_to_ris(data.paper)
+    return PlainTextResponse(
+        ris,
+        media_type="application/x-research-info-systems",
+        headers={"Content-Disposition": 'attachment; filename="paper.ris"'},
+    )
+
+
+@app.post("/api/export/bibtex-direct")
+def api_export_bibtex_direct(data: SavePaperRequest):
+    """导出未收藏论文为 BibTeX 格式"""
+    bib = _paper_to_bibtex(data.paper)
+    return PlainTextResponse(
+        bib,
+        media_type="application/x-bibtex",
+        headers={"Content-Disposition": 'attachment; filename="paper.bib"'},
+    )
+
+
+@app.get("/api/pdf-url")
+def api_get_pdf_url(doi: str = Query(default=""), pmid: str = Query(default="")):
+    """通过 Unpaywall 查找免费 PDF 链接"""
+    pdf_url = None
+
+    # 1. 尝试 Unpaywall（需要 DOI）
+    if doi:
+        try:
+            resp = httpx.get(
+                f"https://api.unpaywall.org/v2/{doi}",
+                params={"email": "papermind@example.com"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                best = data.get("best_oa_location") or {}
+                pdf_url = best.get("url_for_pdf") or best.get("url")
+        except Exception as e:
+            print(f"[pdf] Unpaywall 查询失败: {e}")
+
+    # 2. 尝试 PubMed Central（需要 PMID）
+    if not pdf_url and pmid:
+        try:
+            resp = httpx.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi",
+                params={"dbfrom": "pubmed", "id": pmid, "cmd": "prlinks", "retmode": "json"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                linksets = data.get("linksets", [])
+                for ls in linksets:
+                    for idurllist in ls.get("idurllist", []):
+                        for obj_url in idurllist.get("objurls", []):
+                            url = obj_url.get("url", {}).get("value", "")
+                            if url:
+                                pdf_url = url
+                                break
+        except Exception as e:
+            print(f"[pdf] PMC 查询失败: {e}")
+
+    if pdf_url:
+        return {"ok": True, "url": pdf_url}
+    return {"ok": False, "error": "未找到免费全文，可尝试通过原文链接访问"}
 
 
 if __name__ == "__main__":
