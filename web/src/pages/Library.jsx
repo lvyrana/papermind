@@ -82,8 +82,8 @@ export default function Library() {
         )}
 
         {/* 按日期分组的卡片网格 */}
-        {Object.entries(grouped).map(([date, datePapers]) => (
-          <div key={date} className="mb-8">
+        {Object.entries(grouped).map(([date, datePapers], groupIdx) => (
+          <div key={date} className="mb-8 breathe-in" style={{ animationDelay: `${groupIdx * 120}ms` }}>
             {/* 日期时间戳 */}
             <div className="flex items-center gap-2 mb-4">
               <Clock size={14} className="text-coral" />
@@ -93,8 +93,8 @@ export default function Library() {
 
             {/* 卡片网格 */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {datePapers.map(paper => (
-                <LibraryCard key={paper.id} paper={paper} onDelete={handleDelete} />
+              {datePapers.map((paper, i) => (
+                <LibraryCard key={paper.id} paper={paper} onDelete={handleDelete} index={i} />
               ))}
             </div>
           </div>
@@ -106,9 +106,9 @@ export default function Library() {
   )
 }
 
-function LibraryCard({ paper, onDelete }) {
+function LibraryCard({ paper, onDelete, index = 0 }) {
   return (
-    <Link to={`/library/${paper.id}`} className="block">
+    <Link to={`/library/${paper.id}`} className="block breathe-in" style={{ animationDelay: `${index * 80}ms` }}>
       <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50 relative group h-full">
         {/* 删除按钮 */}
         <button

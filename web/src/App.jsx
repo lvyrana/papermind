@@ -8,7 +8,7 @@ import LibraryDetail from './pages/LibraryDetail'
 
 function App() {
   return (
-    <div className="min-h-screen bg-cream">
+    <div className="min-h-screen bg-cream bg-flowing">
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/profile" element={<Profile />} />

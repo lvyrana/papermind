@@ -78,7 +78,7 @@ export default function Home() {
       <main className="px-6 max-w-2xl mx-auto space-y-8">
         {/* Last reading */}
         {lastReading && (
-          <section>
+          <section className="breathe-in">
             <div className="flex items-center gap-2 mb-4">
               <Clock size={16} className="text-coral" />
               <h2 className="text-sm font-medium text-warm-gray">上次在读</h2>
@@ -180,7 +180,7 @@ export default function Home() {
         </section>
 
         {/* Profile nudge */}
-        <section>
+        <section className="breathe-in" style={{ animationDelay: '200ms' }}>
           <Link to="/profile">
             <div className="bg-navy/5 rounded-2xl p-5 border border-navy/10 card-hover">
               <div className="flex items-start gap-3">
@@ -206,7 +206,7 @@ export default function Home() {
 
 function PaperCard({ paper, index }) {
   return (
-    <Link to={`/paper/${index}`} state={{ paper }} className="block">
+    <Link to={`/paper/${index}`} state={{ paper }} className="block breathe-in" style={{ animationDelay: `${index * 80}ms` }}>
       <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs px-2.5 py-1 rounded-full bg-coral/10 text-coral font-medium">
