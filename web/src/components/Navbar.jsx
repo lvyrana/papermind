@@ -21,10 +21,10 @@ function NavItem({ to, icon, label, active }) {
   return (
     <Link
       to={to}
-      className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm transition-all duration-200 ${
+      className={`flex items-center gap-1.5 px-3.5 py-2 rounded-full text-sm transition-all duration-300 ${
         active
-          ? 'bg-warm-white/20 text-warm-white font-medium'
-          : 'text-warm-white/60 hover:text-warm-white/90'
+          ? 'nav-pill-active text-warm-white font-medium'
+          : 'text-warm-white/50 hover:text-warm-white/80'
       }`}
     >
       {icon}

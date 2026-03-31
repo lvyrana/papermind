@@ -1,71 +1,88 @@
 """
-将论文分类到预定义类别。
-LLM 模式：一次批量请求，返回 JSON 数组。
-mock 模式：关键词匹配。
+动态论文分类与相关性打分。
+根据用户画像生成分类标签，不再硬编码类别。
 """
 
 import json
 
-from .llm_client import complete_text, llm_available
 
-CATEGORIES = ["急性加重", "肺康复", "护理与患者管理", "药物治疗", "机制研究", "其他"]
+def score_and_categorize_papers(papers: list[dict], profile: dict, client, model: str) -> list[dict]:
+    """批量为论文打相关性分数（0-10）并生成动态分类标签。
 
-# mock 模式关键词表（英文，匹配标题+摘要）
-_MOCK_RULES: list[tuple[str, list[str]]] = [
-    ("急性加重", ["exacerbation", "acute", "hospitalization", "readmission", "flare"]),
-    ("肺康复", ["rehabilitation", "exercise training", "pulmonary rehab", "physical activity"]),
-    ("护理与患者管理", ["nurs", "care", "self-management", "patient education", "caregiver", "palliative"]),
-    ("药物治疗", ["drug", "inhaler", "bronchodilator", "corticosteroid", "pharmacol", "therapy", "treatment", "medication"]),
-    ("机制研究", ["mechanism", "pathogenesis", "biomarker", "inflammation", "oxidative", "genetic", "molecular", "pathway"]),
-]
+    返回按分数降序排列的论文列表，每篇增加:
+      - relevance_score: 0-10
+      - category: 动态生成的短标签
+    """
+    if not papers or not client:
+        return papers
 
+    focus = profile.get("focus_areas", "")
+    background = profile.get("background", "")
+    goal = profile.get("current_goal", "")
+    exclude = profile.get("exclude_areas", "")
 
-def categorize_papers(papers: list[dict]) -> list[dict]:
-    """为每篇论文添加 paper['category'] 字段"""
-    if not llm_available():
-        print("[categorize] 未检测到 LLM API Key，使用 mock 模式（关键词匹配）")
-        return _mock_categorize(papers)
-    try:
-        return _llm_categorize(papers)
-    except Exception as e:
-        print(f"[categorize] LLM 分类失败，回退 mock 模式: {e}")
-        return _mock_categorize(papers)
+    profile_text = ""
+    if focus:
+        profile_text += f"研究方向：{focus}\n"
+    if background:
+        profile_text += f"研究经历：{background}\n"
+    if goal:
+        profile_text += f"当前目标：{goal}\n"
+    if exclude:
+        profile_text += f"不想看的内容：{exclude}\n"
 
+    # 分批处理，每批最多 20 篇
+    batch_size = 20
+    for start in range(0, len(papers), batch_size):
+        batch = papers[start:start + batch_size]
+        _score_batch(batch, profile_text, client, model)
 
-# ---------- mock ----------
-
-def _mock_categorize(papers: list[dict]) -> list[dict]:
-    for p in papers:
-        text = (p["title"] + " " + p["abstract"]).lower()
-        p["category"] = "其他"
-        for cat, keywords in _MOCK_RULES:
-            if any(kw in text for kw in keywords):
-                p["category"] = cat
-                break
+    # 按分数降序排列
+    papers.sort(key=lambda p: p.get("relevance_score", 0), reverse=True)
     return papers
 
 
-# ---------- LLM ----------
-
-def _llm_categorize(papers: list[dict]) -> list[dict]:
-    cats_str = "、".join(CATEGORIES)
-    titles_block = "\n".join(f"{i+1}. {p['title']}" for i, p in enumerate(papers))
-
-    prompt = (
-        f"请将以下论文标题各自分类到最合适的一个类别中：{cats_str}。\n\n"
-        f"{titles_block}\n\n"
-        "只输出 JSON 数组，格式为 [\"类别1\", \"类别2\", ...]，顺序与输入一致，不要任何其他文字。"
+def _score_batch(papers: list[dict], profile_text: str, client, model: str):
+    """对一批论文打分和分类"""
+    titles_block = "\n".join(
+        f"{i+1}. {p['title']}" + (f" | {p['abstract'][:150]}" if p.get('abstract') else "")
+        for i, p in enumerate(papers)
     )
 
-    print(f"[categorize] 批量分类 {len(papers)} 篇文献...")
-    raw = complete_text(prompt, max_tokens=600)
+    prompt = f"""你是一位学术文献筛选助手。请根据研究者画像，对以下论文进行相关性评分和分类。
+
+{profile_text}
+
+论文列表：
+{titles_block}
+
+请为每篇论文：
+1. 打一个相关性分数（0-10）：10=高度相关核心方向，7-9=相关，4-6=一般相关，1-3=不太相关。特别注意：如果论文内容属于研究者"不想看的内容"中列出的领域，必须打 0 分，即使标题看起来和研究方向有关
+2. 给一个简短的分类标签（2-6个字，如"肺康复""患者教育""流行病学""药物治疗""分子机制"等，根据论文内容自由生成）
+
+只输出 JSON 数组，格式：
+[{{"score": 8, "category": "分类标签"}}, ...]
+顺序与输入一致，不要其他文字。"""
 
     try:
-        categories = json.loads(raw)
-        for p, cat in zip(papers, categories):
-            p["category"] = cat if cat in CATEGORIES else "其他"
-    except Exception as e:
-        print(f"[categorize] 解析分类结果失败: {e}，回退到 mock 模式")
-        return _mock_categorize(papers)
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=1000,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        results = json.loads(raw)
 
-    return papers
+        for p, r in zip(papers, results):
+            p["relevance_score"] = int(r.get("score", 5))
+            p["category"] = r.get("category", "其他")
+
+        print(f"[categorize] 完成 {len(papers)} 篇论文打分")
+    except Exception as e:
+        print(f"[categorize] 打分失败: {e}")
+        for p in papers:
+            p.setdefault("relevance_score", 5)
+            p.setdefault("category", "未分类")

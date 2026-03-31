@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, BookOpen, MessageCircle, FileText, Trash2, Clock } from 'lucide-react'
 import Navbar from '../components/Navbar'
-
-const API = '/api'
+import { apiGet, apiDelete } from '../api'
 
 function timeAgo(dateStr) {
   if (!dateStr) return ''
@@ -30,8 +29,7 @@ export default function Library() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch(`${API}/library`)
-      .then(r => r.json())
+    apiGet('/library')
       .then(data => setPapers(data.papers || []))
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -41,7 +39,7 @@ export default function Library() {
     e.preventDefault()
     e.stopPropagation()
     if (!confirm('确定要取消收藏吗？笔记和对话也会删除。')) return
-    await fetch(`${API}/library/${id}`, { method: 'DELETE' })
+    await apiDelete(`/library/${id}`)
     setPapers(prev => prev.filter(p => p.id !== id))
   }
 

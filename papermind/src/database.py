@@ -1,12 +1,13 @@
 """
 SQLite 数据库：存储论文、笔记、对话、阅读记录
+所有数据按 user_id 隔离
 """
 
 from __future__ import annotations
 import sqlite3
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 
 DB_PATH = Path(__file__).parent.parent / "data" / "paperdiary.db"
@@ -19,6 +20,7 @@ def _ensure_db():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS saved_papers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL DEFAULT '',
             paper_id TEXT,
             pmid TEXT,
             doi TEXT,
@@ -59,12 +61,40 @@ def _ensure_db():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS reading_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL DEFAULT '',
             paper_rowid INTEGER,
             title TEXT NOT NULL,
             read_at TEXT NOT NULL,
             duration_seconds INTEGER DEFAULT 0
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id TEXT PRIMARY KEY,
+            focus_areas TEXT DEFAULT '',
+            exclude_areas TEXT DEFAULT '',
+            current_goal TEXT DEFAULT '',
+            background TEXT DEFAULT '',
+            updated_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rate_limits (
+            user_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            date TEXT NOT NULL,
+            count INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, action, date)
+        )
+    """)
+
+    # 迁移：给旧表加 user_id 列（如果不存在）
+    for table in ("saved_papers", "reading_history"):
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+
     conn.commit()
     return conn
 
@@ -79,18 +109,100 @@ def init_db():
     _ensure_db()
 
 
+# ========== Rate Limiting ==========
+
+def check_rate_limit(user_id: str, action: str, daily_limit: int) -> bool:
+    """检查是否超过频率限制。返回 True 表示允许，False 表示超限"""
+    conn = _ensure_db()
+    today = date.today().isoformat()
+    row = conn.execute(
+        "SELECT count FROM rate_limits WHERE user_id = ? AND action = ? AND date = ?",
+        (user_id, action, today)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return True
+    return row["count"] < daily_limit
+
+
+def increment_rate_limit(user_id: str, action: str):
+    """增加计数"""
+    conn = _ensure_db()
+    today = date.today().isoformat()
+    conn.execute("""
+        INSERT INTO rate_limits (user_id, action, date, count) VALUES (?, ?, ?, 1)
+        ON CONFLICT(user_id, action, date) DO UPDATE SET count = count + 1
+    """, (user_id, action, today))
+    conn.commit()
+    conn.close()
+
+
+def get_rate_limit_remaining(user_id: str, action: str, daily_limit: int) -> int:
+    """获取剩余次数"""
+    conn = _ensure_db()
+    today = date.today().isoformat()
+    row = conn.execute(
+        "SELECT count FROM rate_limits WHERE user_id = ? AND action = ? AND date = ?",
+        (user_id, action, today)
+    ).fetchone()
+    conn.close()
+    used = row["count"] if row else 0
+    return max(0, daily_limit - used)
+
+
+# ========== User Profiles ==========
+
+def get_profile(user_id: str) -> dict:
+    """获取用户研究画像"""
+    defaults = {
+        "focus_areas": "",
+        "exclude_areas": "",
+        "current_goal": "",
+        "background": "",
+    }
+    conn = _ensure_db()
+    row = conn.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    if row:
+        for k in defaults:
+            defaults[k] = row[k] or ""
+    return defaults
+
+
+def save_profile(user_id: str, profile: dict):
+    """保存用户研究画像"""
+    conn = _ensure_db()
+    conn.execute("""
+        INSERT INTO user_profiles (user_id, focus_areas, exclude_areas, current_goal, background, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            focus_areas = excluded.focus_areas,
+            exclude_areas = excluded.exclude_areas,
+            current_goal = excluded.current_goal,
+            background = excluded.background,
+            updated_at = excluded.updated_at
+    """, (
+        user_id,
+        profile.get("focus_areas", ""),
+        profile.get("exclude_areas", ""),
+        profile.get("current_goal", ""),
+        profile.get("background", ""),
+        datetime.now().isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+
 # ========== Saved Papers ==========
 
-def save_paper(paper: dict) -> int:
+def save_paper(paper: dict, user_id: str = "") -> int:
     """保存/收藏一篇论文，返回 row id"""
     conn = _ensure_db()
-    # 检查是否已收藏
     existing = conn.execute(
-        "SELECT id FROM saved_papers WHERE title = ?",
-        (paper.get("title", ""),)
+        "SELECT id FROM saved_papers WHERE title = ? AND user_id = ?",
+        (paper.get("title", ""), user_id)
     ).fetchone()
     if existing:
-        # 更新
         conn.execute("""
             UPDATE saved_papers SET
                 summary_zh = COALESCE(?, summary_zh),
@@ -105,10 +217,11 @@ def save_paper(paper: dict) -> int:
 
     cursor = conn.execute("""
         INSERT INTO saved_papers
-        (paper_id, pmid, doi, title, abstract, authors, journal, pub_date,
+        (user_id, paper_id, pmid, doi, title, abstract, authors, journal, pub_date,
          link, source, category, summary_zh, relevance, saved_at, last_read_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
+        user_id,
         paper.get("paper_id", ""),
         paper.get("pmid", ""),
         paper.get("doi", ""),
@@ -131,16 +244,17 @@ def save_paper(paper: dict) -> int:
     return row_id
 
 
-def get_saved_papers() -> list[dict]:
-    """获取所有收藏的论文，按时间倒序"""
+def get_saved_papers(user_id: str = "") -> list[dict]:
+    """获取用户收藏的论文"""
     conn = _ensure_db()
     rows = conn.execute("""
         SELECT sp.*,
                (SELECT COUNT(*) FROM paper_notes WHERE paper_rowid = sp.id) as note_count,
                (SELECT COUNT(*) FROM paper_chats WHERE paper_rowid = sp.id) as chat_count
         FROM saved_papers sp
+        WHERE sp.user_id = ?
         ORDER BY sp.saved_at DESC
-    """).fetchall()
+    """, (user_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -166,7 +280,6 @@ def delete_saved_paper(paper_id: int):
 def save_note(paper_rowid: int, content: str) -> int:
     conn = _ensure_db()
     now = datetime.now().isoformat()
-    # 检查是否已有笔记
     existing = conn.execute(
         "SELECT id FROM paper_notes WHERE paper_rowid = ?", (paper_rowid,)
     ).fetchone()
@@ -223,21 +336,34 @@ def get_chat_history(paper_rowid: int) -> list[dict]:
 
 # ========== Reading History ==========
 
-def record_reading(paper_rowid: int | None, title: str):
+def record_reading(paper_rowid: int | None, title: str, user_id: str = ""):
     conn = _ensure_db()
     conn.execute(
-        "INSERT INTO reading_history (paper_rowid, title, read_at) VALUES (?, ?, ?)",
-        (paper_rowid, title, datetime.now().isoformat())
+        "INSERT INTO reading_history (user_id, paper_rowid, title, read_at) VALUES (?, ?, ?, ?)",
+        (user_id, paper_rowid, title, datetime.now().isoformat())
     )
     conn.commit()
     conn.close()
 
 
-def get_reading_history(limit: int = 20) -> list[dict]:
+def get_reading_history(user_id: str = "", limit: int = 20) -> list[dict]:
     conn = _ensure_db()
     rows = conn.execute(
-        "SELECT * FROM reading_history ORDER BY read_at DESC LIMIT ?",
-        (limit,)
+        "SELECT * FROM reading_history WHERE user_id = ? ORDER BY read_at DESC LIMIT ?",
+        (user_id, limit)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ========== 收藏关键词提取（用于优化推荐） ==========
+
+def get_saved_titles(user_id: str, limit: int = 30) -> list[str]:
+    """获取用户收藏论文的标题，用于优化推荐"""
+    conn = _ensure_db()
+    rows = conn.execute(
+        "SELECT title FROM saved_papers WHERE user_id = ? ORDER BY saved_at DESC LIMIT ?",
+        (user_id, limit)
+    ).fetchall()
+    conn.close()
+    return [r["title"] for r in rows]

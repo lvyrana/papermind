@@ -1,5 +1,5 @@
 """
-从 PubMed 获取 COPD 相关文献（近7天）
+从 PubMed 获取学术文献
 使用 NCBI E-utilities API（免费，无需注册）
 """
 
@@ -43,18 +43,36 @@ def _ncbi_common_params() -> dict[str, str]:
     email = os.environ.get("EMAIL", "").strip()
     if email:
         params["email"] = email
-        params["tool"] = "copd-research-weekly"
+        params["tool"] = "papermind"
     return params
 
 
 def build_query(keywords: list[str], days: int = 7) -> str:
-    """构造 PubMed 搜索查询字符串"""
+    """构造 PubMed 搜索查询字符串。
+
+    支持两种输入:
+    - 短关键词（1-3个词）: 用精确短语匹配 "keyword"[tiab]
+    - 长查询（多个词）: 拆成单词用 AND 连接，每个词搜 [tiab]
+    """
     date_to = datetime.now()
     date_from = date_to - timedelta(days=days)
     date_range = (
         f"{date_from.strftime('%Y/%m/%d')}:{date_to.strftime('%Y/%m/%d')}[dp]"
     )
-    keyword_query = " OR ".join(f'"{kw}"[tiab]' for kw in keywords)
+
+    parts = []
+    for kw in keywords:
+        words = kw.strip().split()
+        if len(words) <= 3:
+            # 短关键词，精确匹配
+            parts.append(f'"{kw}"[tiab]')
+        else:
+            # 长查询，拆词用 AND
+            _stop = {"and", "or", "the", "of", "in", "for", "with", "on", "to", "a", "an", "by", "from"}
+            word_parts = " AND ".join(f"{w}[tiab]" for w in words if len(w) > 2 and w.lower() not in _stop)
+            parts.append(f"({word_parts})")
+
+    keyword_query = " OR ".join(parts)
     return f"({keyword_query}) AND {date_range}"
 
 

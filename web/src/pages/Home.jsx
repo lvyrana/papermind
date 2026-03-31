@@ -1,9 +1,8 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, Sparkles, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw } from 'lucide-react'
+import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Flower2, Heart, Lightbulb } from 'lucide-react'
 import Navbar from '../components/Navbar'
-
-const API = '/api'
+import { apiGet, apiPost } from '../api'
 
 export default function Home() {
   const [papers, setPapers] = useState([])
@@ -12,15 +11,43 @@ export default function Home() {
   const [lastReading, setLastReading] = useState(null)
   const [total, setTotal] = useState(0)
   const [remaining, setRemaining] = useState(0)
+  const [allExplored, setAllExplored] = useState(false)
+  const [profileFilled, setProfileFilled] = useState(true)
 
   const now = new Date()
   const hour = now.getHours()
   const greeting = hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好'
 
+  // 副标题：按时间段 + 日期种子轻微变化
+  const subtitles = [
+    '这是属于你的研究空间。',
+    '今天也从一个好问题开始。',
+    '慢一点，也能走得很深。',
+    '这里会记得你在追什么。',
+    '每一篇论文，都是一次对话的起点。',
+    '你的好奇心，值得被认真对待。',
+  ]
+  const dayIndex = now.getDate() + (hour < 12 ? 0 : hour < 18 ? 1 : 2)
+  const subtitle = subtitles[dayIndex % subtitles.length]
+
+  // 上次在读的文案
+  const resumeLabels = ['你上次停在这里', '继续你的思路', '接着上次的探索']
+  const resumeLabel = resumeLabels[now.getDate() % resumeLabels.length]
+
   useEffect(() => {
     const saved = localStorage.getItem('last-reading')
     if (saved) setLastReading(JSON.parse(saved))
+
+    // 检查画像是否已填写
+    apiGet('/profile')
+      .then(data => {
+        const filled = !!(data.focus_areas || data.background || data.current_goal)
+        setProfileFilled(filled)
+      })
+      .catch(() => {})
   }, [])
+
+  const pollRef = React.useRef(null)
 
   const fetchPapers = async (opts = {}) => {
     const { refresh = false, forceFetch = false } = opts
@@ -30,22 +57,56 @@ export default function Home() {
       const params = new URLSearchParams({ days: '7' })
       if (refresh) params.set('refresh', 'true')
       if (forceFetch) params.set('force_fetch', 'true')
-      const r = await fetch(`${API}/papers?${params}`)
-      const data = await r.json()
-      setPapers(data.papers || [])
-      setTotal(data.total || 0)
-      setRemaining(data.remaining ?? 0)
-      // 缓存
-      localStorage.setItem('cached-papers', JSON.stringify(data.papers || []))
-      localStorage.setItem('cached-papers-time', new Date().toISOString())
+      const data = await apiGet(`/papers?${params}`)
+      if (data.rate_limited) {
+        setError(data.error)
+        setLoading(false)
+      } else if (data.loading) {
+        // 后端在抓取中，轮询等待
+        if (!pollRef.current) {
+          pollRef.current = setInterval(async () => {
+            try {
+              const poll = await apiGet('/papers?days=7')
+              if (!poll.loading) {
+                clearInterval(pollRef.current)
+                pollRef.current = null
+                setPapers(poll.papers || [])
+                setTotal(poll.total || 0)
+                setRemaining(poll.remaining ?? 0)
+                setAllExplored(poll.all_explored || false)
+                localStorage.setItem('cached-papers', JSON.stringify(poll.papers || []))
+                localStorage.setItem('cached-papers-time', new Date().toISOString())
+                setLoading(false)
+              }
+            } catch {}
+          }, 3000)
+        }
+      } else {
+        setPapers(data.papers || [])
+        setTotal(data.total || 0)
+        setRemaining(data.remaining ?? 0)
+        setAllExplored(data.all_explored || false)
+        localStorage.setItem('cached-papers', JSON.stringify(data.papers || []))
+        localStorage.setItem('cached-papers-time', new Date().toISOString())
+        setLoading(false)
+      }
     } catch (e) {
       setError('无法连接后端服务。请确认后端已启动。')
       const cached = localStorage.getItem('cached-papers')
       if (cached) setPapers(JSON.parse(cached))
-    } finally {
       setLoading(false)
     }
   }
+
+  // 清理轮询定时器
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => {
     // 先尝试读缓存
@@ -63,54 +124,62 @@ export default function Home() {
 
   return (
     <div className="min-h-screen pb-24">
-      <header className="px-6 pt-12 pb-8 max-w-2xl mx-auto">
-        <p className="text-warm-gray text-sm mb-2">
+      <header className="px-6 pt-14 pb-10 max-w-2xl mx-auto">
+        <p className="text-warm-gray text-sm mb-3">
           {now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}
         </p>
-        <h1 className="text-3xl font-bold text-navy font-serif leading-snug">
+        <h1 className="text-3xl font-bold text-navy-light font-serif leading-snug tracking-wide">
           {greeting}，<span className="wavy-underline">研究者</span>
         </h1>
-        <p className="text-warm-gray mt-3 leading-relaxed">
-          这是属于你的研究空间。
+        <p className="text-navy/45 mt-4 leading-relaxed tracking-wide">
+          {subtitle}
         </p>
       </header>
 
       <main className="px-6 max-w-2xl mx-auto space-y-8">
         {/* Last reading */}
-        {lastReading && (
-          <section className="breathe-in">
-            <div className="flex items-center gap-2 mb-4">
-              <Clock size={16} className="text-coral" />
-              <h2 className="text-sm font-medium text-warm-gray">上次在读</h2>
-            </div>
-            <Link to={`/paper/${lastReading.index || 0}`} state={{ paper: lastReading }} className="block">
-              <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50">
-                <p className="text-navy font-medium leading-relaxed text-[15px]">
-                  {lastReading.title}
-                </p>
-                {lastReading.note && (
-                  <p className="text-warm-gray text-sm mt-3 italic">"{lastReading.note}"</p>
-                )}
-                <div className="flex items-center justify-end mt-4">
-                  <span className="text-coral text-sm flex items-center gap-1">
-                    继续阅读 <ArrowRight size={14} />
-                  </span>
-                </div>
+        <section className="breathe-in">
+          {lastReading ? (
+            <>
+              <div className="flex items-center gap-2 mb-4">
+                <Clock size={16} className="text-coral/70" />
+                <h2 className="text-sm text-warm-gray">{resumeLabel}</h2>
               </div>
-            </Link>
-          </section>
-        )}
+              <Link to={`/paper/${lastReading.index || 0}`} state={{ paper: lastReading }} className="block">
+                <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50">
+                  <p className="text-navy font-medium leading-relaxed text-[15px]">
+                    {lastReading.title}
+                  </p>
+                  {lastReading.note && (
+                    <p className="text-warm-gray text-sm mt-3 italic">"{lastReading.note}"</p>
+                  )}
+                  <div className="flex items-center justify-end mt-4">
+                    <span className="text-coral/70 text-sm flex items-center gap-1 hover:text-coral transition-colors">
+                      接着读 <ArrowRight size={14} />
+                    </span>
+                  </div>
+                </div>
+              </Link>
+            </>
+          ) : (
+            <p className="text-warm-gray text-sm py-2">今天还没有开始阅读，不如从一个问题开始。</p>
+          )}
+        </section>
 
         {/* Papers */}
         <section>
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <Sparkles size={16} className="text-coral" />
-              <h2 className="text-sm font-medium text-warm-gray">为你推荐</h2>
+              <Flower2 size={16} className="text-coral" />
+              <h2 className="text-sm font-medium text-navy/60">为你探索</h2>
             </div>
             {total > 0 && (
               <span className="text-xs text-warm-gray bg-cream-dark/50 px-3 py-1 rounded-full">
-                共 {total} 篇可选{remaining > 0 ? `，还有 ${remaining} 篇未看` : ''}
+                {allExplored
+                  ? `${total} 篇已全部探索完`
+                  : remaining > 0
+                    ? `共 ${total} 篇，还有 ${remaining} 篇未看`
+                    : `共 ${total} 篇`}
               </span>
             )}
           </div>
@@ -145,13 +214,19 @@ export default function Home() {
                   fetchPapers({ refresh: true })
                   window.scrollTo({ top: 0, behavior: 'smooth' })
                 }}
-                disabled={loading}
-                className="flex-1 py-3 rounded-xl text-sm font-medium bg-coral text-warm-white hover:bg-coral-light transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm"
+                disabled={loading || allExplored}
+                className={`flex-1 py-3 rounded-xl text-sm font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm ${
+                  allExplored
+                    ? 'bg-cream-dark/50 text-warm-gray cursor-not-allowed'
+                    : 'bg-coral text-warm-white hover:bg-coral-light'
+                }`}
               >
                 {loading ? (
                   <><Loader2 size={14} className="animate-spin" /> 加载中...</>
+                ) : allExplored ? (
+                  '已全部探索完'
                 ) : (
-                  <><RefreshCw size={14} /> 换一批</>
+                  <><RefreshCw size={14} /> 换一批{remaining > 0 ? `（剩 ${remaining} 篇）` : ''}</>
                 )}
               </button>
               <button
@@ -179,24 +254,26 @@ export default function Home() {
           )}
         </section>
 
-        {/* Profile nudge */}
-        <section className="breathe-in" style={{ animationDelay: '200ms' }}>
-          <Link to="/profile">
-            <div className="bg-navy/5 rounded-2xl p-5 border border-navy/10 card-hover">
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-full bg-coral/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <Sparkles size={16} className="text-coral" />
-                </div>
-                <div>
-                  <p className="text-navy font-medium text-sm">完善你的研究画像</p>
-                  <p className="text-warm-gray text-sm mt-1 leading-relaxed">
-                    告诉我你的研究背景，推荐会更准。
-                  </p>
+        {/* Profile nudge — 填写后隐藏 */}
+        {!profileFilled && (
+          <section className="breathe-in" style={{ animationDelay: '200ms' }}>
+            <Link to="/profile">
+              <div className="bg-navy/5 rounded-2xl p-5 border border-navy/10 card-hover">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-full bg-coral/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <Heart size={16} className="text-coral" />
+                  </div>
+                  <div>
+                    <p className="text-navy font-medium text-sm">完善你的研究画像</p>
+                    <p className="text-navy/40 text-sm mt-1 leading-relaxed">
+                      告诉我你的研究背景，推荐会更准。
+                    </p>
+                  </div>
                 </div>
               </div>
-            </div>
-          </Link>
-        </section>
+            </Link>
+          </section>
+        )}
       </main>
 
       <Navbar />
@@ -228,9 +305,9 @@ function PaperCard({ paper, index }) {
           </p>
         )}
         {paper.relevance && (
-          <p className="text-warm-gray text-sm mt-2 flex items-start gap-1.5">
-            <Sparkles size={13} className="text-coral flex-shrink-0 mt-0.5" />
-            <span className="line-clamp-1">{paper.relevance}</span>
+          <p className="text-navy-light text-sm mt-2 flex items-start gap-1.5">
+            <Lightbulb size={13} className="text-coral flex-shrink-0 mt-0.5" />
+            <span className="line-clamp-1 italic">{paper.relevance}</span>
           </p>
         )}
       </div>

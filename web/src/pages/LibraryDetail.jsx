@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle, Download, ExternalLink } from 'lucide-react'
-
-const API = '/api'
+import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle, Download, ExternalLink, Languages, BookmarkPlus } from 'lucide-react'
+import { apiGet, apiPost, API_BASE, getUserId } from '../api'
 
 export default function LibraryDetail() {
   const { id } = useParams()
@@ -15,12 +14,15 @@ export default function LibraryDetail() {
   const [activeTab, setActiveTab] = useState('notes')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState('idle') // 'idle' | 'saving' | 'saved'
   const [showExport, setShowExport] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [abstractZh, setAbstractZh] = useState(null)
+  const [translating, setTranslating] = useState(false)
+  const [showTranslation, setShowTranslation] = useState(false)
 
   useEffect(() => {
-    fetch(`${API}/library/${id}`)
-      .then(r => r.json())
+    apiGet(`/library/${id}`)
       .then(data => {
         setPaper(data.paper)
         setNotes(data.notes || [])
@@ -35,23 +37,29 @@ export default function LibraryDetail() {
 
   const handleSaveNote = async () => {
     if (!noteText.trim()) return
-    setSaving(true)
+    setSaveStatus('saving')
     try {
-      await fetch(`${API}/notes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paper_rowid: parseInt(id), content: noteText }),
-      })
-    } catch {}
-    setSaving(false)
+      await apiPost('/notes', { paper_rowid: parseInt(id), content: noteText })
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 2000)
+    } catch {
+      setSaveStatus('idle')
+    }
   }
 
   // 自动保存笔记（防抖）
   useEffect(() => {
     if (!noteText.trim() || !paper) return
+    setSaveStatus('idle')
     const timer = setTimeout(() => handleSaveNote(), 1500)
     return () => clearTimeout(timer)
   }, [noteText])
+
+  const handleSaveChatAsNote = (content) => {
+    const prefix = noteText.trim() ? '\n\n---\nAI 对话笔记：\n' : 'AI 对话笔记：\n'
+    setNoteText(prev => prev + prefix + content)
+    setActiveTab('notes')
+  }
 
   const handleSendChat = async () => {
     if (!chatInput.trim() || chatLoading || !paper) return
@@ -61,18 +69,13 @@ export default function LibraryDetail() {
     setChatLoading(true)
 
     try {
-      const r = await fetch(`${API}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          paper_title: paper.title,
-          paper_abstract: paper.abstract || '',
-          message: chatInput,
-          history: chats,
-          paper_rowid: parseInt(id),
-        }),
+      const data = await apiPost('/chat', {
+        paper_title: paper.title,
+        paper_abstract: paper.abstract || '',
+        message: chatInput,
+        history: chats,
+        paper_rowid: parseInt(id),
       })
-      const data = await r.json()
       setChats(prev => [...prev, { role: 'assistant', content: data.reply }])
     } catch {
       setChats(prev => [...prev, { role: 'assistant', content: '连接失败，请重试。' }])
@@ -82,7 +85,7 @@ export default function LibraryDetail() {
   }
 
   const handleExport = (format) => {
-    window.open(`${API}/export/${format}/${id}`, '_blank')
+    window.open(`${API_BASE}/export/${format}/${id}`, '_blank')
     setShowExport(false)
   }
 
@@ -93,8 +96,7 @@ export default function LibraryDetail() {
       const params = new URLSearchParams()
       if (paper.doi) params.set('doi', paper.doi)
       if (paper.pmid) params.set('pmid', paper.pmid)
-      const r = await fetch(`${API}/pdf-url?${params}`)
-      const data = await r.json()
+      const data = await apiGet(`/pdf-url?${params}`)
       if (data.ok) {
         window.open(data.url, '_blank')
       } else {
@@ -203,6 +205,49 @@ export default function LibraryDetail() {
               <p className="text-sm text-navy/80 leading-relaxed">{paper.relevance}</p>
             </div>
           )}
+
+          {/* 摘要 */}
+          {paper.abstract && (
+            <details className="mt-4">
+              <summary className="text-sm text-warm-gray cursor-pointer hover:text-navy transition-colors">
+                查看摘要
+              </summary>
+              <div className="mt-2 pl-4 border-l-2 border-cream-dark">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-warm-gray">
+                    {showTranslation ? '中文翻译' : 'Abstract'}
+                  </span>
+                  <button
+                    onClick={async () => {
+                      if (!abstractZh && !translating) {
+                        setTranslating(true)
+                        try {
+                          const data = await apiPost('/translate', { text: paper.abstract })
+                          if (data.ok) {
+                            setAbstractZh(data.translated)
+                            setShowTranslation(true)
+                          }
+                        } catch {} finally { setTranslating(false) }
+                      } else {
+                        setShowTranslation(!showTranslation)
+                      }
+                    }}
+                    disabled={translating}
+                    className="inline-flex items-center gap-1 text-xs text-warm-gray hover:text-navy transition-colors disabled:opacity-50"
+                  >
+                    {translating ? (
+                      <><Loader2 size={12} className="animate-spin" /> 翻译中...</>
+                    ) : (
+                      <><Languages size={12} /> {showTranslation ? '原文' : '译'}</>
+                    )}
+                  </button>
+                </div>
+                <p className="text-sm text-navy/60 leading-relaxed">
+                  {showTranslation && abstractZh ? abstractZh : paper.abstract}
+                </p>
+              </div>
+            </details>
+          )}
         </article>
 
         {/* 笔记和对话 tabs */}
@@ -245,7 +290,7 @@ export default function LibraryDetail() {
                 className="w-full bg-warm-white rounded-xl px-4 py-3 text-sm text-navy border border-cream-dark/50 outline-none resize-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/50 leading-relaxed"
               />
               <p className="text-xs text-warm-gray mt-2 italic">
-                {saving ? '保存中...' : noteText ? '自动保存中' : ''}
+                {saveStatus === 'saving' ? '保存中...' : saveStatus === 'saved' ? '已保存' : ''}
               </p>
             </div>
           ) : (
@@ -267,14 +312,24 @@ export default function LibraryDetail() {
                   </div>
                 )}
                 {chats.map((msg, i) => (
-                  <div key={i}
-                    className={`text-sm px-4 py-3 rounded-2xl max-w-[85%] leading-relaxed ${
-                      msg.role === 'user'
-                        ? 'bg-navy text-warm-white ml-auto breathe-in-right'
-                        : 'glass-chat text-navy/80 breathe-in-left'
-                    }`}
+                  <div key={i} className={`max-w-[85%] ${msg.role === 'user' ? 'ml-auto' : ''}`}
                     style={{ animationDelay: `${i * 60}ms` }}>
-                    {msg.content}
+                    <div className={`text-sm px-4 py-3 rounded-2xl leading-relaxed ${
+                      msg.role === 'user'
+                        ? 'bg-navy text-warm-white breathe-in-right'
+                        : 'glass-chat text-navy/80 breathe-in-left'
+                    }`}>
+                      {msg.content}
+                    </div>
+                    {msg.role === 'assistant' && (
+                      <button
+                        onClick={() => handleSaveChatAsNote(msg.content)}
+                        className="mt-1 flex items-center gap-1 text-xs text-warm-gray hover:text-coral transition-colors px-1"
+                      >
+                        <BookmarkPlus size={11} />
+                        保存为笔记
+                      </button>
+                    )}
                   </div>
                 ))}
                 {chatLoading && (

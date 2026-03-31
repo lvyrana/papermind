@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink } from 'lucide-react'
-
-const API = '/api'
+import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages } from 'lucide-react'
+import { apiGet, apiPost, apiDelete, apiGetRaw, API_BASE, getUserId } from '../api'
 
 export default function PaperRead() {
   const { id } = useParams()
   const location = useLocation()
-  const paper = location.state?.paper || null
+  const [paper, setPaper] = useState(location.state?.paper || null)
+  const [paperLoading, setPaperLoading] = useState(!location.state?.paper)
 
   const [notes, setNotes] = useState('')
   const [chatMessages, setChatMessages] = useState([])
@@ -21,6 +21,30 @@ export default function PaperRead() {
   const [showExport, setShowExport] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
   const [ripple, setRipple] = useState(false)
+  const [abstractZh, setAbstractZh] = useState(null)
+  const [translating, setTranslating] = useState(false)
+  const [showTranslation, setShowTranslation] = useState(false)
+
+  // 如果 location.state 没有 paper（刷新/直链），尝试从后端恢复
+  useEffect(() => {
+    if (paper) { setPaperLoading(false); return }
+    // 先尝试从缓存按索引获取
+    apiGet(`/papers/${id}`)
+      .then(data => {
+        if (data.paper) {
+          setPaper(data.paper)
+        } else {
+          // 尝试从 localStorage 恢复
+          const last = localStorage.getItem('last-reading')
+          if (last) {
+            const parsed = JSON.parse(last)
+            if (String(parsed.index) === String(id)) setPaper(parsed)
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => setPaperLoading(false))
+  }, [id])
 
   // 记录阅读
   useEffect(() => {
@@ -29,11 +53,7 @@ export default function PaperRead() {
         ...paper, index: id, readAt: new Date().toISOString(),
       }))
       // 记录到后端
-      fetch(`${API}/reading-history`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: paper.title, paper_rowid: savedRowId }),
-      }).catch(() => {})
+      apiPost('/reading-history', { title: paper.title, paper_rowid: savedRowId }).catch(() => {})
     }
   }, [paper, id])
 
@@ -60,8 +80,7 @@ export default function PaperRead() {
   // 如果已收藏，从后端加载对话历史（覆盖 localStorage）
   useEffect(() => {
     if (!savedRowId) return
-    fetch(`${API}/library/${savedRowId}`)
-      .then(r => r.json())
+    apiGet(`/library/${savedRowId}`)
       .then(data => {
         if (data.chats?.length) setChatMessages(data.chats)
         if (data.notes?.length) setNotes(data.notes[0].content)
@@ -85,11 +104,7 @@ export default function PaperRead() {
     // 如果已收藏，也保存到后端
     if (savedRowId) {
       const timer = setTimeout(() => {
-        fetch(`${API}/notes`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ paper_rowid: savedRowId, content: notes }),
-        }).catch(() => {})
+        apiPost('/notes', { paper_rowid: savedRowId, content: notes }).catch(() => {})
       }, 1500)
       return () => clearTimeout(timer)
     }
@@ -112,19 +127,14 @@ export default function PaperRead() {
 
     if (bookmarked && savedRowId) {
       // 取消收藏
-      await fetch(`${API}/library/${savedRowId}`, { method: 'DELETE' }).catch(() => {})
+      await apiDelete(`/library/${savedRowId}`).catch(() => {})
       localStorage.removeItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`)
       setBookmarked(false)
       setSavedRowId(null)
     } else {
       // 收藏
       try {
-        const r = await fetch(`${API}/library/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ paper }),
-        })
-        const data = await r.json()
+        const data = await apiPost('/library/save', { paper })
         setSavedRowId(data.id)
         localStorage.setItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`, String(data.id))
         setBookmarked(true)
@@ -132,11 +142,7 @@ export default function PaperRead() {
 
         // 如果有笔记，也存到后端
         if (notes) {
-          fetch(`${API}/notes`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ paper_rowid: data.id, content: notes }),
-          }).catch(() => {})
+          apiPost('/notes', { paper_rowid: data.id, content: notes }).catch(() => {})
         }
       } catch {}
     }
@@ -150,18 +156,13 @@ export default function PaperRead() {
     setChatLoading(true)
 
     try {
-      const r = await fetch(`${API}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          paper_title: paper?.title || '',
-          paper_abstract: paper?.abstract || '',
-          message: chatInput,
-          history: chatMessages,
-          paper_rowid: savedRowId || 0,
-        }),
+      const data = await apiPost('/chat', {
+        paper_title: paper?.title || '',
+        paper_abstract: paper?.abstract || '',
+        message: chatInput,
+        history: chatMessages,
+        paper_rowid: savedRowId || 0,
       })
-      const data = await r.json()
       setChatMessages(prev => [...prev, { role: 'assistant', content: data.reply }])
     } catch {
       setChatMessages(prev => [...prev, { role: 'assistant', content: '连接失败，请重试。' }])
@@ -178,12 +179,7 @@ export default function PaperRead() {
     let rowId = savedRowId
     if (!rowId && paper) {
       try {
-        const r = await fetch(`${API}/library/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ paper }),
-        })
-        const data = await r.json()
+        const data = await apiPost('/library/save', { paper })
         rowId = data.id
         setSavedRowId(rowId)
         localStorage.setItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`, String(rowId))
@@ -193,16 +189,11 @@ export default function PaperRead() {
 
     setSummarizing(true)
     try {
-      const r = await fetch(`${API}/chat/summarize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          paper_title: paper?.title || '',
-          paper_rowid: rowId,
-          messages: chatMessages,
-        }),
+      const data = await apiPost('/chat/summarize', {
+        paper_title: paper?.title || '',
+        paper_rowid: rowId,
+        messages: chatMessages,
       })
-      const data = await r.json()
       if (data.ok) {
         setSummarized(true)
         triggerRipple()
@@ -216,20 +207,17 @@ export default function PaperRead() {
   }
 
   const handleExport = async (format) => {
-    const endpoint = savedRowId
-      ? `${API}/export/${format}/${savedRowId}`
-      : null
-
     if (savedRowId) {
-      window.open(endpoint, '_blank')
+      window.open(`${API_BASE}/export/${format}/${savedRowId}`, '_blank')
     } else {
-      // 未收藏，用 direct 接口
-      const r = await fetch(`${API}/export/${format}-direct`, {
+      const r = await apiGetRaw(`/export/${format}-direct`)
+      // Use POST for direct export
+      const resp = await fetch(`${API_BASE}/export/${format}-direct`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-User-ID': getUserId() },
         body: JSON.stringify({ paper }),
       })
-      const blob = await r.blob()
+      const blob = await resp.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -246,8 +234,7 @@ export default function PaperRead() {
       const params = new URLSearchParams()
       if (paper.doi) params.set('doi', paper.doi)
       if (paper.pmid) params.set('pmid', paper.pmid)
-      const r = await fetch(`${API}/pdf-url?${params}`)
-      const data = await r.json()
+      const data = await apiGet(`/pdf-url?${params}`)
       if (data.ok) {
         window.open(data.url, '_blank')
       } else {
@@ -258,6 +245,14 @@ export default function PaperRead() {
     } finally {
       setPdfLoading(false)
     }
+  }
+
+  if (paperLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 size={24} className="text-coral animate-spin" />
+      </div>
+    )
   }
 
   if (!paper) {
@@ -383,14 +378,45 @@ export default function PaperRead() {
             </div>
           )}
 
-          {/* 英文摘要 */}
+          {/* 摘要 */}
           <details className="mt-4">
             <summary className="text-sm text-warm-gray cursor-pointer hover:text-navy transition-colors">
-              查看英文摘要
+              查看摘要
             </summary>
-            <p className="text-sm text-navy/60 leading-relaxed mt-2 pl-4 border-l-2 border-cream-dark">
-              {paper.abstract}
-            </p>
+            <div className="mt-2 pl-4 border-l-2 border-cream-dark">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-warm-gray">
+                  {showTranslation ? '中文翻译' : 'Abstract'}
+                </span>
+                <button
+                  onClick={async () => {
+                    if (!abstractZh && !translating) {
+                      setTranslating(true)
+                      try {
+                        const data = await apiPost('/translate', { text: paper.abstract })
+                        if (data.ok) {
+                          setAbstractZh(data.translated)
+                          setShowTranslation(true)
+                        }
+                      } catch {} finally { setTranslating(false) }
+                    } else {
+                      setShowTranslation(!showTranslation)
+                    }
+                  }}
+                  disabled={translating}
+                  className="inline-flex items-center gap-1 text-xs text-warm-gray hover:text-navy transition-colors disabled:opacity-50"
+                >
+                  {translating ? (
+                    <><Loader2 size={12} className="animate-spin" /> 翻译中...</>
+                  ) : (
+                    <><Languages size={12} /> {showTranslation ? '原文' : '译'}</>
+                  )}
+                </button>
+              </div>
+              <p className="text-sm text-navy/60 leading-relaxed">
+                {showTranslation && abstractZh ? abstractZh : paper.abstract}
+              </p>
+            </div>
           </details>
         </article>
 

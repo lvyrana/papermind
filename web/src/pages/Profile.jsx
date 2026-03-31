@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react'
 import { ArrowLeft, Save, Sparkles } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
-
-const API = '/api'
+import { apiGet, apiPost } from '../api'
 
 export default function Profile() {
   const [profile, setProfile] = useState({
@@ -15,35 +14,15 @@ export default function Profile() {
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
-    fetch(`${API}/profile`)
-      .then(r => r.json())
+    apiGet('/profile')
       .then(data => setProfile(data))
-      .catch(() => {
-        // 回退到 localStorage
-        const local = localStorage.getItem('researcher-profile')
-        if (local) {
-          const parsed = JSON.parse(local)
-          setProfile({
-            focus_areas: parsed.focusAreas || '',
-            exclude_areas: parsed.excludeAreas || '',
-            current_goal: parsed.currentGoal || '',
-            background: parsed.background || '',
-          })
-        }
-      })
+      .catch(() => {})
   }, [])
 
   const handleSave = async () => {
     try {
-      await fetch(`${API}/profile`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(profile),
-      })
-    } catch {
-      // 保存到 localStorage 作为备份
-    }
-    localStorage.setItem('researcher-profile', JSON.stringify(profile))
+      await apiPost('/profile', profile)
+    } catch {}
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -98,8 +77,8 @@ export default function Profile() {
                 }}
                 className={`px-4 py-2 rounded-full text-sm transition-all duration-200 ${
                   profile.current_goal === goal
-                    ? 'bg-coral text-warm-white shadow-sm'
-                    : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-coral/30 hover:text-navy'
+                    ? 'bg-navy/90 text-warm-white shadow-sm'
+                    : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
                 }`}
               >
                 {goal}

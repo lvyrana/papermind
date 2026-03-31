@@ -1,5 +1,5 @@
 """
-PaperDiary 后端 API
+PaperMind 后端 API
 启动: .venv_new/bin/python -m uvicorn api:app --reload --port 8000
 """
 
@@ -7,33 +7,38 @@ from __future__ import annotations
 import os
 import json
 import httpx
+import threading
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, Query
+from dotenv import load_dotenv
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel
 from openai import OpenAI
 
 from src.fetch_papers import get_papers as pubmed_get_papers
 from src.fetch_semantic_scholar import get_papers as scholar_get_papers
-from src.categorize_papers import categorize_papers, CATEGORIES
-from src.config_store import (
-    get_api_settings, save_api_settings, get_api_settings_safe,
-    get_profile, save_profile,
-)
+from src.categorize_papers import score_and_categorize_papers
 from src.database import (
     init_db, save_paper, get_saved_papers, get_saved_paper,
     delete_saved_paper, save_note, get_notes, save_chat_message,
     get_chat_history, record_reading, get_reading_history,
+    get_profile, save_profile, get_saved_titles,
+    check_rate_limit, increment_rate_limit, get_rate_limit_remaining,
 )
 
-app = FastAPI(title="PaperDiary API")
+# 加载 .env
+load_dotenv(Path(__file__).parent / ".env")
+
+app = FastAPI(title="PaperMind API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,14 +47,11 @@ app.add_middleware(
 # 启动时初始化数据库
 init_db()
 
+# 每日推荐次数限制
+DAILY_RECOMMEND_LIMIT = 50
+
 
 # ========== Models ==========
-
-class APISettings(BaseModel):
-    provider: str
-    model: str
-    api_key: str
-    base_url: str = ""
 
 class ProfileData(BaseModel):
     focus_areas: str = ""
@@ -77,41 +79,57 @@ class SaveNoteRequest(BaseModel):
     content: str
 
 
-# ========== Provider configs ==========
+# ========== User ID ==========
 
-PROVIDER_DEFAULTS = {
-    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "model": "openai/gpt-4o-mini"},
-    "deepseek": {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"},
-    "zhipu": {"base_url": "https://open.bigmodel.cn/api/paas/v4", "model": "glm-4-flash"},
-    "moonshot": {"base_url": "https://api.moonshot.cn/v1", "model": "moonshot-v1-8k"},
-    "openai": {"base_url": "", "model": "gpt-4o-mini"},
-}
+def _get_user_id(request: Request) -> str:
+    """从请求头获取用户 ID"""
+    return request.headers.get("X-User-ID", "anonymous")
 
 
-# ========== LLM helper ==========
+# ========== 内置 LLM（阿里云优先，GLM 备用，DeepSeek 兜底） ==========
+
+_LLM_PROVIDERS = [
+    {
+        "name": "qwen",
+        "api_key": os.environ.get("QWEN_API_KEY", ""),
+        "base_url": os.environ.get("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        "model": os.environ.get("QWEN_MODEL", "qwen-plus"),
+    },
+    {
+        "name": "glm",
+        "api_key": os.environ.get("GLM_API_KEY", ""),
+        "base_url": os.environ.get("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
+        "model": os.environ.get("GLM_MODEL", "glm-4-flash"),
+    },
+    {
+        "name": "deepseek",
+        "api_key": os.environ.get("DEEPSEEK_API_KEY", ""),
+        "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+    },
+]
+
 
 def _get_llm_client() -> tuple[Optional[OpenAI], str]:
-    """返回 (client, model) 或 (None, '')"""
-    settings = get_api_settings()
-    api_key = settings.get("api_key", "").strip()
-    if not api_key:
-        return None, ""
-
-    base_url = settings.get("base_url", "").strip() or None
-    model = settings.get("model", "gpt-4o-mini")
-
-    provider = settings.get("provider", "")
-    needs_proxy = provider in ("openrouter", "openai")
-
-    if needs_proxy:
-        proxy_url = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or "http://127.0.0.1:7890"
-        http_client = httpx.Client(proxy=proxy_url)
-    else:
-        http_client = httpx.Client(
-            transport=httpx.HTTPTransport(local_address="0.0.0.0"),
-        )
-    client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
-    return client, model
+    """返回内置 LLM client（GLM 优先，DeepSeek 备用）"""
+    for provider in _LLM_PROVIDERS:
+        api_key = provider["api_key"].strip()
+        if not api_key:
+            continue
+        try:
+            http_client = httpx.Client(
+                transport=httpx.HTTPTransport(local_address="0.0.0.0"),
+            )
+            client = OpenAI(
+                api_key=api_key,
+                base_url=provider["base_url"],
+                http_client=http_client,
+            )
+            return client, provider["model"]
+        except Exception as e:
+            print(f"[llm] {provider['name']} 初始化失败: {e}")
+            continue
+    return None, ""
 
 
 def _llm_complete(prompt: str, max_tokens: int = 800) -> str:
@@ -131,76 +149,198 @@ def _llm_complete(prompt: str, max_tokens: int = 800) -> str:
         return ""
 
 
-# ========== Settings Routes ==========
+# ========== Settings Routes（简化：只显示内置状态） ==========
 
 @app.get("/api/settings")
 def api_get_settings():
-    return get_api_settings_safe()
+    """返回当前 LLM 配置状态"""
+    client, model = _get_llm_client()
+    provider_name = ""
+    for p in _LLM_PROVIDERS:
+        if p["model"] == model:
+            provider_name = p["name"]
+            break
+    return {
+        "provider": provider_name,
+        "model": model,
+        "base_url": "",
+        "api_key_masked": "内置" if client else "未配置",
+        "builtin": True,
+    }
 
 @app.post("/api/settings")
-def api_save_settings(data: APISettings):
-    provider = data.provider
-    base_url = data.base_url.strip()
-    if not base_url and provider in PROVIDER_DEFAULTS:
-        base_url = PROVIDER_DEFAULTS[provider]["base_url"]
-    save_api_settings({
-        "provider": provider,
-        "model": data.model,
-        "api_key": data.api_key,
-        "base_url": base_url,
-    })
-    return {"ok": True}
+def api_save_settings():
+    """内置 API 模式下，保存操作为空操作（兼容前端调用）"""
+    return {"ok": True, "builtin": True}
 
 @app.post("/api/settings/test")
 def api_test_settings():
     result = _llm_complete("请回复两个字：成功", max_tokens=10)
     if result:
         return {"ok": True, "reply": result}
-    return {"ok": False, "error": "无法连接 API，请检查 Key 和配置"}
+    client, model = _get_llm_client()
+    if not client:
+        return {"ok": False, "error": "未配置内置 API Key"}
+    try:
+        client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=5,
+        )
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 # ========== Profile Routes ==========
 
 @app.get("/api/profile")
-def api_get_profile():
-    return get_profile()
+def api_get_profile(request: Request):
+    uid = _get_user_id(request)
+    return get_profile(uid)
 
 @app.post("/api/profile")
-def api_save_profile(data: ProfileData):
-    save_profile(data.dict())
+def api_save_profile(data: ProfileData, request: Request):
+    uid = _get_user_id(request)
+    save_profile(uid, data.dict())
     return {"ok": True}
 
 
-# ========== Papers Cache ==========
+# ========== Papers Cache（按用户隔离） ==========
 
-# 内存缓存：抓一次，多次换批
-_papers_cache: dict = {
-    "papers": [],        # 全部已过滤的论文
-    "fetched_at": None,  # 上次抓取时间
-    "served_indices": set(),  # 已经展示过的论文索引
-}
+_papers_cache: dict[str, dict] = {}
+
+def _get_user_cache(user_id: str) -> dict:
+    if user_id not in _papers_cache:
+        _papers_cache[user_id] = {
+            "papers": [],
+            "fetched_at": None,
+            "served_indices": set(),
+            "fetching": False,  # 是否正在后台抓取
+        }
+    return _papers_cache[user_id]
 
 
-def _fetch_and_cache_papers(keyword_list, days, source, profile):
+def _generate_search_keywords(profile: dict, client, model: str, saved_titles: list[str] = None) -> list[str]:
+    """根据用户画像 + 收藏历史，用 LLM 生成多组搜索关键词"""
+    focus = profile.get("focus_areas", "")
+    background = profile.get("background", "")
+    goal = profile.get("current_goal", "")
+
+    if not (focus or background):
+        return []
+
+    exclude = profile.get("exclude_areas", "")
+
+    profile_text = ""
+    if focus:
+        profile_text += f"研究方向：{focus}\n"
+    if background:
+        profile_text += f"研究经历：{background}\n"
+    if goal:
+        profile_text += f"当前目标：{goal}\n"
+    if exclude:
+        profile_text += f"明确排除（不要生成相关关键词）：{exclude}\n"
+
+    # 加入收藏历史，帮助 LLM 理解用户真实兴趣
+    history_text = ""
+    if saved_titles:
+        history_text = "\n用户近期收藏/阅读过的论文标题（反映真实兴趣）：\n" + "\n".join(f"- {t}" for t in saved_titles[:10])
+
+    prompt = f"""你是一位学术检索专家。根据以下研究者画像，生成用于 PubMed 检索的英文关键词组合。
+
+{profile_text}
+{history_text}
+
+要求：
+1. 生成 3-5 组关键词，每组是一个用于 PubMed 搜索的英文查询字符串
+2. 覆盖研究者关注方向的不同角度和子领域
+3. 必须使用英文专业学术术语（PubMed 只支持英文检索）
+4. 每组关键词要具体且有针对性，不要太宽泛
+5. 可以使用 AND/OR 组合多个术语
+6. 如果有收藏历史，参考用户实际感兴趣的论文主题来调整关键词
+7. 严格避免生成用户明确排除的领域的关键词
+
+示例输出：["COPD self-management nursing intervention", "pulmonary rehabilitation exercise training", "chronic obstructive pulmonary disease patient education adherence"]
+
+只输出 JSON 数组，不要 markdown 代码块，不要其他文字。"""
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=400,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        keywords = json.loads(raw)
+        print(f"[api] LLM 生成搜索关键词: {keywords}")
+        return keywords
+    except Exception as e:
+        print(f"[api] 关键词生成失败: {e}")
+        return []
+
+
+def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = ""):
     """从 PubMed + Semantic Scholar 抓取论文并缓存"""
+    client, model = _get_llm_client()
+
+    # 获取用户收藏标题，用于优化搜索
+    saved_titles = get_saved_titles(user_id) if user_id else []
+
+    # 如果有 LLM 且有画像，用 LLM 生成搜索关键词
+    smart_queries = []
+    if client and (profile.get("focus_areas") or profile.get("background")):
+        smart_queries = _generate_search_keywords(profile, client, model, saved_titles)
+
+    # 合并：LLM 生成的关键词 + 用户手动输入的关键词
+    all_queries = smart_queries.copy()
+    if keyword_list:
+        all_queries.append(" OR ".join(keyword_list))
+
+    # 如果 LLM 生成失败且没有手动关键词，用 LLM 翻译画像方向
+    if not all_queries and client:
+        focus = profile.get("focus_areas", "")
+        if focus:
+            try:
+                tr_resp = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": f'将以下研究方向翻译为英文学术术语，用逗号分隔，只输出翻译结果：{focus}'}],
+                    temperature=0, max_tokens=200,
+                )
+                translated = (tr_resp.choices[0].message.content or "").strip()
+                all_queries = [t.strip() for t in translated.split(",") if t.strip()]
+                print(f"[api] 翻译画像关键词: {all_queries}")
+            except Exception:
+                pass
+
+    if not all_queries:
+        print("[api] 无搜索关键词，跳过")
+        return []
+
     all_papers = []
 
-    if source in ("pubmed", "all"):
-        try:
-            pubmed_papers = pubmed_get_papers(keyword_list, days=days, max_results=50)
-            for p in pubmed_papers:
-                p["source"] = "pubmed"
-            all_papers.extend(pubmed_papers)
-        except Exception as e:
-            print(f"[api] PubMed 获取失败: {e}")
+    for query in all_queries:
+        query_keywords = [k.strip() for k in query.split(" OR ") if k.strip()] if " OR " in query else [query]
 
-    if source in ("semantic_scholar", "all"):
-        try:
-            year_from = (datetime.now() - timedelta(days=days * 4)).strftime("%Y")
-            scholar_papers = scholar_get_papers(keyword_list, max_results=30, year_from=year_from)
-            all_papers.extend(scholar_papers)
-        except Exception as e:
-            print(f"[api] Semantic Scholar 获取失败: {e}")
+        if source in ("pubmed", "all"):
+            try:
+                pubmed_papers = pubmed_get_papers(query_keywords, days=days, max_results=30)
+                for p in pubmed_papers:
+                    p["source"] = "pubmed"
+                all_papers.extend(pubmed_papers)
+            except Exception as e:
+                print(f"[api] PubMed 获取失败 ({query}): {e}")
+
+        if source in ("semantic_scholar", "all"):
+            try:
+                year_from = (datetime.now() - timedelta(days=days * 4)).strftime("%Y")
+                scholar_papers = scholar_get_papers(query_keywords, max_results=20, year_from=year_from)
+                all_papers.extend(scholar_papers)
+            except Exception as e:
+                print(f"[api] Semantic Scholar 获取失败 ({query}): {e}")
 
     if not all_papers:
         return []
@@ -214,97 +354,147 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile):
             seen_titles.add(title_key)
             unique_papers.append(p)
 
-    # 分类
-    unique_papers = categorize_papers(unique_papers)
+    print(f"[api] 去重后 {len(unique_papers)} 篇论文")
 
-    # 基于画像过滤
-    exclude_areas = [a.strip() for a in profile.get("exclude_areas", "").split("、") if a.strip()]
-    if exclude_areas:
-        exclude_map = {
-            "纯动物实验": "机制研究", "纯分子机制": "机制研究",
-            "纯机制研究": "机制研究", "动物实验": "机制研究",
-            "药物治疗": "药物治疗", "药代动力学": "药物治疗",
-        }
-        exclude_cats = set()
-        for area in exclude_areas:
-            if area in exclude_map:
-                exclude_cats.add(exclude_map[area])
-            if area in CATEGORIES:
-                exclude_cats.add(area)
-        if exclude_cats:
-            unique_papers = [p for p in unique_papers if p.get("category") not in exclude_cats]
+    # LLM 打分 + 动态分类 + 排序（已按分数降序）
+    if client:
+        unique_papers = score_and_categorize_papers(unique_papers, profile, client, model)
+        # 过滤掉分数过低的（3分以下），但至少保留 10 篇
+        scored = [p for p in unique_papers if p.get("relevance_score", 5) >= 3]
+        if len(scored) >= 10:
+            filtered = len(unique_papers) - len(scored)
+            unique_papers = scored
+            if filtered:
+                print(f"[api] 过滤低相关性论文 {filtered} 篇")
+        else:
+            print(f"[api] 高分论文不足 10 篇，保留全部 {len(unique_papers)} 篇")
 
-    print(f"[api] 缓存 {len(unique_papers)} 篇论文")
+    print(f"[api] 最终缓存 {len(unique_papers)} 篇论文")
     return unique_papers
 
 
 # ========== Papers Routes ==========
 
+def _bg_fetch_and_enrich(cache, keyword_list, days, source, profile, uid):
+    """后台线程：抓取论文 + AI 解读"""
+    try:
+        papers = _fetch_and_cache_papers(keyword_list, days, source, profile, uid)
+        cache["papers"] = papers
+        cache["fetched_at"] = datetime.now()
+        cache["served_indices"] = set()
+
+        # 对前 10 篇做 AI 解读
+        unenriched = [p for p in papers[:10] if not p.get("summary_zh")]
+        if unenriched:
+            client, model = _get_llm_client()
+            if client:
+                _enrich_papers_with_llm(unenriched, profile, client, model, uid)
+        print(f"[api] 后台抓取完成: {len(papers)} 篇")
+    except Exception as e:
+        print(f"[api] 后台抓取失败: {e}")
+    finally:
+        cache["fetching"] = False
+
+
 @app.get("/api/papers")
 def api_get_papers(
-    keywords: str = Query(default="COPD,chronic obstructive pulmonary disease"),
+    request: Request,
+    keywords: str = Query(default=""),
     days: int = Query(default=7),
     source: str = Query(default="all"),
-    refresh: bool = Query(default=False),  # True=换一批新的10篇
-    force_fetch: bool = Query(default=False),  # True=重新从网上抓取
+    refresh: bool = Query(default=False),
+    force_fetch: bool = Query(default=False),
 ):
-    """获取 10 篇最相关论文。refresh=换一批，force_fetch=重新抓取"""
+    """获取论文。首次请求触发后台抓取，前端轮询获取结果。"""
+    uid = _get_user_id(request)
     keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
-    profile = get_profile()
-    cache = _papers_cache
+    profile = get_profile(uid)
+    cache = _get_user_cache(uid)
+
+    # 正在后台抓取中，返回加载状态
+    if cache["fetching"]:
+        return {"papers": [], "total": 0, "remaining": 0, "loading": True}
+
+    # Rate limit
+    if force_fetch or (not cache["papers"]):
+        remaining_quota = get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT)
+        if remaining_quota <= 0:
+            return {
+                "papers": [],
+                "total": 0,
+                "remaining": 0,
+                "error": f"今日推荐次数已用完（每天 {DAILY_RECOMMEND_LIMIT} 次），明天再来吧",
+                "rate_limited": True,
+            }
 
     # 判断是否需要重新抓取
     need_fetch = force_fetch or not cache["papers"]
     if cache["fetched_at"]:
         age = (datetime.now() - cache["fetched_at"]).total_seconds()
-        if age > 3600:  # 缓存超过 1 小时自动刷新
+        if age > 3600:
             need_fetch = True
 
     if need_fetch:
-        cache["papers"] = _fetch_and_cache_papers(keyword_list, days, source, profile)
-        cache["fetched_at"] = datetime.now()
-        cache["served_indices"] = set()
+        # 启动后台线程抓取，立即返回 loading 状态
+        cache["fetching"] = True
+        increment_rate_limit(uid, "recommend")
+        t = threading.Thread(
+            target=_bg_fetch_and_enrich,
+            args=(cache, keyword_list, days, source, profile, uid),
+            daemon=True,
+        )
+        t.start()
+        return {"papers": [], "total": 0, "remaining": 0, "loading": True}
 
     all_papers = cache["papers"]
     if not all_papers:
         return {"papers": [], "total": 0, "remaining": 0}
 
     # 选 10 篇还没展示过的
+    all_explored = False
     if refresh:
-        # 换一批：跳过已展示的
         available = [(i, p) for i, p in enumerate(all_papers) if i not in cache["served_indices"]]
         if not available:
-            # 全都展示过了，重置
-            cache["served_indices"] = set()
-            available = list(enumerate(all_papers))
-
-        selected = available[:10]
+            all_explored = True
+            selected = list(enumerate(all_papers))[:10]
+        else:
+            selected = available[:10]
     else:
-        # 首次加载或 force_fetch：从头选
         selected = list(enumerate(all_papers))[:10]
 
-    # 记录已展示的索引
     for idx, _ in selected:
         cache["served_indices"].add(idx)
 
     page_papers = [p for _, p in selected]
     remaining = len([i for i in range(len(all_papers)) if i not in cache["served_indices"]])
 
-    # 只对还没解读过的论文跑 AI（已解读的直接跳过）
+    # 对当前页还没解读过的补充解读
     unenriched = [p for p in page_papers if not p.get("summary_zh")]
     if unenriched:
         client, model = _get_llm_client()
         if client:
-            _enrich_papers_with_llm(unenriched, profile, client, model)
+            _enrich_papers_with_llm(unenriched, profile, client, model, uid)
 
     return {
         "papers": page_papers,
         "total": len(all_papers),
         "remaining": remaining,
+        "all_explored": all_explored,
+        "daily_remaining": get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT),
     }
 
+@app.get("/api/papers/{index}")
+def api_get_paper_by_index(index: int, request: Request):
+    """通过索引从缓存获取单篇论文（用于刷新恢复）"""
+    uid = _get_user_id(request)
+    cache = _get_user_cache(uid)
+    papers = cache.get("papers", [])
+    if 0 <= index < len(papers):
+        return {"paper": papers[index]}
+    return {"paper": None}
 
-def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, model: str):
+
+def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, model: str, user_id: str = ""):
     """为论文添加详细中文解读和个性化相关性分析"""
     focus = profile.get("focus_areas", "")
     background = profile.get("background", "")
@@ -318,30 +508,28 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
     if goal:
         profile_text += f"当前目标：{goal}\n"
 
-    # 获取用户阅读历史，用于让 AI 更了解偏好
-    history = get_reading_history(limit=10)
+    # 获取当前用户的阅读历史
+    history = get_reading_history(user_id, limit=10)
     history_text = ""
     if history:
         recent_titles = [h["title"] for h in history[:5]]
         history_text = f"\n用户近期阅读过的论文：\n" + "\n".join(f"- {t}" for t in recent_titles)
 
     for i, paper in enumerate(papers):
-        if i >= 10:
-            break
         try:
-            prompt = f"""你是一位专业的医学研究解读助手。请对以下英文医学论文进行详细解读。
+            prompt = f"""你是一位专业的学术论文解读助手。请对以下论文进行详细解读。
 
 论文标题：{paper['title']}
 论文摘要：{paper['abstract'][:1200]}
 
-{f"研究者背景：{chr(10)}{profile_text}" if profile_text else ""}
+{f"研究者背景（仅供参考，不要在输出中罗列这些关键词）：{chr(10)}{profile_text}" if profile_text else ""}
 {history_text}
 
 请用 JSON 格式输出以下内容：
 
 {{
-  "summary_zh": "详细中文解读（5-8句话，包含：研究背景与目的、研究方法、主要发现、临床意义或应用价值。语言专业但易懂，像在给同行讲解这篇论文的核心内容）",
-  "relevance": "与研究者的关联分析（2-3句话，具体说明这篇论文的哪些内容与研究者的方向、经历或当前目标有关，能给研究者带来什么启发或参考）",
+  "summary_zh": "详细中文解读（4-6句话，包含：研究背景与目的、研究方法、主要发现、意义。语言专业但易懂）",
+  "relevance": "这篇论文对研究者的启发（1-2句话。只基于论文实际内容来写，不要罗列研究者画像中的关键词。如果论文没有直接涉及某个方向就不要提它。重点说：论文的什么发现或方法能给研究者带来什么具体启发）",
   "key_findings": ["核心发现1", "核心发现2", "核心发现3"]
 }}
 
@@ -367,33 +555,64 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
             paper["key_findings"] = []
 
 
+# ========== 翻译 ==========
+
+class TranslateRequest(BaseModel):
+    text: str
+
+@app.post("/api/translate")
+def api_translate(data: TranslateRequest):
+    """将英文文本翻译为中文"""
+    client, model = _get_llm_client()
+    if not client:
+        return {"ok": False, "error": "未配置 API"}
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": f"请将以下英文学术文本准确翻译为中文，保持专业术语的准确性，只输出翻译结果：\n\n{data.text[:3000]}"}],
+            temperature=0.2,
+            max_tokens=2000,
+        )
+        translated = (resp.choices[0].message.content or "").strip()
+        return {"ok": True, "translated": translated}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ========== Library / 收藏库 Routes ==========
 
 @app.post("/api/library/save")
-def api_save_to_library(data: SavePaperRequest):
+def api_save_to_library(data: SavePaperRequest, request: Request):
     """收藏一篇论文"""
-    row_id = save_paper(data.paper)
+    uid = _get_user_id(request)
+    row_id = save_paper(data.paper, uid)
     return {"ok": True, "id": row_id}
 
 @app.get("/api/library")
-def api_get_library():
+def api_get_library(request: Request):
     """获取收藏库列表"""
-    papers = get_saved_papers()
+    uid = _get_user_id(request)
+    papers = get_saved_papers(uid)
     return {"papers": papers}
 
 @app.get("/api/library/{paper_id}")
-def api_get_library_paper(paper_id: int):
+def api_get_library_paper(paper_id: int, request: Request):
     """获取收藏的论文详情 + 笔记 + 对话"""
+    uid = _get_user_id(request)
     paper = get_saved_paper(paper_id)
-    if not paper:
+    if not paper or paper.get("user_id", "") != uid:
         return {"error": "not found"}
     notes = get_notes(paper_id)
     chats = get_chat_history(paper_id)
     return {"paper": paper, "notes": notes, "chats": chats}
 
 @app.delete("/api/library/{paper_id}")
-def api_delete_from_library(paper_id: int):
-    """取消收藏"""
+def api_delete_from_library(paper_id: int, request: Request):
+    """取消收藏（需验证归属）"""
+    uid = _get_user_id(request)
+    paper = get_saved_paper(paper_id)
+    if not paper or paper.get("user_id", "") != uid:
+        return {"ok": False, "error": "not found"}
     delete_saved_paper(paper_id)
     return {"ok": True}
 
@@ -401,14 +620,22 @@ def api_delete_from_library(paper_id: int):
 # ========== Notes Routes ==========
 
 @app.post("/api/notes")
-def api_save_note(data: SaveNoteRequest):
-    """保存笔记"""
+def api_save_note(data: SaveNoteRequest, request: Request):
+    """保存笔记（需验证归属）"""
+    uid = _get_user_id(request)
+    paper = get_saved_paper(data.paper_rowid)
+    if not paper or paper.get("user_id", "") != uid:
+        return {"ok": False, "error": "not found"}
     note_id = save_note(data.paper_rowid, data.content)
     return {"ok": True, "id": note_id}
 
 @app.get("/api/notes/{paper_rowid}")
-def api_get_notes(paper_rowid: int):
-    """获取某篇论文的笔记"""
+def api_get_notes(paper_rowid: int, request: Request):
+    """获取某篇论文的笔记（需验证归属）"""
+    uid = _get_user_id(request)
+    paper = get_saved_paper(paper_rowid)
+    if not paper or paper.get("user_id", "") != uid:
+        return {"notes": []}
     notes = get_notes(paper_rowid)
     return {"notes": notes}
 
@@ -416,9 +643,10 @@ def api_get_notes(paper_rowid: int):
 # ========== Chat Route ==========
 
 @app.post("/api/chat")
-def api_chat(data: ChatRequest):
+def api_chat(data: ChatRequest, request: Request):
     """和 AI 讨论一篇论文"""
-    profile = get_profile()
+    uid = _get_user_id(request)
+    profile = get_profile(uid)
     profile_text = ""
     if profile.get("focus_areas"):
         profile_text += f"研究方向：{profile['focus_areas']}\n"
@@ -451,7 +679,7 @@ def api_chat(data: ChatRequest):
 
     client, model = _get_llm_client()
     if not client:
-        return {"reply": "请先在设置中配置 API Key", "ok": False}
+        return {"reply": "AI 服务暂不可用，请稍后重试", "ok": False}
 
     messages = [{"role": "system", "content": system_prompt}]
     for msg in data.history[-8:]:
@@ -463,7 +691,7 @@ def api_chat(data: ChatRequest):
             model=model,
             messages=messages,
             temperature=0.4,
-            max_tokens=800,
+            max_tokens=2000,
         )
         reply = (resp.choices[0].message.content or "").strip()
 
@@ -523,14 +751,16 @@ def api_summarize_chat(data: SummarizeChatRequest):
 # ========== Reading History ==========
 
 @app.post("/api/reading-history")
-def api_record_reading(data: dict):
+def api_record_reading(data: dict, request: Request):
     """记录阅读行为"""
-    record_reading(data.get("paper_rowid"), data.get("title", ""))
+    uid = _get_user_id(request)
+    record_reading(data.get("paper_rowid"), data.get("title", ""), uid)
     return {"ok": True}
 
 @app.get("/api/reading-history")
-def api_get_reading_history():
-    history = get_reading_history(limit=20)
+def api_get_reading_history(request: Request):
+    uid = _get_user_id(request)
+    history = get_reading_history(uid, limit=20)
     return {"history": history}
 
 
@@ -682,6 +912,22 @@ def api_get_pdf_url(doi: str = Query(default=""), pmid: str = Query(default=""))
     if pdf_url:
         return {"ok": True, "url": pdf_url}
     return {"ok": False, "error": "未找到免费全文，可尝试通过原文链接访问"}
+
+
+# ========== 静态文件服务（生产模式） ==========
+
+_dist = Path(__file__).resolve().parent.parent / "web" / "dist"
+
+if _dist.exists():
+    app.mount("/assets", StaticFiles(directory=_dist / "assets"), name="static-assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """SPA fallback: 非 API 路由都返回 index.html"""
+        file_path = _dist / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(_dist / "index.html")
 
 
 if __name__ == "__main__":
