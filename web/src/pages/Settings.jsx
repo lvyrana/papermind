@@ -1,8 +1,19 @@
-import { ArrowLeft, Sparkles } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowLeft, Sparkles, Copy, Check } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
+import { getUserId } from '../api'
 
 export default function Settings() {
+  const uid = getUserId()
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(uid)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   return (
     <div className="min-h-screen pb-24">
       <header className="px-6 pt-12 pb-6 max-w-2xl mx-auto">
@@ -13,7 +24,7 @@ export default function Settings() {
         <h1 className="text-2xl font-bold text-navy font-serif">设置</h1>
       </header>
 
-      <main className="px-6 max-w-2xl mx-auto">
+      <main className="px-6 max-w-2xl mx-auto space-y-4">
         <div className="bg-warm-white rounded-2xl p-6 shadow-sm border border-cream-dark/50">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-10 h-10 rounded-full bg-coral/10 flex items-center justify-center">
@@ -36,12 +47,26 @@ export default function Settings() {
             </div>
             <div className="flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-              <span>每人每天最多 10 次论文推荐</span>
+              <span>每人每天最多 20 次论文推荐</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-coral/60" />
               <span>自定义 API 功能将在正式版开放</span>
             </div>
+          </div>
+        </div>
+
+        {/* 设备 ID */}
+        <div className="bg-warm-white rounded-2xl p-5 shadow-sm border border-cream-dark/50">
+          <p className="text-xs font-medium text-navy/50 mb-2">设备 ID</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-xs text-navy/60 bg-cream-dark/30 rounded-lg px-3 py-2 break-all font-mono">
+              {uid}
+            </code>
+            <button onClick={handleCopy}
+              className="p-2 rounded-lg hover:bg-cream-dark/50 transition-colors text-warm-gray hover:text-navy flex-shrink-0">
+              {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+            </button>
           </div>
         </div>
       </main>

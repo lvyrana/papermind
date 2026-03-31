@@ -48,7 +48,8 @@ app.add_middleware(
 init_db()
 
 # 每日推荐次数限制
-DAILY_RECOMMEND_LIMIT = 50
+DAILY_RECOMMEND_LIMIT = 20
+OWNER_UID = os.environ.get("OWNER_UID", "")
 
 
 # ========== Models ==========
@@ -415,8 +416,9 @@ def api_get_papers(
     if cache["fetching"]:
         return {"papers": [], "total": 0, "remaining": 0, "loading": True}
 
-    # Rate limit
-    if force_fetch or (not cache["papers"]):
+    # Rate limit（owner 不限量）
+    is_owner = OWNER_UID and uid == OWNER_UID
+    if not is_owner and (force_fetch or (not cache["papers"])):
         remaining_quota = get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT)
         if remaining_quota <= 0:
             return {
