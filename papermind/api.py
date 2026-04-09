@@ -59,6 +59,8 @@ class ProfileData(BaseModel):
     exclude_areas: str = ""
     current_goal: str = ""
     background: str = ""
+    discipline: str = ""
+    tracking_days: str = "7"
 
 class ChatRequest(BaseModel):
     paper_title: str
@@ -217,7 +219,10 @@ def _get_user_cache(user_id: str) -> dict:
             "papers": [],
             "fetched_at": None,
             "served_indices": set(),
-            "fetching": False,  # 是否正在后台抓取
+            "fetching": False,    # 是否正在后台抓取
+            "enriching": False,   # 是否正在后台解读
+            "enrich_gen": 0,      # 解读代次，防止旧线程清掉新状态
+            "current_page": [],   # 当前页 (index, paper) 列表
         }
     return _papers_cache[user_id]
 
@@ -357,6 +362,17 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
 
     print(f"[api] 去重后 {len(unique_papers)} 篇论文")
 
+    # 统一日期格式为 YYYY-MM-DD
+    _month_map = {"Jan":"01","Feb":"02","Mar":"03","Apr":"04","May":"05","Jun":"06",
+                  "Jul":"07","Aug":"08","Sep":"09","Oct":"10","Nov":"11","Dec":"12"}
+    for p in unique_papers:
+        d = p.get("pub_date", "")
+        parts = d.split("-")
+        if len(parts) == 3 and len(parts[1]) == 3 and parts[1] in _month_map:
+            p["pub_date"] = f"{parts[0]}-{_month_map[parts[1]]}-{parts[2].zfill(2)}"
+        elif len(parts) == 2 and len(parts[1]) == 3 and parts[1] in _month_map:
+            p["pub_date"] = f"{parts[0]}-{_month_map[parts[1]]}"
+
     # LLM 打分 + 动态分类 + 排序（已按分数降序）
     if client:
         unique_papers = score_and_categorize_papers(unique_papers, profile, client, model)
@@ -397,20 +413,56 @@ def _bg_fetch_and_enrich(cache, keyword_list, days, source, profile, uid):
         cache["fetching"] = False
 
 
+def _bg_enrich(cache, papers, profile, uid, gen):
+    """后台线程：解读当前页论文。gen 用于防止旧线程误清新状态。"""
+    try:
+        client, model = _get_llm_client()
+        if client:
+            _enrich_papers_with_llm(papers, profile, client, model, uid)
+    except Exception as e:
+        print(f"[api] 后台解读失败: {e}")
+    finally:
+        # 只有当前代次的线程才能清 enriching
+        if cache["enrich_gen"] == gen:
+            cache["enriching"] = False
+        print(f"[api] 后台解读完成 (gen={gen})")
+
+
 @app.get("/api/papers")
 def api_get_papers(
     request: Request,
     keywords: str = Query(default=""),
-    days: int = Query(default=7),
+    days: int = Query(default=0),
     source: str = Query(default="all"),
     refresh: bool = Query(default=False),
     force_fetch: bool = Query(default=False),
+    poll: bool = Query(default=False),
 ):
     """获取论文。首次请求触发后台抓取，前端轮询获取结果。"""
     uid = _get_user_id(request)
+    cache = _get_user_cache(uid)
+
+    # 如果前端没传 days，从用户画像读取 tracking_days
+    if days <= 0:
+        profile_tmp = get_profile(uid)
+        days = int(profile_tmp.get("tracking_days") or 7)
+
+    # poll=true: 返回当前页最新状态（不切换、不抓取）
+    if poll and cache["current_page"]:
+        page = cache["current_page"]
+        page_papers = [p for _, p in page]
+        all_papers = cache["papers"]
+        remaining = len([i for i in range(len(all_papers)) if i not in cache["served_indices"]])
+        enriching = cache["enriching"]
+        return {
+            "papers": page_papers,
+            "total": len(all_papers),
+            "remaining": remaining,
+            "enriching": enriching,
+        }
+
     keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
     profile = get_profile(uid)
-    cache = _get_user_cache(uid)
 
     # 正在后台抓取中，返回加载状态
     if cache["fetching"]:
@@ -437,7 +489,6 @@ def api_get_papers(
             need_fetch = True
 
     if need_fetch:
-        # 启动后台线程抓取，立即返回 loading 状态
         cache["fetching"] = True
         increment_rate_limit(uid, "recommend")
         t = threading.Thread(
@@ -467,21 +518,38 @@ def api_get_papers(
     for idx, _ in selected:
         cache["served_indices"].add(idx)
 
-    page_papers = [p for _, p in selected]
+    # 记住当前页（用于 poll 查询）
+    cache["current_page"] = selected
+
+    # 把真实缓存索引附到 paper 上，前端用于恢复单篇
+    page_papers = []
+    for idx, p in selected:
+        p["_cache_index"] = idx
+        page_papers.append(p)
     remaining = len([i for i in range(len(all_papers)) if i not in cache["served_indices"]])
 
-    # 对当前页还没解读过的补充解读
+    # 对当前页还没解读过的后台补充解读
     unenriched = [p for p in page_papers if not p.get("summary_zh")]
+    enriching = False
     if unenriched:
         client, model = _get_llm_client()
         if client:
-            _enrich_papers_with_llm(unenriched, profile, client, model, uid)
+            cache["enrich_gen"] += 1
+            gen = cache["enrich_gen"]
+            cache["enriching"] = True
+            enriching = True
+            threading.Thread(
+                target=_bg_enrich,
+                args=(cache, unenriched, profile, uid, gen),
+                daemon=True,
+            ).start()
 
     return {
         "papers": page_papers,
         "total": len(all_papers),
         "remaining": remaining,
         "all_explored": all_explored,
+        "enriching": enriching,
         "daily_remaining": get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT),
     }
 
@@ -501,10 +569,13 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
     focus = profile.get("focus_areas", "")
     background = profile.get("background", "")
     goal = profile.get("current_goal", "")
+    discipline = profile.get("discipline", "")
 
     profile_text = ""
+    if discipline:
+        profile_text += f"学科领域：{discipline}\n"
     if focus:
-        profile_text += f"研究方向：{focus}\n"
+        profile_text += f"追踪主题：{focus}\n"
     if background:
         profile_text += f"研究经历：{background}\n"
     if goal:
@@ -650,8 +721,10 @@ def api_chat(data: ChatRequest, request: Request):
     uid = _get_user_id(request)
     profile = get_profile(uid)
     profile_text = ""
+    if profile.get("discipline"):
+        profile_text += f"学科领域：{profile['discipline']}\n"
     if profile.get("focus_areas"):
-        profile_text += f"研究方向：{profile['focus_areas']}\n"
+        profile_text += f"追踪主题：{profile['focus_areas']}\n"
     if profile.get("background"):
         profile_text += f"研究经历：{profile['background']}\n"
     if profile.get("current_goal"):
@@ -674,6 +747,7 @@ def api_chat(data: ChatRequest, request: Request):
 {notes_context}
 
 回答要求：
+- 简洁精炼，控制在 300-500 字左右
 - 结合用户的研究背景来分析
 - 如果用户问方法学问题，给出具体的方法学评价
 - 如果用户问相关性，联系用户的研究方向给出具体建议
@@ -693,7 +767,7 @@ def api_chat(data: ChatRequest, request: Request):
             model=model,
             messages=messages,
             temperature=0.4,
-            max_tokens=2000,
+            max_tokens=1000,
         )
         reply = (resp.choices[0].message.content or "").strip()
 
@@ -728,14 +802,14 @@ def api_summarize_chat(data: SummarizeChatRequest):
 - 提炼出对话中的关键洞察、对研究的启发、值得记录的要点
 - 语言简洁，像研究日记
 - 如果对话中有方法学讨论、研究思路、或下一步想法，重点保留
-- 200-400字
+- 300-500字
 
 对话内容：
 {chat_text[:3000]}
 
 只输出笔记内容，不加标题或前缀。"""
 
-    result = _llm_complete(prompt, max_tokens=600)
+    result = _llm_complete(prompt, max_tokens=1000)
     if not result:
         return {"ok": False, "error": "AI 总结失败"}
 

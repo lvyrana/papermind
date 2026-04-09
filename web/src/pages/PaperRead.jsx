@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
 import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages } from 'lucide-react'
-import { apiGet, apiPost, apiDelete, apiGetRaw, API_BASE, getUserId } from '../api'
+import { apiGet, apiPost, apiDelete, API_BASE, getUserId } from '../api'
 
 export default function PaperRead() {
   const { id } = useParams()
@@ -44,6 +44,7 @@ export default function PaperRead() {
       })
       .catch(() => {})
       .finally(() => setPaperLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   // 记录阅读
@@ -55,6 +56,7 @@ export default function PaperRead() {
       // 记录到后端
       apiPost('/reading-history', { title: paper.title, paper_rowid: savedRowId }).catch(() => {})
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paper, id])
 
   // 读取本地笔记 + 已收藏状态
@@ -73,7 +75,7 @@ export default function PaperRead() {
     const chatKey = `paper-chat-${paper?.pmid || paper?.paper_id || id}`
     const savedChat = localStorage.getItem(chatKey)
     if (savedChat) {
-      try { setChatMessages(JSON.parse(savedChat)) } catch {}
+      try { setChatMessages(JSON.parse(savedChat)) } catch { /* ignore */ }
     }
   }, [paper, id])
 
@@ -144,7 +146,7 @@ export default function PaperRead() {
         if (notes) {
           apiPost('/notes', { paper_rowid: data.id, content: notes }).catch(() => {})
         }
-      } catch {}
+      } catch { /* ignore */ }
     }
   }
 
@@ -184,7 +186,7 @@ export default function PaperRead() {
         setSavedRowId(rowId)
         localStorage.setItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`, String(rowId))
         setBookmarked(true)
-      } catch { return }
+      } catch { /* ignore */ return }
     }
 
     setSummarizing(true)
@@ -202,7 +204,7 @@ export default function PaperRead() {
         setNotes(existingNote + '\ud83d\udcac AI \u5bf9\u8bdd\u7b14\u8bb0\uff1a\n' + data.note)
         setActiveTab('notes')
       }
-    } catch {}
+    } catch { /* ignore */ }
     finally { setSummarizing(false) }
   }
 
@@ -210,7 +212,6 @@ export default function PaperRead() {
     if (savedRowId) {
       window.open(`${API_BASE}/export/${format}/${savedRowId}`, '_blank')
     } else {
-      const r = await apiGetRaw(`/export/${format}-direct`)
       // Use POST for direct export
       const resp = await fetch(`${API_BASE}/export/${format}-direct`, {
         method: 'POST',
@@ -398,7 +399,7 @@ export default function PaperRead() {
                           setAbstractZh(data.translated)
                           setShowTranslation(true)
                         }
-                      } catch {} finally { setTranslating(false) }
+                      } catch { /* ignore */ } finally { setTranslating(false) }
                     } else {
                       setShowTranslation(!showTranslation)
                     }

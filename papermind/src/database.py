@@ -95,6 +95,19 @@ def _ensure_db():
         except sqlite3.OperationalError:
             pass  # 列已存在
 
+    # 迁移：给 user_profiles 加 discipline / tracking_days 列
+    for col, default in [("discipline", "''"), ("tracking_days", "7")]:
+        try:
+            conn.execute(f"ALTER TABLE user_profiles ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
+
+    # 索引：加速按 user_id 查询
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_saved_papers_user ON saved_papers(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reading_history_user ON reading_history(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_notes_paper ON paper_notes(paper_rowid)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_chats_paper ON paper_chats(paper_rowid)")
+
     conn.commit()
     return conn
 
@@ -159,13 +172,18 @@ def get_profile(user_id: str) -> dict:
         "exclude_areas": "",
         "current_goal": "",
         "background": "",
+        "discipline": "",
+        "tracking_days": "7",
     }
     conn = _ensure_db()
     row = conn.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
     if row:
         for k in defaults:
-            defaults[k] = row[k] or ""
+            try:
+                defaults[k] = row[k] or defaults[k]
+            except (IndexError, KeyError):
+                pass
     return defaults
 
 
@@ -173,13 +191,16 @@ def save_profile(user_id: str, profile: dict):
     """保存用户研究画像"""
     conn = _ensure_db()
     conn.execute("""
-        INSERT INTO user_profiles (user_id, focus_areas, exclude_areas, current_goal, background, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO user_profiles (user_id, focus_areas, exclude_areas, current_goal, background,
+                                   discipline, tracking_days, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             focus_areas = excluded.focus_areas,
             exclude_areas = excluded.exclude_areas,
             current_goal = excluded.current_goal,
             background = excluded.background,
+            discipline = excluded.discipline,
+            tracking_days = excluded.tracking_days,
             updated_at = excluded.updated_at
     """, (
         user_id,
@@ -187,6 +208,8 @@ def save_profile(user_id: str, profile: dict):
         profile.get("exclude_areas", ""),
         profile.get("current_goal", ""),
         profile.get("background", ""),
+        profile.get("discipline", ""),
+        profile.get("tracking_days", "7"),
         datetime.now().isoformat(),
     ))
     conn.commit()

@@ -1,19 +1,18 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle, Download, ExternalLink, Languages, BookmarkPlus } from 'lucide-react'
-import { apiGet, apiPost, API_BASE, getUserId } from '../api'
+import { apiGet, apiPost, API_BASE } from '../api'
 
 export default function LibraryDetail() {
   const { id } = useParams()
   const [paper, setPaper] = useState(null)
-  const [notes, setNotes] = useState([])
+  const [, setNotes] = useState([])
   const [chats, setChats] = useState([])
   const [noteText, setNoteText] = useState('')
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('notes')
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
   const [saveStatus, setSaveStatus] = useState('idle') // 'idle' | 'saving' | 'saved'
   const [showExport, setShowExport] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
@@ -53,12 +52,28 @@ export default function LibraryDetail() {
     setSaveStatus('idle')
     const timer = setTimeout(() => handleSaveNote(), 1500)
     return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [noteText])
 
-  const handleSaveChatAsNote = (content) => {
-    const prefix = noteText.trim() ? '\n\n---\nAI 对话笔记：\n' : 'AI 对话笔记：\n'
-    setNoteText(prev => prev + prefix + content)
-    setActiveTab('notes')
+  const [summarizing, setSummarizing] = useState(false)
+
+  const handleSummarizeChat = async () => {
+    if (summarizing || chats.length === 0 || !paper) return
+    setSummarizing(true)
+    try {
+      const data = await apiPost('/chat/summarize', {
+        paper_rowid: parseInt(id),
+        paper_title: paper.title,
+        messages: chats,
+      })
+      if (data.ok && data.note) {
+        const prefix = noteText.trim() ? '\n\n---\n💬 AI 对话笔记：\n' : '💬 AI 对话笔记：\n'
+        setNoteText(prev => prev + prefix + data.note)
+        setActiveTab('notes')
+      }
+    } catch { /* ignore */ } finally {
+      setSummarizing(false)
+    }
   }
 
   const handleSendChat = async () => {
@@ -227,7 +242,7 @@ export default function LibraryDetail() {
                             setAbstractZh(data.translated)
                             setShowTranslation(true)
                           }
-                        } catch {} finally { setTranslating(false) }
+                        } catch { /* ignore */ } finally { setTranslating(false) }
                       } else {
                         setShowTranslation(!showTranslation)
                       }
@@ -321,15 +336,6 @@ export default function LibraryDetail() {
                     }`}>
                       {msg.content}
                     </div>
-                    {msg.role === 'assistant' && (
-                      <button
-                        onClick={() => handleSaveChatAsNote(msg.content)}
-                        className="mt-1 flex items-center gap-1 text-xs text-warm-gray hover:text-coral transition-colors px-1"
-                      >
-                        <BookmarkPlus size={11} />
-                        保存为笔记
-                      </button>
-                    )}
                   </div>
                 ))}
                 {chatLoading && (
@@ -339,6 +345,16 @@ export default function LibraryDetail() {
                   </div>
                 )}
               </div>
+              {chats.length >= 2 && (
+                <button
+                  onClick={handleSummarizeChat}
+                  disabled={summarizing}
+                  className="mb-3 flex items-center gap-1.5 text-xs text-warm-gray hover:text-coral transition-colors disabled:opacity-50"
+                >
+                  <BookmarkPlus size={13} />
+                  {summarizing ? '正在总结...' : '总结对话为笔记'}
+                </button>
+              )}
               <div className="flex gap-2">
                 <input type="text" value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}

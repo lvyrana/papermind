@@ -4,3 +4,7 @@ pydantic>=2.7.0
 openai>=1.40.0
 # macOS 系统 Python 3.9 + LibreSSL 下常见兼容问题
 urllib3<2; python_version < "3.10"
+
+# MCP Server（需要 Python 3.12+，建议用 uv venv --python 3.12 单独创建虚拟环境）
+mcp>=1.0.0; python_version >= "3.12"
+uvicorn>=0.30.0; python_version >= "3.12"

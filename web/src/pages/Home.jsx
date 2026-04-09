@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Flower2, Heart, Lightbulb } from 'lucide-react'
+import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Sprout, Heart, Lightbulb } from 'lucide-react'
 import Navbar from '../components/Navbar'
-import { apiGet, apiPost } from '../api'
+import { apiGet } from '../api'
 
 export default function Home() {
   const [papers, setPapers] = useState([])
@@ -49,12 +49,46 @@ export default function Home() {
 
   const pollRef = React.useRef(null)
 
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
+  const handlePapersData = (data) => {
+    setPapers(data.papers || [])
+    setTotal(data.total || 0)
+    setRemaining(data.remaining ?? 0)
+    setAllExplored(data.all_explored || false)
+    localStorage.setItem('cached-papers', JSON.stringify(data.papers || []))
+    localStorage.setItem('cached-papers-time', new Date().toISOString())
+  }
+
+  // 轮询：当前页解读补全
+  const startEnrichPoll = () => {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      try {
+        const poll = await apiGet('/papers?poll=true')
+        if (poll.papers?.length) {
+          setPapers(poll.papers)
+          localStorage.setItem('cached-papers', JSON.stringify(poll.papers))
+        }
+        if (!poll.enriching) {
+          stopPolling()
+        }
+      } catch { /* ignore */ }
+    }, 3000)
+  }
+
   const fetchPapers = async (opts = {}) => {
     const { refresh = false, forceFetch = false } = opts
     setLoading(true)
     setError(null)
+    stopPolling()
     try {
-      const params = new URLSearchParams({ days: '7' })
+      const params = new URLSearchParams()
       if (refresh) params.set('refresh', 'true')
       if (forceFetch) params.set('force_fetch', 'true')
       const data = await apiGet(`/papers?${params}`)
@@ -62,35 +96,26 @@ export default function Home() {
         setError(data.error)
         setLoading(false)
       } else if (data.loading) {
-        // 后端在抓取中，轮询等待
-        if (!pollRef.current) {
-          pollRef.current = setInterval(async () => {
-            try {
-              const poll = await apiGet('/papers?days=7')
-              if (!poll.loading) {
-                clearInterval(pollRef.current)
-                pollRef.current = null
-                setPapers(poll.papers || [])
-                setTotal(poll.total || 0)
-                setRemaining(poll.remaining ?? 0)
-                setAllExplored(poll.all_explored || false)
-                localStorage.setItem('cached-papers', JSON.stringify(poll.papers || []))
-                localStorage.setItem('cached-papers-time', new Date().toISOString())
-                setLoading(false)
-              }
-            } catch {}
-          }, 3000)
-        }
+        // 后端在抓取中，轮询等待抓取完成
+        pollRef.current = setInterval(async () => {
+          try {
+            const poll = await apiGet('/papers')
+            if (!poll.loading) {
+              stopPolling()
+              handlePapersData(poll)
+              setLoading(false)
+              // 抓取完但可能还在解读，继续轮询解读状态
+              if (poll.enriching) startEnrichPoll()
+            }
+          } catch { /* ignore */ }
+        }, 3000)
       } else {
-        setPapers(data.papers || [])
-        setTotal(data.total || 0)
-        setRemaining(data.remaining ?? 0)
-        setAllExplored(data.all_explored || false)
-        localStorage.setItem('cached-papers', JSON.stringify(data.papers || []))
-        localStorage.setItem('cached-papers-time', new Date().toISOString())
+        handlePapersData(data)
         setLoading(false)
+        // 论文返回了但解读还在后台跑
+        if (data.enriching) startEnrichPoll()
       }
-    } catch (e) {
+    } catch {
       setError('无法连接后端服务。请确认后端已启动。')
       const cached = localStorage.getItem('cached-papers')
       if (cached) setPapers(JSON.parse(cached))
@@ -100,26 +125,15 @@ export default function Home() {
 
   // 清理轮询定时器
   useEffect(() => {
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
-    }
+    return () => stopPolling()
   }, [])
 
   useEffect(() => {
-    // 先尝试读缓存
+    // 只从缓存恢复，不自动发起搜索
     const cached = localStorage.getItem('cached-papers')
-    const cachedTime = localStorage.getItem('cached-papers-time')
-    if (cached && cachedTime) {
-      const age = Date.now() - new Date(cachedTime).getTime()
-      if (age < 1000 * 60 * 30) {
-        setPapers(JSON.parse(cached))
-        return
-      }
+    if (cached) {
+      try { setPapers(JSON.parse(cached)) } catch { /* ignore */ }
     }
-    fetchPapers()
   }, [])
 
   return (
@@ -145,16 +159,21 @@ export default function Home() {
                 <Clock size={16} className="text-coral/70" />
                 <h2 className="text-sm text-warm-gray">{resumeLabel}</h2>
               </div>
-              <Link to={`/paper/${lastReading.index || 0}`} state={{ paper: lastReading }} className="block">
-                <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50">
+              <Link to={`/paper/${lastReading._cache_index ?? lastReading.index ?? 0}`} state={{ paper: lastReading }} className="block group">
+                <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50 relative">
                   <p className="text-navy font-medium leading-relaxed text-[15px]">
                     {lastReading.title}
                   </p>
                   {lastReading.note && (
                     <p className="text-warm-gray text-sm mt-3 italic">"{lastReading.note}"</p>
                   )}
-                  <div className="flex items-center justify-end mt-4">
-                    <span className="text-coral/70 text-sm flex items-center gap-1 hover:text-coral transition-colors">
+                  <div className="flex items-center justify-between mt-4">
+                    {lastReading.readAt ? (
+                      <span className="text-warm-gray/60 text-xs">
+                        上次阅读：{new Date(lastReading.readAt).toLocaleString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    ) : <span />}
+                    <span className="text-coral/0 group-hover:text-coral/80 text-sm flex items-center gap-1 transition-all duration-200">
                       接着读 <ArrowRight size={14} />
                     </span>
                   </div>
@@ -170,7 +189,7 @@ export default function Home() {
         <section>
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <Flower2 size={16} className="text-coral" />
+              <Sprout size={16} className="text-coral" />
               <h2 className="text-sm font-medium text-navy/60">为你探索</h2>
             </div>
             {total > 0 && (
@@ -282,8 +301,9 @@ export default function Home() {
 }
 
 function PaperCard({ paper, index }) {
+  const cacheIndex = paper._cache_index ?? index
   return (
-    <Link to={`/paper/${index}`} state={{ paper }} className="block breathe-in" style={{ animationDelay: `${index * 80}ms` }}>
+    <Link to={`/paper/${cacheIndex}`} state={{ paper }} className="block breathe-in" style={{ animationDelay: `${index * 80}ms` }}>
       <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs px-2.5 py-1 rounded-full bg-coral/10 text-coral font-medium">

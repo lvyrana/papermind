@@ -22,7 +22,7 @@ export default function Profile() {
   const handleSave = async () => {
     try {
       await apiPost('/profile', profile)
-    } catch {}
+    } catch { /* ignore */ }
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
