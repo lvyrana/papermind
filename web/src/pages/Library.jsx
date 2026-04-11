@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, BookOpen, MessageCircle, FileText, Trash2, Clock } from 'lucide-react'
+import { ArrowLeft, BookOpen, MessageCircle, FileText, Trash2, Clock, Search } from 'lucide-react'
 import Navbar from '../components/Navbar'
 import { apiGet, apiDelete } from '../api'
 
@@ -27,6 +27,9 @@ function formatDate(dateStr) {
 export default function Library() {
   const [papers, setPapers] = useState([])
   const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [activeCategory, setActiveCategory] = useState('全部')
+  const [sortBy, setSortBy] = useState('saved') // 'saved' | 'read'
 
   useEffect(() => {
     apiGet('/library')
@@ -43,25 +46,86 @@ export default function Library() {
     setPapers(prev => prev.filter(p => p.id !== id))
   }
 
+  // 分类列表（自动提取）
+  const categories = useMemo(() => {
+    const cats = [...new Set(papers.map(p => p.category).filter(Boolean))]
+    return ['全部', ...cats]
+  }, [papers])
+
+  // 过滤 + 排序
+  const filtered = useMemo(() => {
+    let result = papers
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
+      result = result.filter(p => p.title.toLowerCase().includes(q))
+    }
+    if (activeCategory !== '全部') {
+      result = result.filter(p => p.category === activeCategory)
+    }
+    return [...result].sort((a, b) => {
+      const aTime = sortBy === 'read' ? (a.last_read_at || a.saved_at) : a.saved_at
+      const bTime = sortBy === 'read' ? (b.last_read_at || b.saved_at) : b.saved_at
+      return new Date(bTime) - new Date(aTime)
+    })
+  }, [papers, search, activeCategory, sortBy])
+
   // 按日期分组
   const grouped = {}
-  papers.forEach(p => {
-    const dateKey = formatDate(p.saved_at)
+  filtered.forEach(p => {
+    const dateKey = formatDate(sortBy === 'read' ? (p.last_read_at || p.saved_at) : p.saved_at)
     if (!grouped[dateKey]) grouped[dateKey] = []
     grouped[dateKey].push(p)
   })
 
   return (
     <div className="min-h-screen pb-24">
-      <header className="px-6 pt-12 pb-6 max-w-3xl mx-auto">
+      <header className="px-6 pt-12 pb-4 max-w-3xl mx-auto">
         <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors">
           <ArrowLeft size={16} />
           <span>返回</span>
         </Link>
-        <h1 className="text-2xl font-bold text-navy font-serif">我的收藏</h1>
-        <p className="text-warm-gray mt-2 text-sm">
-          {papers.length > 0 ? `${papers.length} 篇论文，你的研究足迹。` : '还没有收藏，去首页看看本周论文。'}
-        </p>
+        <div className="flex items-baseline justify-between">
+          <h1 className="text-2xl font-bold text-navy font-serif">我的收藏</h1>
+          <button
+            onClick={() => setSortBy(v => v === 'saved' ? 'read' : 'saved')}
+            className="text-xs text-warm-gray hover:text-navy transition-colors"
+          >
+            {sortBy === 'saved' ? '按收藏时间' : '按最近阅读'}
+          </button>
+        </div>
+
+        {/* 搜索框 */}
+        {papers.length > 0 && (
+          <div className="relative mt-4">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray/50" />
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="搜索论文标题..."
+              className="w-full bg-warm-white rounded-xl pl-9 pr-4 py-2.5 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/40"
+            />
+          </div>
+        )}
+
+        {/* 分类筛选 */}
+        {categories.length > 1 && (
+          <div className="flex gap-2 mt-3 overflow-x-auto pb-1 scrollbar-hide">
+            {categories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setActiveCategory(cat)}
+                className={`shrink-0 px-3 py-1 rounded-full text-xs transition-all duration-200 ${
+                  activeCategory === cat
+                    ? 'bg-navy/90 text-warm-white'
+                    : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <main className="px-6 max-w-3xl mx-auto">

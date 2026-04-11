@@ -43,6 +43,7 @@ def _ensure_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             paper_rowid INTEGER NOT NULL,
             content TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'manual',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (paper_rowid) REFERENCES saved_papers(id)
@@ -95,12 +96,23 @@ def _ensure_db():
         except sqlite3.OperationalError:
             pass  # 列已存在
 
-    # 迁移：给 user_profiles 加 discipline / tracking_days 列
-    for col, default in [("discipline", "''"), ("tracking_days", "7")]:
+    # 迁移：给 user_profiles 加新列
+    for col, default in [
+        ("discipline", "''"),
+        ("tracking_days", "'7'"),
+        ("interests_summary", "''"),
+        ("interests_summary_updated_at", "''"),
+    ]:
         try:
             conn.execute(f"ALTER TABLE user_profiles ADD COLUMN {col} TEXT DEFAULT {default}")
         except sqlite3.OperationalError:
             pass  # 列已存在
+
+    # 迁移：给 paper_notes 加 source 列（如果不存在）
+    try:
+        conn.execute("ALTER TABLE paper_notes ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
 
     # 索引：加速按 user_id 查询
     conn.execute("CREATE INDEX IF NOT EXISTS idx_saved_papers_user ON saved_papers(user_id)")
@@ -174,6 +186,8 @@ def get_profile(user_id: str) -> dict:
         "background": "",
         "discipline": "",
         "tracking_days": "7",
+        "interests_summary": "",
+        "interests_summary_updated_at": "",
     }
     conn = _ensure_db()
     row = conn.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
@@ -192,8 +206,8 @@ def save_profile(user_id: str, profile: dict):
     conn = _ensure_db()
     conn.execute("""
         INSERT INTO user_profiles (user_id, focus_areas, exclude_areas, current_goal, background,
-                                   discipline, tracking_days, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   discipline, tracking_days, interests_summary, interests_summary_updated_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             focus_areas = excluded.focus_areas,
             exclude_areas = excluded.exclude_areas,
@@ -201,6 +215,8 @@ def save_profile(user_id: str, profile: dict):
             background = excluded.background,
             discipline = excluded.discipline,
             tracking_days = excluded.tracking_days,
+            interests_summary = excluded.interests_summary,
+            interests_summary_updated_at = excluded.interests_summary_updated_at,
             updated_at = excluded.updated_at
     """, (
         user_id,
@@ -210,6 +226,8 @@ def save_profile(user_id: str, profile: dict):
         profile.get("background", ""),
         profile.get("discipline", ""),
         profile.get("tracking_days", "7"),
+        profile.get("interests_summary", ""),
+        profile.get("interests_summary_updated_at", ""),
         datetime.now().isoformat(),
     ))
     conn.commit()
@@ -300,29 +318,48 @@ def delete_saved_paper(paper_id: int):
 
 # ========== Notes ==========
 
-def save_note(paper_rowid: int, content: str) -> int:
+def save_note(paper_rowid: int, content: str, source: str = "manual", note_id: int = None) -> int:
     conn = _ensure_db()
     now = datetime.now().isoformat()
-    existing = conn.execute(
-        "SELECT id FROM paper_notes WHERE paper_rowid = ?", (paper_rowid,)
-    ).fetchone()
-    if existing:
+
+    # 更新已有笔记（按 id）
+    if note_id:
         conn.execute(
             "UPDATE paper_notes SET content = ?, updated_at = ? WHERE id = ?",
-            (content, now, existing["id"])
+            (content, now, note_id)
         )
         conn.commit()
         conn.close()
-        return existing["id"]
+        return note_id
 
+    # 每次新增一条（无论 source）
     cursor = conn.execute(
-        "INSERT INTO paper_notes (paper_rowid, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        (paper_rowid, content, now, now)
+        "INSERT INTO paper_notes (paper_rowid, content, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (paper_rowid, content, source, now, now)
     )
     conn.commit()
     row_id = cursor.lastrowid
     conn.close()
     return row_id
+
+
+def get_note_owner(note_id: int) -> str:
+    """返回笔记所属论文的 user_id，用于归属校验"""
+    conn = _ensure_db()
+    row = conn.execute(
+        "SELECT sp.user_id FROM paper_notes pn JOIN saved_papers sp ON pn.paper_rowid = sp.id WHERE pn.id = ?",
+        (note_id,)
+    ).fetchone()
+    conn.close()
+    return row["user_id"] if row else ""
+
+
+def delete_note(note_id: int) -> bool:
+    conn = _ensure_db()
+    conn.execute("DELETE FROM paper_notes WHERE id = ?", (note_id,))
+    conn.commit()
+    conn.close()
+    return True
 
 
 def get_notes(paper_rowid: int) -> list[dict]:
@@ -352,6 +389,22 @@ def get_chat_history(paper_rowid: int) -> list[dict]:
     rows = conn.execute(
         "SELECT role, content, created_at FROM paper_chats WHERE paper_rowid = ? ORDER BY created_at ASC",
         (paper_rowid,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_all_recent_chats(user_id: str, limit: int = 30) -> list[dict]:
+    """获取用户所有论文的最近对话（用于兴趣摘要生成）"""
+    conn = _ensure_db()
+    rows = conn.execute(
+        """SELECT pc.role, pc.content, pc.created_at
+           FROM paper_chats pc
+           JOIN saved_papers sp ON pc.paper_rowid = sp.id
+           WHERE sp.user_id = ?
+           ORDER BY pc.created_at DESC
+           LIMIT ?""",
+        (user_id, limit)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -390,3 +443,14 @@ def get_saved_titles(user_id: str, limit: int = 30) -> list[str]:
     ).fetchall()
     conn.close()
     return [r["title"] for r in rows]
+
+
+def get_saved_categories(user_id: str) -> dict:
+    """获取用户收藏论文的分类分布，用于兴趣摘要"""
+    conn = _ensure_db()
+    rows = conn.execute(
+        "SELECT category, COUNT(*) as cnt FROM saved_papers WHERE user_id = ? AND category IS NOT NULL GROUP BY category ORDER BY cnt DESC",
+        (user_id,)
+    ).fetchall()
+    conn.close()
+    return {r["category"]: r["cnt"] for r in rows}

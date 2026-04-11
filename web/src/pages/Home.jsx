@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Sprout, Heart, Lightbulb } from 'lucide-react'
 import Navbar from '../components/Navbar'
-import { apiGet } from '../api'
+import { apiGet, apiPost } from '../api'
 
 export default function Home() {
   const [papers, setPapers] = useState([])
@@ -37,6 +37,9 @@ export default function Home() {
   useEffect(() => {
     const saved = localStorage.getItem('last-reading')
     if (saved) setLastReading(JSON.parse(saved))
+
+    // 触发兴趣摘要更新（后端有 24h 防重复）
+    apiPost('/profile/interests-summary', {}).catch(() => {})
 
     // 检查画像是否已填写
     apiGet('/profile')

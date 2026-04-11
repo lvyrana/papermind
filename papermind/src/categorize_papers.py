@@ -18,16 +18,14 @@ def score_and_categorize_papers(papers: list[dict], profile: dict, client, model
 
     focus = profile.get("focus_areas", "")
     background = profile.get("background", "")
-    goal = profile.get("current_goal", "")
     exclude = profile.get("exclude_areas", "")
+    # current_goal 是"使用目的"而非研究主题，不参与分类标签生成，避免模型把用户目标词（如"日常追踪"）误用为论文分类
 
     profile_text = ""
     if focus:
         profile_text += f"研究方向：{focus}\n"
     if background:
         profile_text += f"研究经历：{background}\n"
-    if goal:
-        profile_text += f"当前目标：{goal}\n"
     if exclude:
         profile_text += f"不想看的内容：{exclude}\n"
 
@@ -58,7 +56,7 @@ def _score_batch(papers: list[dict], profile_text: str, client, model: str):
 
 请为每篇论文：
 1. 打一个相关性分数（0-10）：10=高度相关核心方向，7-9=相关，4-6=一般相关，1-3=不太相关。特别注意：如果论文内容属于研究者"不想看的内容"中列出的领域，必须打 0 分，即使标题看起来和研究方向有关
-2. 给一个简短的分类标签（2-6个字，如"肺康复""患者教育""流行病学""药物治疗""分子机制"等，根据论文内容自由生成）
+2. 给一个简短的分类标签（2-6个字），必须描述论文的研究主题、方法或对象（如"肺康复""患者教育""流行病学""药物治疗""分子机制"），禁止使用研究者的目的性词语（如"日常追踪""写综述""找课题方向""准备组会""写论文"等）
 
 只输出 JSON 数组，格式：
 [{{"score": 8, "category": "分类标签"}}, ...]

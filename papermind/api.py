@@ -25,7 +25,8 @@ from src.fetch_semantic_scholar import get_papers as scholar_get_papers
 from src.categorize_papers import score_and_categorize_papers
 from src.database import (
     init_db, save_paper, get_saved_papers, get_saved_paper,
-    delete_saved_paper, save_note, get_notes, save_chat_message,
+    delete_saved_paper, save_note, delete_note, get_note_owner, get_notes, save_chat_message,
+    get_saved_categories,
     get_chat_history, record_reading, get_reading_history,
     get_profile, save_profile, get_saved_titles,
     check_rate_limit, increment_rate_limit, get_rate_limit_remaining,
@@ -80,6 +81,8 @@ class SavePaperRequest(BaseModel):
 class SaveNoteRequest(BaseModel):
     paper_rowid: int
     content: str
+    source: str = "manual"
+    note_id: int = None
 
 
 # ========== User ID ==========
@@ -208,6 +211,81 @@ def api_save_profile(data: ProfileData, request: Request):
     save_profile(uid, data.dict())
     return {"ok": True}
 
+@app.post("/api/profile/interests-summary")
+def api_update_interests_summary(request: Request):
+    """根据用户行为生成兴趣摘要，存入 profile.interests_summary"""
+    uid = _get_user_id(request)
+    profile = get_profile(uid)
+
+    # 24 小时内不重复生成
+    last_updated = profile.get("interests_summary_updated_at", "")
+    if last_updated:
+        try:
+            from datetime import timezone
+            last_dt = datetime.fromisoformat(last_updated)
+            if (datetime.now() - last_dt).total_seconds() < 86400:
+                return {"ok": True, "skipped": True}
+        except Exception:
+            pass
+
+    client, model = _get_llm_client()
+    if not client:
+        return {"ok": False, "error": "AI 不可用"}
+
+    saved_titles = get_saved_titles(uid)
+    if not saved_titles:
+        return {"ok": True, "skipped": True}
+
+    # 获取分类分布
+    category_dist = get_saved_categories(uid)
+    category_text = "、".join(f"{k}({v}篇)" for k, v in list(category_dist.items())[:8]) if category_dist else "（暂无）"
+
+    # 获取最近对话中用户的提问
+    recent_questions = []
+    try:
+        from src.database import get_all_recent_chats
+        recent_chats = get_all_recent_chats(uid, limit=30)
+        recent_questions = [m["content"] for m in recent_chats if m.get("role") == "user"][:15]
+    except Exception:
+        pass
+
+    focus = profile.get("focus_areas", "")
+    background = profile.get("background", "")
+
+    prompt = f"""根据以下用户行为数据，生成一段 150-200 字的用户兴趣画像摘要。
+
+用户研究背景：
+研究方向：{focus}
+研究经历：{background}
+
+近期收藏的论文（反映真实兴趣）：
+{chr(10).join(f'- {t}' for t in saved_titles[:15])}
+
+收藏论文的分类分布：{category_text}
+
+近期对话中的提问（反映关注点）：
+{chr(10).join(f'- {q}' for q in recent_questions) if recent_questions else '（暂无）'}
+
+要求：
+- 总结用户真正关注的细分方向（从收藏、分类和提问行为推断，而非只看填写的画像）
+- 指出用户常问的问题类型（方法学？临床意义？可复制性？）
+- 语言简洁，像一段内部备忘录
+- 只输出摘要正文，不加标题"""
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=400,
+        )
+        summary = (resp.choices[0].message.content or "").strip()
+        updated_profile = {**profile, "interests_summary": summary, "interests_summary_updated_at": datetime.now().isoformat()}
+        save_profile(uid, updated_profile)
+        return {"ok": True, "summary": summary}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 
 # ========== Papers Cache（按用户隔离） ==========
 
@@ -232,6 +310,7 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
     focus = profile.get("focus_areas", "")
     background = profile.get("background", "")
     goal = profile.get("current_goal", "")
+    discipline = profile.get("discipline", "")
 
     if not (focus or background):
         return []
@@ -239,6 +318,8 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
     exclude = profile.get("exclude_areas", "")
 
     profile_text = ""
+    if discipline:
+        profile_text += f"学科领域：{discipline}\n"
     if focus:
         profile_text += f"研究方向：{focus}\n"
     if background:
@@ -361,6 +442,15 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
             unique_papers.append(p)
 
     print(f"[api] 去重后 {len(unique_papers)} 篇论文")
+
+    # 过滤已收藏论文（避免推荐用户已保存的）
+    if saved_titles and user_id:
+        saved_set = {t.lower().strip()[:80] for t in saved_titles}
+        before = len(unique_papers)
+        unique_papers = [p for p in unique_papers if p["title"].lower().strip()[:80] not in saved_set]
+        filtered_saved = before - len(unique_papers)
+        if filtered_saved:
+            print(f"[api] 过滤已收藏论文 {filtered_saved} 篇")
 
     # 统一日期格式为 YYYY-MM-DD
     _month_map = {"Jan":"01","Feb":"02","Mar":"03","Apr":"04","May":"05","Jun":"06",
@@ -673,7 +763,9 @@ def api_get_library_paper(paper_id: int, request: Request):
     """获取收藏的论文详情 + 笔记 + 对话"""
     uid = _get_user_id(request)
     paper = get_saved_paper(paper_id)
-    if not paper or paper.get("user_id", "") != uid:
+    if not paper:
+        return {"error": "not found"}
+    if paper.get("user_id") and paper.get("user_id") != uid:
         return {"error": "not found"}
     notes = get_notes(paper_id)
     chats = get_chat_history(paper_id)
@@ -684,7 +776,9 @@ def api_delete_from_library(paper_id: int, request: Request):
     """取消收藏（需验证归属）"""
     uid = _get_user_id(request)
     paper = get_saved_paper(paper_id)
-    if not paper or paper.get("user_id", "") != uid:
+    if not paper:
+        return {"ok": False, "error": "not found"}
+    if paper.get("user_id") and paper.get("user_id") != uid:
         return {"ok": False, "error": "not found"}
     delete_saved_paper(paper_id)
     return {"ok": True}
@@ -697,9 +791,13 @@ def api_save_note(data: SaveNoteRequest, request: Request):
     """保存笔记（需验证归属）"""
     uid = _get_user_id(request)
     paper = get_saved_paper(data.paper_rowid)
-    if not paper or paper.get("user_id", "") != uid:
+    if not paper:
         return {"ok": False, "error": "not found"}
-    note_id = save_note(data.paper_rowid, data.content)
+    if paper.get("user_id") and paper.get("user_id") != uid:
+        return {"ok": False, "error": "not found"}
+    source = getattr(data, "source", "manual")
+    note_id_param = getattr(data, "note_id", None)
+    note_id = save_note(data.paper_rowid, data.content, source=source, note_id=note_id_param)
     return {"ok": True, "id": note_id}
 
 @app.get("/api/notes/{paper_rowid}")
@@ -711,6 +809,15 @@ def api_get_notes(paper_rowid: int, request: Request):
         return {"notes": []}
     notes = get_notes(paper_rowid)
     return {"notes": notes}
+
+@app.delete("/api/notes/{note_id}")
+def api_delete_note(note_id: int, request: Request):
+    """删除一条笔记（需验证归属）"""
+    uid = _get_user_id(request)
+    if get_note_owner(note_id) != uid:
+        return {"ok": False, "error": "not found"}
+    delete_note(note_id)
+    return {"ok": True}
 
 
 # ========== Chat Route ==========
@@ -729,6 +836,8 @@ def api_chat(data: ChatRequest, request: Request):
         profile_text += f"研究经历：{profile['background']}\n"
     if profile.get("current_goal"):
         profile_text += f"当前目标：{profile['current_goal']}\n"
+    if profile.get("interests_summary"):
+        profile_text += f"\n基于使用行为推断的兴趣画像：\n{profile['interests_summary']}\n"
 
     # 获取该论文的历史笔记
     notes_context = ""
@@ -737,8 +846,8 @@ def api_chat(data: ChatRequest, request: Request):
         if notes:
             notes_context = f"\n用户关于这篇论文的笔记：\n{notes[0]['content'][:500]}"
 
-    system_prompt = f"""你是一位专业的学术研究助手。用户正在阅读一篇论文，请基于论文内容和用户的研究背景来回答问题。
-用中文回答，专业但亲切，像一位有经验的研究伙伴在交流。
+    system_prompt = f"""你是一位学术研究伙伴。用户正在阅读一篇论文，请基于论文内容和用户的研究背景来回答问题。
+用中文回答，专业但亲切，像同事在聊天，不像在写报告。
 
 论文标题：{data.paper_title}
 论文摘要：{data.paper_abstract[:1200]}
@@ -747,11 +856,11 @@ def api_chat(data: ChatRequest, request: Request):
 {notes_context}
 
 回答要求：
-- 简洁精炼，控制在 300-500 字左右
-- 结合用户的研究背景来分析
-- 如果用户问方法学问题，给出具体的方法学评价
-- 如果用户问相关性，联系用户的研究方向给出具体建议
-- 适当引用论文中的数据或发现来支持观点"""
+- 直接回答问题，控制在 150-250 字
+- 不要用 ### 标题分层，可以用 **加粗** 强调关键词
+- 可以用短列表，但不要超过 3 条
+- 结合用户研究背景给出具体建议
+- 引用论文数据时给出具体数字"""
 
     client, model = _get_llm_client()
     if not client:
@@ -767,7 +876,7 @@ def api_chat(data: ChatRequest, request: Request):
             model=model,
             messages=messages,
             temperature=0.4,
-            max_tokens=1000,
+            max_tokens=600,
         )
         reply = (resp.choices[0].message.content or "").strip()
 
@@ -784,10 +893,16 @@ def api_chat(data: ChatRequest, request: Request):
 # ========== Chat Summary → Notes ==========
 
 @app.post("/api/chat/summarize")
-def api_summarize_chat(data: SummarizeChatRequest):
-    """将对话总结为笔记并保存"""
+def api_summarize_chat(data: SummarizeChatRequest, request: Request):
+    """将对话总结为笔记并保存（需验证归属）"""
     if not data.messages or not data.paper_rowid:
         return {"ok": False, "error": "缺少对话内容或论文ID"}
+    uid = _get_user_id(request)
+    paper = get_saved_paper(data.paper_rowid)
+    if not paper:
+        return {"ok": False, "error": "not found"}
+    if paper.get("user_id") and paper.get("user_id") != uid:
+        return {"ok": False, "error": "not found"}
 
     # 构建对话文本
     chat_text = "\n".join(
@@ -795,31 +910,26 @@ def api_summarize_chat(data: SummarizeChatRequest):
         for m in data.messages
     )
 
-    prompt = f"""请将以下关于论文「{data.paper_title}」的讨论对话总结为一段简洁的研究笔记。
+    prompt = f"""请将以下关于论文「{data.paper_title}」的讨论对话总结为结构化研究笔记。
 
 要求：
-- 用第一人称（"我"）写
-- 提炼出对话中的关键洞察、对研究的启发、值得记录的要点
-- 语言简洁，像研究日记
-- 如果对话中有方法学讨论、研究思路、或下一步想法，重点保留
-- 300-500字
+- 提取 3-5 个关键收获，每条 1-2 句话
+- 保留具体数据、方法名、统计结果等细节
+- 如有方法学讨论、研究思路、下一步想法，单独列出
+- 用编号列表格式，语言简洁专业
+- 控制在 300-500 字
 
 对话内容：
 {chat_text[:3000]}
 
-只输出笔记内容，不加标题或前缀。"""
+只输出笔记正文，不加标题或前缀。"""
 
-    result = _llm_complete(prompt, max_tokens=1000)
+    result = _llm_complete(prompt, max_tokens=1200)
     if not result:
         return {"ok": False, "error": "AI 总结失败"}
 
-    # 获取已有笔记，追加而不是覆盖
-    existing_notes = get_notes(data.paper_rowid)
-    if existing_notes:
-        combined = existing_notes[0]["content"] + "\n\n---\n\n" + "💬 AI 对话笔记：\n" + result
-        save_note(data.paper_rowid, combined)
-    else:
-        save_note(data.paper_rowid, "💬 AI 对话笔记：\n" + result)
+    # 每次总结作为独立笔记保存，不追加到已有笔记
+    save_note(data.paper_rowid, result, source="chat_summary")
 
     return {"ok": True, "note": result}
 

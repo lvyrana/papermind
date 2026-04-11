@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
 import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, API_BASE, getUserId } from '../api'
 
 export default function PaperRead() {
@@ -24,6 +25,10 @@ export default function PaperRead() {
   const [abstractZh, setAbstractZh] = useState(null)
   const [translating, setTranslating] = useState(false)
   const [showTranslation, setShowTranslation] = useState(false)
+  const [titleZh, setTitleZh] = useState(null)
+  const [showTitleZh, setShowTitleZh] = useState(false)
+  const [titleTranslating, setTitleTranslating] = useState(false)
+  const [summarizeError, setSummarizeError] = useState(null)
 
   // 如果 location.state 没有 paper（刷新/直链），尝试从后端恢复
   useEffect(() => {
@@ -176,6 +181,7 @@ export default function PaperRead() {
 
   const handleSummarizeChat = async () => {
     if (chatMessages.length < 2 || summarizing) return
+    setSummarizeError(null)
 
     // 如果还没收藏，先收藏
     let rowId = savedRowId
@@ -186,7 +192,10 @@ export default function PaperRead() {
         setSavedRowId(rowId)
         localStorage.setItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`, String(rowId))
         setBookmarked(true)
-      } catch { /* ignore */ return }
+      } catch {
+        setSummarizeError('自动收藏失败，请先手动收藏这篇论文。')
+        return
+      }
     }
 
     setSummarizing(true)
@@ -201,11 +210,14 @@ export default function PaperRead() {
         triggerRipple()
         // 切换到笔记 tab 并更新笔记内容
         const existingNote = notes ? notes + '\n\n---\n\n' : ''
-        setNotes(existingNote + '\ud83d\udcac AI \u5bf9\u8bdd\u7b14\u8bb0\uff1a\n' + data.note)
+        setNotes(existingNote + '💬 AI 对话笔记：\n' + data.note)
         setActiveTab('notes')
+      } else {
+        setSummarizeError(data.error || '总结失败，请重试。')
       }
-    } catch { /* ignore */ }
-    finally { setSummarizing(false) }
+    } catch {
+      setSummarizeError('网络错误，请重试。')
+    } finally { setSummarizing(false) }
   }
 
   const handleExport = async (format) => {
@@ -297,9 +309,35 @@ export default function PaperRead() {
               </span>
             )}
           </div>
-          <h1 className="text-xl font-bold text-navy font-serif mt-3 leading-relaxed">
-            {paper.title}
-          </h1>
+          <div className="mt-3">
+            <h1 className="text-xl font-bold text-navy font-serif leading-relaxed">
+              {showTitleZh && titleZh ? titleZh : paper.title}
+            </h1>
+            <button
+              onClick={async () => {
+                if (!titleZh && !titleTranslating) {
+                  setTitleTranslating(true)
+                  try {
+                    const data = await apiPost('/translate', { text: paper.title })
+                    if (data.ok) {
+                      setTitleZh(data.translated)
+                      setShowTitleZh(true)
+                    }
+                  } catch { /* ignore */ } finally { setTitleTranslating(false) }
+                } else {
+                  setShowTitleZh(!showTitleZh)
+                }
+              }}
+              disabled={titleTranslating}
+              className="mt-1 inline-flex items-center gap-1 text-xs text-warm-gray/50 hover:text-warm-gray transition-colors disabled:opacity-40"
+            >
+              {titleTranslating ? (
+                <><Loader2 size={11} className="animate-spin" /> 翻译中...</>
+              ) : (
+                <><Languages size={11} /> {showTitleZh ? '原文' : '中文'}</>
+              )}
+            </button>
+          </div>
           <p className="text-warm-gray text-sm mt-2">
             {paper.authors} &middot; {paper.journal} &middot; {paper.pub_date}
           </p>
@@ -481,7 +519,19 @@ export default function PaperRead() {
                         : 'glass-chat text-navy/80 breathe-in-left'
                     }`}
                     style={{ animationDelay: `${i * 60}ms` }}>
-                    {msg.content}
+                    {msg.role === 'assistant' ? (
+                      <ReactMarkdown
+                        components={{
+                          p: ({children}) => <p className="mb-1 last:mb-0">{children}</p>,
+                          strong: ({children}) => <strong className="font-semibold">{children}</strong>,
+                          ul: ({children}) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
+                          ol: ({children}) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
+                          li: ({children}) => <li>{children}</li>,
+                        }}
+                      >
+                        {msg.content}
+                      </ReactMarkdown>
+                    ) : msg.content}
                   </div>
                 ))}
                 {chatLoading && (
@@ -493,23 +543,28 @@ export default function PaperRead() {
               </div>
               {/* 保存对话为笔记按钮 */}
               {chatMessages.length >= 2 && (
-                <button
-                  onClick={handleSummarizeChat}
-                  disabled={summarizing || summarized}
-                  className={`w-full py-2.5 rounded-xl text-sm font-medium mb-3 flex items-center justify-center gap-2 transition-all ripple-btn ${ripple && summarized ? 'ripple-active' : ''} ${
-                    summarized
-                      ? 'bg-mint/20 text-navy'
-                      : 'border border-coral/20 text-coral hover:bg-coral/5'
-                  } disabled:opacity-60`}
-                >
-                  {summarizing ? (
-                    <><Loader2 size={14} className="animate-spin" /> 正在总结对话...</>
-                  ) : summarized ? (
-                    <><FileText size={14} /> 已保存到笔记</>
-                  ) : (
-                    <><FileText size={14} /> 将对话保存为笔记</>
+                <>
+                  <button
+                    onClick={handleSummarizeChat}
+                    disabled={summarizing || summarized}
+                    className={`w-full py-2.5 rounded-xl text-sm font-medium mb-1 flex items-center justify-center gap-2 transition-all ripple-btn ${ripple && summarized ? 'ripple-active' : ''} ${
+                      summarized
+                        ? 'bg-mint/20 text-navy'
+                        : 'border border-coral/20 text-coral hover:bg-coral/5'
+                    } disabled:opacity-60`}
+                  >
+                    {summarizing ? (
+                      <><Loader2 size={14} className="animate-spin" /> 正在总结对话...</>
+                    ) : summarized ? (
+                      <><FileText size={14} /> 已保存到笔记</>
+                    ) : (
+                      <><FileText size={14} /> 将对话保存为笔记</>
+                    )}
+                  </button>
+                  {summarizeError && (
+                    <p className="text-xs text-coral mb-2 text-center">{summarizeError}</p>
                   )}
-                </button>
+                </>
               )}
               <div className="flex gap-2">
                 <input type="text" value={chatInput}

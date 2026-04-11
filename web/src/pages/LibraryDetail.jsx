@@ -1,24 +1,27 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle, Download, ExternalLink, Languages, BookmarkPlus } from 'lucide-react'
-import { apiGet, apiPost, API_BASE } from '../api'
+import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle, Download, ExternalLink, Languages, BookmarkPlus, Trash2, Plus } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import { apiGet, apiPost, apiDelete, API_BASE } from '../api'
 
 export default function LibraryDetail() {
   const { id } = useParams()
   const [paper, setPaper] = useState(null)
-  const [, setNotes] = useState([])
+  const [notes, setNotes] = useState([])
   const [chats, setChats] = useState([])
-  const [noteText, setNoteText] = useState('')
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const [activeTab, setActiveTab] = useState('notes')
   const [loading, setLoading] = useState(true)
-  const [saveStatus, setSaveStatus] = useState('idle') // 'idle' | 'saving' | 'saved'
   const [showExport, setShowExport] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
   const [abstractZh, setAbstractZh] = useState(null)
   const [translating, setTranslating] = useState(false)
   const [showTranslation, setShowTranslation] = useState(false)
+  const [titleZh, setTitleZh] = useState(null)
+  const [showTitleZh, setShowTitleZh] = useState(false)
+  const [titleTranslating, setTitleTranslating] = useState(false)
+  const [savedMsgIndexes, setSavedMsgIndexes] = useState(new Set())
 
   useEffect(() => {
     apiGet(`/library/${id}`)
@@ -26,34 +29,40 @@ export default function LibraryDetail() {
         setPaper(data.paper)
         setNotes(data.notes || [])
         setChats(data.chats || [])
-        if (data.notes?.length) {
-          setNoteText(data.notes[0].content)
-        }
       })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [id])
 
-  const handleSaveNote = async () => {
-    if (!noteText.trim()) return
-    setSaveStatus('saving')
-    try {
-      await apiPost('/notes', { paper_rowid: parseInt(id), content: noteText })
-      setSaveStatus('saved')
-      setTimeout(() => setSaveStatus('idle'), 2000)
-    } catch {
-      setSaveStatus('idle')
-    }
+  const handleAddNote = async () => {
+    const newNote = { id: `tmp-${Date.now()}`, content: '', source: 'manual', created_at: new Date().toISOString(), isNew: true }
+    setNotes(prev => [newNote, ...prev])
   }
 
-  // 自动保存笔记（防抖）
-  useEffect(() => {
-    if (!noteText.trim() || !paper) return
-    setSaveStatus('idle')
-    const timer = setTimeout(() => handleSaveNote(), 1500)
-    return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [noteText])
+  const handleSaveNoteContent = async (noteId, content) => {
+    if (!content.trim()) return
+    const isTemp = String(noteId).startsWith('tmp-')
+    try {
+      const res = await apiPost('/notes', {
+        paper_rowid: parseInt(id),
+        content,
+        source: 'manual',
+        ...(isTemp ? {} : { note_id: noteId }),
+      })
+      if (isTemp && res.id) {
+        setNotes(prev => prev.map(n => n.id === noteId ? { ...n, id: res.id, isNew: false } : n))
+      }
+    } catch { /* ignore */ }
+  }
+
+  const handleDeleteNote = async (noteId) => {
+    if (String(noteId).startsWith('tmp-')) {
+      setNotes(prev => prev.filter(n => n.id !== noteId))
+      return
+    }
+    await apiDelete(`/notes/${noteId}`)
+    setNotes(prev => prev.filter(n => n.id !== noteId))
+  }
 
   const [summarizing, setSummarizing] = useState(false)
 
@@ -67,8 +76,12 @@ export default function LibraryDetail() {
         messages: chats,
       })
       if (data.ok && data.note) {
-        const prefix = noteText.trim() ? '\n\n---\n💬 AI 对话笔记：\n' : '💬 AI 对话笔记：\n'
-        setNoteText(prev => prev + prefix + data.note)
+        setNotes(prev => [{
+          id: Date.now(),
+          content: data.note,
+          source: 'chat_summary',
+          created_at: new Date().toISOString(),
+        }, ...prev])
         setActiveTab('notes')
       }
     } catch { /* ignore */ } finally {
@@ -158,9 +171,29 @@ export default function LibraryDetail() {
           <span className="text-xs px-2.5 py-1 rounded-full bg-coral/10 text-coral font-medium">
             {paper.category || '未分类'}
           </span>
-          <h1 className="text-xl font-bold text-navy font-serif mt-3 leading-relaxed">
-            {paper.title}
-          </h1>
+          <div className="mt-3 flex items-start gap-2">
+            <h1 className="text-xl font-bold text-navy font-serif leading-relaxed flex-1">
+              {showTitleZh && titleZh ? titleZh : paper.title}
+            </h1>
+            <button
+              onClick={async () => {
+                if (!titleZh && !titleTranslating) {
+                  setTitleTranslating(true)
+                  try {
+                    const data = await apiPost('/translate', { text: paper.title })
+                    if (data.ok) { setTitleZh(data.translated); setShowTitleZh(true) }
+                  } catch { /* ignore */ } finally { setTitleTranslating(false) }
+                } else {
+                  setShowTitleZh(v => !v)
+                }
+              }}
+              disabled={titleTranslating}
+              className="mt-1 shrink-0 inline-flex items-center gap-1 text-xs text-warm-gray hover:text-navy transition-colors disabled:opacity-50"
+            >
+              {titleTranslating ? <Loader2 size={12} className="animate-spin" /> : <Languages size={12} />}
+              <span>{showTitleZh ? '原文' : '译'}</span>
+            </button>
+          </div>
           <p className="text-warm-gray text-sm mt-2">
             {paper.authors} &middot; {paper.journal} &middot; {paper.pub_date}
           </p>
@@ -296,17 +329,25 @@ export default function LibraryDetail() {
           </div>
 
           {activeTab === 'notes' ? (
-            <div>
-              <textarea
-                value={noteText}
-                onChange={(e) => setNoteText(e.target.value)}
-                placeholder="写下你对这篇论文的思考..."
-                rows={8}
-                className="w-full bg-warm-white rounded-xl px-4 py-3 text-sm text-navy border border-cream-dark/50 outline-none resize-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/50 leading-relaxed"
-              />
-              <p className="text-xs text-warm-gray mt-2 italic">
-                {saveStatus === 'saving' ? '保存中...' : saveStatus === 'saved' ? '已保存' : ''}
-              </p>
+            <div className="space-y-3">
+              <button
+                onClick={handleAddNote}
+                className="flex items-center gap-1.5 text-xs text-warm-gray hover:text-navy transition-colors"
+              >
+                <Plus size={13} />
+                新建笔记
+              </button>
+              {notes.length === 0 && (
+                <p className="text-sm text-warm-gray/60 italic text-center py-8">还没有笔记，写下你的思考</p>
+              )}
+              {notes.map(note => (
+                <NoteCard
+                  key={note.id}
+                  note={note}
+                  onSave={(content) => handleSaveNoteContent(note.id, content)}
+                  onDelete={() => handleDeleteNote(note.id)}
+                />
+              ))}
             </div>
           ) : (
             <div>
@@ -334,8 +375,49 @@ export default function LibraryDetail() {
                         ? 'bg-navy text-warm-white breathe-in-right'
                         : 'glass-chat text-navy/80 breathe-in-left'
                     }`}>
-                      {msg.content}
+                      {msg.role === 'assistant' ? (
+                        <ReactMarkdown
+                          components={{
+                            p: ({children}) => <p className="mb-1 last:mb-0">{children}</p>,
+                            strong: ({children}) => <strong className="font-semibold">{children}</strong>,
+                            ul: ({children}) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
+                            ol: ({children}) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
+                            li: ({children}) => <li>{children}</li>,
+                          }}
+                        >
+                          {msg.content}
+                        </ReactMarkdown>
+                      ) : msg.content}
                     </div>
+                    {msg.role === 'assistant' && (
+                      <button
+                        disabled={savedMsgIndexes.has(i)}
+                        onClick={async () => {
+                          if (savedMsgIndexes.has(i)) return
+                          const res = await apiPost('/notes', {
+                            paper_rowid: parseInt(id),
+                            content: msg.content,
+                            source: 'chat_single',
+                          })
+                          if (res.ok) {
+                            setSavedMsgIndexes(prev => new Set([...prev, i]))
+                            setNotes(prev => [{
+                              id: res.id,
+                              content: msg.content,
+                              source: 'chat_single',
+                              created_at: new Date().toISOString(),
+                            }, ...prev])
+                            setActiveTab('notes')
+                          }
+                        }}
+                        className={`mt-1 ml-1 flex items-center gap-1 text-xs transition-colors ${
+                          savedMsgIndexes.has(i) ? 'text-coral/60 cursor-default' : 'text-warm-gray/50 hover:text-coral'
+                        }`}
+                      >
+                        <BookmarkPlus size={12} />
+                        {savedMsgIndexes.has(i) ? '已保存' : '保存为笔记'}
+                      </button>
+                    )}
                   </div>
                 ))}
                 {chatLoading && (
@@ -370,6 +452,73 @@ export default function LibraryDetail() {
           )}
         </div>
       </main>
+    </div>
+  )
+}
+
+const SOURCE_LABEL = {
+  chat_summary: '✨ 总结',
+  chat_single: '💬 对话',
+}
+
+function NoteCard({ note, onSave, onDelete }) {
+  const [editing, setEditing] = useState(note.isNew || false)
+  const [content, setContent] = useState(note.content)
+  const [saveStatus, setSaveStatus] = useState('idle')
+
+  useEffect(() => {
+    if (!editing || !content.trim()) return
+    setSaveStatus('idle')
+    const t = setTimeout(async () => {
+      setSaveStatus('saving')
+      await onSave(content)
+      setSaveStatus('saved')
+      setTimeout(() => setSaveStatus('idle'), 1500)
+    }, 1200)
+    return () => clearTimeout(t)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [content])
+
+  return (
+    <div className="bg-warm-white rounded-2xl border border-cream-dark/50 p-4 group relative">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          {SOURCE_LABEL[note.source] && (
+            <span className="text-xs text-warm-gray/60">{SOURCE_LABEL[note.source]}</span>
+          )}
+          <span className="text-xs text-warm-gray/40">
+            {note.created_at ? new Date(note.created_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) : ''}
+          </span>
+        </div>
+        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+          {!editing && (
+            <button onClick={() => setEditing(true)} className="text-xs text-warm-gray hover:text-navy transition-colors">编辑</button>
+          )}
+          <button onClick={onDelete} className="text-warm-gray hover:text-coral transition-colors">
+            <Trash2 size={13} />
+          </button>
+        </div>
+      </div>
+      {editing ? (
+        <>
+          <textarea
+            autoFocus
+            value={content}
+            onChange={e => setContent(e.target.value)}
+            onBlur={() => { if (content.trim()) setEditing(false) }}
+            rows={4}
+            placeholder="写下你的思考..."
+            className="w-full bg-transparent text-sm text-navy outline-none resize-none placeholder:text-warm-gray/40 leading-relaxed"
+          />
+          <p className="text-xs text-warm-gray/40 mt-1">
+            {saveStatus === 'saving' ? '保存中...' : saveStatus === 'saved' ? '已保存' : '自动保存'}
+          </p>
+        </>
+      ) : (
+        <p className="text-sm text-navy/80 leading-relaxed whitespace-pre-wrap cursor-text" onClick={() => setEditing(true)}>
+          {content || <span className="text-warm-gray/40 italic">点击编辑</span>}
+        </p>
+      )}
     </div>
   )
 }
