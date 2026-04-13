@@ -1,125 +1,158 @@
-import { useState, useEffect } from 'react'
-import { ArrowLeft, Save, Sparkles, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ArrowLeft, Check, Mic, Pencil, Save, Sparkles, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import { apiGet, apiPost } from '../api'
 
+const DEFAULT_PROFILE = {
+  focus_areas: '',
+  exclude_areas: '',
+  method_interests: '',
+  current_goal: '',
+  background: '',
+  discipline: '',
+  tracking_days: '30',
+  interests_summary: '',
+  interests_summary_updated_at: '',
+}
+
+const RANGE_OPTIONS = [
+  { label: '近 1 个月', value: '30' },
+  { label: '近 3 个月', value: '90' },
+  { label: '近 6 个月', value: '180' },
+]
+
 export default function Profile() {
-  const [profile, setProfile] = useState({
-    focus_areas: '',
-    exclude_areas: '',
-    current_goal: '',
-    background: '',
-    discipline: '',
-    tracking_days: '7',
-  })
+  const [profile, setProfile] = useState(DEFAULT_PROFILE)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   useEffect(() => {
     apiGet('/profile')
-      .then(data => setProfile(prev => ({ ...prev, ...data })))
+      .then(data => setProfile(prev => ({ ...prev, ...data, tracking_days: data.tracking_days || '30' })))
       .catch(() => {})
   }, [])
+
+  const patchProfile = (partial) => {
+    setProfile(prev => ({ ...prev, ...partial }))
+    setSaved(false)
+    setSaveError('')
+  }
 
   const handleSave = async () => {
     try {
       await apiPost('/profile', profile)
-    } catch { /* ignore */ }
+      const refreshed = await apiPost('/profile/interests-summary', {})
+      if (refreshed?.summary) {
+        setProfile(prev => ({ ...prev, interests_summary: refreshed.summary }))
+      } else if (refreshed?.skipped) {
+        const latest = await apiGet('/profile')
+        setProfile(prev => ({ ...prev, ...latest }))
+      }
+      setSaveError('')
+    } catch {
+      setSaved(false)
+      setSaveError('保存失败，请稍后再试')
+      return
+    }
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
 
-  const update = (field) => (e) => {
-    setProfile(prev => ({ ...prev, [field]: e.target.value }))
-    setSaved(false)
-  }
-
   return (
     <div className="min-h-screen pb-24">
-      <header className="px-6 pt-12 pb-6 max-w-2xl mx-auto">
+      <header className="px-6 pt-12 pb-6 max-w-3xl mx-auto">
         <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors">
           <ArrowLeft size={16} />
           <span>返回</span>
         </Link>
-        <h1 className="text-2xl font-bold text-navy font-serif">我的研究画像</h1>
-        <p className="text-warm-gray mt-2 leading-relaxed text-sm">
-          告诉我你关注什么，我会为你筛选和解读每一篇文献。
-        </p>
+        <div className="bg-warm-white/85 backdrop-blur-sm border border-cream-dark/60 rounded-[28px] p-6 shadow-sm">
+          <p className="text-xs uppercase tracking-[0.24em] text-warm-gray/70 mb-3">Research Compass</p>
+          <h1 className="text-3xl font-bold text-navy font-serif leading-tight">我的研究画像</h1>
+          <p className="text-warm-gray mt-3 leading-relaxed text-sm max-w-2xl">
+            标记你关注的方向与近期需求，系统会逐步理解你的研究偏好。
+          </p>
+
+          <div className="grid grid-cols-2 gap-3 mt-5">
+            <div className="rounded-2xl border border-cream-dark/60 bg-cream/60 px-4 py-3">
+              <p className="text-xs text-warm-gray/60 mb-2">关注方向</p>
+              <div className="flex flex-wrap gap-1.5">
+                {splitTags(profile.focus_areas).length > 0 ? (
+                  splitTags(profile.focus_areas).map(tag => (
+                    <span key={tag} className="px-2.5 py-1 rounded-full bg-warm-white/80 text-navy text-xs">
+                      {tag}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-xs text-warm-gray/40">未设置</span>
+                )}
+              </div>
+            </div>
+            <HeaderRangePicker
+              value={profile.tracking_days}
+              onChange={value => patchProfile({ tracking_days: value })}
+            />
+          </div>
+        </div>
       </header>
 
-      <main className="px-6 max-w-2xl mx-auto space-y-8">
-
-        {/* 上层：追踪设置 */}
-        <section className="space-y-6">
-          <h2 className="text-xs font-semibold text-warm-gray/60 uppercase tracking-widest">追踪设置</h2>
-
-          <ProfileField
-            label="追踪主题"
-            hint="你最关注的领域，用顿号分隔"
+      <main className="px-6 max-w-3xl mx-auto space-y-6">
+        <SectionCard
+          eyebrow="研究画像"
+          title="研究方向"
+        >
+          <TagInput
+            label="我的研究方向"
             value={profile.focus_areas}
-            onChange={update('focus_areas')}
-            placeholder="例如：护理与患者管理、肺康复、患者教育"
+            onChange={value => patchProfile({ focus_areas: value })}
+            placeholder="例如：慢阻肺、肺康复、肺癌、慢病护理"
           />
 
-          <ProfileField
-            label="不想看的内容"
-            hint="这些类型的论文会被自动过滤"
-            value={profile.exclude_areas}
-            onChange={update('exclude_areas')}
-            placeholder="例如：纯动物实验、纯分子机制、药代动力学"
+          <TagInput
+            label="方法兴趣"
+            hint="会和研究方向一起生成检索词"
+            value={profile.method_interests}
+            onChange={value => patchProfile({ method_interests: value })}
+            placeholder="例如：预测模型、机器学习、孟德尔随机化"
           />
 
-          <TrackingDaysPicker
-            value={profile.tracking_days}
-            onChange={val => { setProfile(prev => ({ ...prev, tracking_days: val })); setSaved(false) }}
-          />
-
-          <div>
-            <label className="text-sm font-medium text-navy mb-2 block">当前目标</label>
-            <p className="text-xs text-warm-gray mb-3">这会影响推荐文献的角度</p>
-            <div className="flex flex-wrap gap-2">
-              {['写综述', '找课题方向', '准备组会', '日常追踪', '写论文'].map(goal => (
-                <button
-                  key={goal}
-                  onClick={() => { setProfile(prev => ({ ...prev, current_goal: goal })); setSaved(false) }}
-                  className={`px-4 py-2 rounded-full text-sm transition-all duration-200 ${
-                    profile.current_goal === goal
-                      ? 'bg-navy/90 text-warm-white shadow-sm'
-                      : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
-                  }`}
-                >
-                  {goal}
-                </button>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* 分隔线 */}
-        <div className="h-px bg-cream-dark/60" />
-
-        {/* 下层：研究背景 */}
-        <section className="space-y-6">
-          <h2 className="text-xs font-semibold text-warm-gray/60 uppercase tracking-widest">关于我</h2>
-
-          <DisciplineInput
-            value={profile.discipline}
-            onChange={val => { setProfile(prev => ({ ...prev, discipline: val })); setSaved(false) }}
-          />
-
-          <ProfileField
-            label="研究经历"
-            hint="自由描述你的背景，越详细推荐越准"
+          <VoiceTextarea
+            label="随手补充"
             value={profile.background}
-            onChange={update('background')}
-            placeholder="例如：硕士研究方向为慢阻肺患者的居家管理和依从性研究，关注护理干预在慢病管理中的作用..."
-            multiline
+            onChange={val => patchProfile({ background: val })}
+            placeholder="随便写，比如：最近在准备慢阻肺护理综述，对预测模型感兴趣，想多看干预性研究"
           />
-        </section>
+
+          <TagInput
+            label="不想看的内容"
+            value={profile.exclude_areas}
+            onChange={value => patchProfile({ exclude_areas: value })}
+            placeholder="例如：纯分子机制、动物实验"
+          />
+
+          <TagInput
+            label="学科领域"
+            value={profile.discipline}
+            onChange={value => patchProfile({ discipline: value })}
+            placeholder="例如：护理学、公共卫生"
+          />
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="系统观察"
+          title="系统观察摘要"
+          description="由系统根据你的收藏与对话行为自动归纳，仅作参考，不直接参与检索。"
+        >
+          <SummaryEditor
+            summary={profile.interests_summary}
+            updatedAt={profile.interests_summary_updated_at}
+            onChange={value => patchProfile({ interests_summary: value })}
+          />
+        </SectionCard>
 
         <button
           onClick={handleSave}
-          className={`w-full py-3.5 rounded-2xl font-medium text-sm transition-all duration-300 flex items-center justify-center gap-2 ${
+          className={`w-full py-4 rounded-2xl font-medium text-sm transition-all duration-300 flex items-center justify-center gap-2 ${
             saved
               ? 'bg-mint/20 text-navy'
               : 'bg-navy text-warm-white hover:bg-navy-light shadow-sm'
@@ -128,7 +161,7 @@ export default function Profile() {
           {saved ? (
             <>
               <Sparkles size={16} />
-              已保存，我记住你了
+              已保存，将按更新后的画像重新推荐
             </>
           ) : (
             <>
@@ -137,6 +170,9 @@ export default function Profile() {
             </>
           )}
         </button>
+        {saveError && (
+          <p className="text-sm text-coral text-center -mt-2">{saveError}</p>
+        )}
       </main>
 
       <Navbar />
@@ -144,49 +180,79 @@ export default function Profile() {
   )
 }
 
-function ProfileField({ label, hint, value, onChange, placeholder, multiline }) {
-  const inputClass = `w-full bg-warm-white rounded-xl px-4 py-3 text-sm text-navy
-    border border-cream-dark/50 outline-none
-    focus:border-coral/40 focus:ring-2 focus:ring-coral/10
-    transition-all duration-200 placeholder:text-warm-gray/50`
+function SectionCard({ eyebrow, title, description, children }) {
+  return (
+    <section className="bg-warm-white/82 backdrop-blur-sm border border-cream-dark/60 rounded-[28px] p-6 shadow-sm space-y-6">
+      <div>
+        <p className="text-[11px] uppercase tracking-[0.24em] text-warm-gray/65 mb-3">{eyebrow}</p>
+        <h2 className="text-xl font-semibold text-navy font-serif">{title}</h2>
+        {description && <p className="text-sm text-warm-gray mt-2 leading-relaxed">{description}</p>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+
+function ProfileField({ label, hint, value, onChange, placeholder, multiline = false }) {
+  const inputClass = 'w-full bg-warm-white rounded-2xl px-4 py-3 text-sm text-navy border border-cream-dark/60 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200 placeholder:text-warm-gray/50'
 
   return (
     <div>
       <label className="text-sm font-medium text-navy mb-2 block">{label}</label>
       {hint && <p className="text-xs text-warm-gray mb-3">{hint}</p>}
       {multiline ? (
-        <textarea value={value} onChange={onChange} placeholder={placeholder} rows={4} className={`${inputClass} resize-none`} />
+        <textarea
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+          rows={4}
+          className={`${inputClass} resize-none leading-7`}
+        />
       ) : (
-        <input type="text" value={value} onChange={onChange} placeholder={placeholder} className={inputClass} />
+        <input
+          type="text"
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+          className={inputClass}
+        />
       )}
     </div>
   )
 }
 
-function DisciplineInput({ value, onChange }) {
+function TagInput({ label, hint, value, onChange, placeholder }) {
   const [input, setInput] = useState('')
-  const tags = value ? value.split(',').map(t => t.trim()).filter(Boolean) : []
+  const tags = splitTags(value)
 
   const addTag = () => {
     const tag = input.trim()
-    if (!tag || tags.includes(tag)) { setInput(''); return }
+    if (!tag || tags.includes(tag)) {
+      setInput('')
+      return
+    }
     onChange([...tags, tag].join(', '))
     setInput('')
   }
 
   const removeTag = (tag) => {
-    onChange(tags.filter(t => t !== tag).join(', '))
+    onChange(tags.filter(item => item !== tag).join(', '))
   }
 
   return (
     <div>
-      <label className="text-sm font-medium text-navy mb-2 block">学科领域</label>
-      <p className="text-xs text-warm-gray mb-3">输入后按回车添加标签</p>
-      <div className="flex flex-wrap gap-2 mb-2">
+      <label className="text-sm font-medium text-navy mb-2 block">{label}</label>
+      {hint && <p className="text-xs text-warm-gray mb-3">{hint}</p>}
+      <div className="flex flex-wrap gap-2 mb-3">
         {tags.map(tag => (
-          <span key={tag} className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-cream-dark/50 text-navy text-xs">
+          <span key={tag} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-cream-dark/55 text-navy text-xs">
             {tag}
-            <button onClick={() => removeTag(tag)} className="text-warm-gray hover:text-coral transition-colors">
+            <button
+              type="button"
+              onClick={() => removeTag(tag)}
+              className="text-warm-gray hover:text-coral transition-colors"
+            >
               <X size={12} />
             </button>
           </span>
@@ -196,31 +262,115 @@ function DisciplineInput({ value, onChange }) {
         type="text"
         value={input}
         onChange={e => setInput(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag() } }}
-        placeholder="例如：护理学、公共卫生"
-        className="w-full bg-warm-white rounded-xl px-4 py-3 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200 placeholder:text-warm-gray/50"
+        onKeyDown={e => {
+          if (e.key === 'Enter' || e.key === '，' || e.key === ',') {
+            e.preventDefault()
+            addTag()
+          }
+        }}
+        onBlur={addTag}
+        placeholder={placeholder}
+        className="w-full bg-warm-white rounded-2xl px-4 py-3 text-sm text-navy border border-cream-dark/60 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200 placeholder:text-warm-gray/50"
       />
     </div>
   )
 }
 
-function TrackingDaysPicker({ value, onChange }) {
-  const options = [
-    { label: '近 7 天', value: '7' },
-    { label: '近 14 天', value: '14' },
-    { label: '近 30 天', value: '30' },
-  ]
+function RangePicker({ value, onChange }) {
+  const presetValues = RANGE_OPTIONS.map(option => option.value)
+  const isCustom = value && !presetValues.includes(value)
+  const [customMonths, setCustomMonths] = useState(() => {
+    if (isCustom) return String(Math.max(1, Math.round(Number(value) / 30)))
+    return '12'
+  })
+
   return (
     <div>
-      <label className="text-sm font-medium text-navy mb-2 block">追踪周期</label>
-      <p className="text-xs text-warm-gray mb-3">抓取多远之内的新论文</p>
-      <div className="flex gap-2">
-        {options.map(opt => (
+      <label className="text-sm font-medium text-navy mb-2 block">时间范围</label>
+      <div className="flex flex-wrap gap-2">
+        {RANGE_OPTIONS.map(option => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={`px-4 py-2 rounded-full text-sm transition-all duration-200 ${
+              value === option.value
+                ? 'bg-navy/90 text-warm-white shadow-sm'
+                : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => {
+            const months = Math.max(1, Number(customMonths) || 12)
+            setCustomMonths(String(months))
+            onChange(String(months * 30))
+          }}
+          className={`px-4 py-2 rounded-full text-sm transition-all duration-200 ${
+            isCustom
+              ? 'bg-navy/90 text-warm-white shadow-sm'
+              : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
+          }`}
+        >
+          自定义
+        </button>
+      </div>
+      {isCustom && (
+        <div className="mt-3 flex items-center gap-3">
+          <input
+            type="number"
+            min="1"
+            max="24"
+            value={customMonths}
+            onChange={e => {
+              const next = e.target.value
+              setCustomMonths(next)
+              const months = Math.max(1, Number(next) || 1)
+              onChange(String(months * 30))
+            }}
+            className="w-24 bg-warm-white rounded-2xl px-4 py-3 text-sm text-navy border border-cream-dark/60 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200"
+          />
+          <span className="text-sm text-warm-gray">个月</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+function splitTags(value) {
+  return value
+    ? value.split(/[，,]/).map(item => item.trim()).filter(Boolean)
+    : []
+}
+
+function HeaderRangePicker({ value, onChange }) {
+  const presetValues = RANGE_OPTIONS.map(o => o.value)
+  const isCustom = value && !presetValues.includes(value)
+  const [showCustom, setShowCustom] = useState(isCustom)
+  const [customMonths, setCustomMonths] = useState(() =>
+    isCustom ? String(Math.max(1, Math.round(Number(value) / 30))) : '2'
+  )
+
+  const applyCustom = (months) => {
+    const n = Math.max(1, Number(months) || 1)
+    onChange(String(n * 30))
+  }
+
+  return (
+    <div className="rounded-2xl border border-cream-dark/60 bg-cream/60 px-4 py-3">
+      <p className="text-xs text-warm-gray/60 mb-2">检索范围</p>
+      <div className="flex flex-wrap gap-1.5">
+        {RANGE_OPTIONS.map(opt => (
           <button
             key={opt.value}
-            onClick={() => onChange(opt.value)}
-            className={`px-4 py-2 rounded-full text-sm transition-all duration-200 ${
-              value === opt.value
+            type="button"
+            onClick={() => { onChange(opt.value); setShowCustom(false) }}
+            className={`px-2.5 py-1 rounded-full text-xs transition-all duration-200 ${
+              value === opt.value && !showCustom
                 ? 'bg-navy/90 text-warm-white shadow-sm'
                 : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
             }`}
@@ -228,7 +378,179 @@ function TrackingDaysPicker({ value, onChange }) {
             {opt.label}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => { setShowCustom(v => !v); if (!showCustom) applyCustom(customMonths) }}
+          className={`px-2.5 py-1 rounded-full text-xs transition-all duration-200 ${
+            showCustom
+              ? 'bg-navy/90 text-warm-white shadow-sm'
+              : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
+          }`}
+        >
+          自定义
+        </button>
       </div>
+      {showCustom && (
+        <div className="flex items-center gap-2 mt-2">
+          <span className="text-xs text-warm-gray">近</span>
+          <input
+            type="number"
+            min="1"
+            max="36"
+            value={customMonths}
+            onChange={e => {
+              setCustomMonths(e.target.value)
+              applyCustom(e.target.value)
+            }}
+            className="w-14 bg-warm-white rounded-xl px-2 py-1 text-sm text-navy border border-cream-dark/60 outline-none focus:border-coral/40 text-center"
+          />
+          <span className="text-xs text-warm-gray">个月</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function VoiceTextarea({ label, value, onChange, placeholder }) {
+  const [listening, setListening] = useState(false)
+  const recognitionRef = useRef(null)
+
+  const toggleVoice = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SR) return
+
+    if (listening) {
+      recognitionRef.current?.stop()
+      setListening(false)
+      return
+    }
+
+    const recognition = new SR()
+    recognition.lang = 'zh-CN'
+    recognition.continuous = true
+    recognition.interimResults = false
+    recognition.onresult = (e) => {
+      const transcript = Array.from(e.results).map(r => r[0].transcript).join('')
+      onChange((value ? value + '，' : '') + transcript)
+    }
+    recognition.onend = () => setListening(false)
+    recognition.onerror = () => setListening(false)
+    recognition.start()
+    recognitionRef.current = recognition
+    setListening(true)
+  }
+
+  const hasSR = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <label className="text-sm font-medium text-navy">{label}</label>
+        {hasSR && (
+          <button
+            type="button"
+            onClick={toggleVoice}
+            className={`inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full transition-all duration-200 ${
+              listening
+                ? 'bg-coral/10 text-coral'
+                : 'text-warm-gray/50 hover:text-warm-gray border border-cream-dark'
+            }`}
+          >
+            <Mic size={11} className={listening ? 'animate-pulse' : ''} />
+            {listening ? '录音中' : '语音'}
+          </button>
+        )}
+      </div>
+      <textarea
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        rows={3}
+        className="w-full bg-warm-white rounded-2xl px-4 py-3 text-sm text-navy border border-cream-dark/60 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200 placeholder:text-warm-gray/50 resize-none leading-7"
+      />
+    </div>
+  )
+}
+
+function formatUpdatedAt(iso) {
+  if (!iso) return null
+  const diff = Date.now() - new Date(iso).getTime()
+  const days = Math.floor(diff / 86400000)
+  if (days === 0) return '今天'
+  if (days === 1) return '1 天前'
+  if (days < 30) return `${days} 天前`
+  const months = Math.floor(days / 30)
+  return `${months} 个月前`
+}
+
+function SummaryEditor({ summary, updatedAt, onChange }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const timeLabel = formatUpdatedAt(updatedAt)
+
+  const startEdit = () => {
+    setDraft(summary)
+    setEditing(true)
+  }
+
+  const confirmEdit = () => {
+    onChange(draft)
+    setEditing(false)
+  }
+
+  const cancelEdit = () => {
+    setEditing(false)
+  }
+
+  return (
+    <div className="rounded-2xl border border-cream-dark/60 bg-cream/70 px-5 py-4">
+      {editing ? (
+        <div className="space-y-3">
+          <textarea
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            rows={5}
+            className="w-full bg-warm-white rounded-xl px-4 py-3 text-sm text-navy border border-cream-dark/60 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200 resize-none leading-7"
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={confirmEdit}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-navy/90 text-warm-white text-xs"
+            >
+              <Check size={11} />
+              确认
+            </button>
+            <button
+              type="button"
+              onClick={cancelEdit}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray text-xs hover:text-navy transition-colors"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      ) : summary ? (
+        <div>
+          <div className="flex items-start justify-between gap-3 mb-1">
+            <p className="text-sm leading-7 text-navy/80 flex-1">{summary}</p>
+            <button
+              type="button"
+              onClick={startEdit}
+              className="flex-shrink-0 mt-1 text-warm-gray/50 hover:text-warm-gray transition-colors"
+            >
+              <Pencil size={13} />
+            </button>
+          </div>
+          {timeLabel && (
+            <p className="text-xs text-warm-gray/50 mt-2">上次更新：{timeLabel}</p>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm leading-7 text-warm-gray">
+          保存画像后，系统将根据收藏与对话记录自动生成偏好摘要。
+        </p>
+      )}
     </div>
   )
 }

@@ -4,11 +4,20 @@ import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Sprout, 
 import Navbar from '../components/Navbar'
 import { apiGet, apiPost } from '../api'
 
+function loadCachedJson(key, fallback) {
+  try {
+    const saved = localStorage.getItem(key)
+    return saved ? JSON.parse(saved) : fallback
+  } catch {
+    return fallback
+  }
+}
+
 export default function Home() {
-  const [papers, setPapers] = useState([])
+  const [papers, setPapers] = useState(() => loadCachedJson('cached-papers', []))
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [lastReading, setLastReading] = useState(null)
+  const [lastReading] = useState(() => loadCachedJson('last-reading', null))
   const [total, setTotal] = useState(0)
   const [remaining, setRemaining] = useState(0)
   const [allExplored, setAllExplored] = useState(false)
@@ -35,16 +44,13 @@ export default function Home() {
   const resumeLabel = resumeLabels[now.getDate() % resumeLabels.length]
 
   useEffect(() => {
-    const saved = localStorage.getItem('last-reading')
-    if (saved) setLastReading(JSON.parse(saved))
-
     // 触发兴趣摘要更新（后端有 24h 防重复）
     apiPost('/profile/interests-summary', {}).catch(() => {})
 
     // 检查画像是否已填写
     apiGet('/profile')
       .then(data => {
-        const filled = !!(data.focus_areas || data.background || data.current_goal)
+        const filled = !!(data.focus_areas || data.method_interests || data.background || data.current_goal)
         setProfileFilled(filled)
       })
       .catch(() => {})
@@ -129,14 +135,6 @@ export default function Home() {
   // 清理轮询定时器
   useEffect(() => {
     return () => stopPolling()
-  }, [])
-
-  useEffect(() => {
-    // 只从缓存恢复，不自动发起搜索
-    const cached = localStorage.getItem('cached-papers')
-    if (cached) {
-      try { setPapers(JSON.parse(cached)) } catch { /* ignore */ }
-    }
   }, [])
 
   return (

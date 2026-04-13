@@ -64,10 +64,8 @@ def build_query(keywords: list[str], days: int = 7) -> str:
     for kw in keywords:
         words = kw.strip().split()
         if len(words) <= 3:
-            # 短关键词，精确匹配
             parts.append(f'"{kw}"[tiab]')
         else:
-            # 长查询，拆词用 AND
             _stop = {"and", "or", "the", "of", "in", "for", "with", "on", "to", "a", "an", "by", "from"}
             word_parts = " AND ".join(f"{w}[tiab]" for w in words if len(w) > 2 and w.lower() not in _stop)
             parts.append(f"({word_parts})")

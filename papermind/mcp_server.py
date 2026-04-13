@@ -70,6 +70,7 @@ def get_research_profile(user_id: str = "") -> str:
             "user_id": row["user_id"],
             "focus_areas": row["focus_areas"] or "",
             "exclude_areas": row["exclude_areas"] or "",
+            "method_interests": row["method_interests"] or "",
             "current_goal": row["current_goal"] or "",
             "background": row["background"] or "",
         }

@@ -60,6 +60,7 @@ def get_profile() -> dict:
     defaults = {
         "focus_areas": "",
         "exclude_areas": "",
+        "method_interests": "",
         "current_goal": "",
         "background": "",
     }

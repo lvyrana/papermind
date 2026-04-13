@@ -8,6 +8,7 @@ import os
 import json
 import httpx
 import threading
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -58,10 +59,11 @@ OWNER_UID = os.environ.get("OWNER_UID", "")
 class ProfileData(BaseModel):
     focus_areas: str = ""
     exclude_areas: str = ""
+    method_interests: str = ""
     current_goal: str = ""
     background: str = ""
     discipline: str = ""
-    tracking_days: str = "7"
+    tracking_days: str = "30"
 
 class ChatRequest(BaseModel):
     paper_title: str
@@ -90,6 +92,16 @@ class SaveNoteRequest(BaseModel):
 def _get_user_id(request: Request) -> str:
     """从请求头获取用户 ID"""
     return request.headers.get("X-User-ID", "anonymous")
+
+
+def _get_owned_paper_or_none(paper_id: int, user_id: str) -> Optional[dict]:
+    """只返回当前用户自己的收藏论文。"""
+    paper = get_saved_paper(paper_id)
+    if not paper:
+        return None
+    if paper.get("user_id", "") != user_id:
+        return None
+    return paper
 
 
 # ========== 内置 LLM（阿里云优先，GLM 备用，DeepSeek 兜底） ==========
@@ -208,7 +220,21 @@ def api_get_profile(request: Request):
 @app.post("/api/profile")
 def api_save_profile(data: ProfileData, request: Request):
     uid = _get_user_id(request)
-    save_profile(uid, data.dict())
+    previous = get_profile(uid)
+    next_profile = data.dict()
+    watched_fields = ("focus_areas", "exclude_areas", "method_interests", "current_goal", "background", "discipline", "tracking_days")
+    profile_changed = any((previous.get(field) or "") != (next_profile.get(field) or "") for field in watched_fields)
+
+    if profile_changed:
+        # 画像方向一变，旧行为摘要很容易把新方向“硬拉回去”，这里主动清空并等待重新生成。
+        next_profile["interests_summary"] = ""
+        next_profile["interests_summary_updated_at"] = ""
+
+    save_profile(uid, next_profile)
+
+    if profile_changed:
+        _reset_user_cache(uid)
+
     return {"ok": True}
 
 @app.post("/api/profile/interests-summary")
@@ -250,12 +276,14 @@ def api_update_interests_summary(request: Request):
         pass
 
     focus = profile.get("focus_areas", "")
+    method_interests = profile.get("method_interests", "")
     background = profile.get("background", "")
 
     prompt = f"""根据以下用户行为数据，生成一段 150-200 字的用户兴趣画像摘要。
 
 用户研究背景：
 研究方向：{focus}
+方法兴趣：{method_interests}
 研究经历：{background}
 
 近期收藏的论文（反映真实兴趣）：
@@ -305,14 +333,249 @@ def _get_user_cache(user_id: str) -> dict:
     return _papers_cache[user_id]
 
 
+def _reset_user_cache(user_id: str):
+    """画像或时间窗变化后，清空用户推荐缓存，确保新设置立即生效。"""
+    cache = _get_user_cache(user_id)
+    cache["papers"] = []
+    cache["fetched_at"] = None
+    cache["served_indices"] = set()
+    cache["fetching"] = False
+    cache["enriching"] = False
+    cache["enrich_gen"] = 0
+    cache["current_page"] = []
+
+
+def _start_page_enrich(cache: dict, papers: list[dict], profile: dict, uid: str) -> bool:
+    """为当前页启动后台解读，避免尾页遗漏。"""
+    unenriched = [p for p in papers if not p.get("summary_zh") and p.get("_enrich_attempts", 0) < 2]
+    if not unenriched:
+        return False
+
+    client, model = _get_llm_client()
+    if not client:
+        return False
+
+    cache["enrich_gen"] += 1
+    gen = cache["enrich_gen"]
+    cache["enriching"] = True
+    threading.Thread(
+        target=_bg_enrich,
+        args=(cache, unenriched, profile, uid, gen),
+        daemon=True,
+    ).start()
+    return True
+
+
+def _parse_pub_date(pub_date: str) -> Optional[datetime]:
+    """尽量把论文日期解析成 datetime，用于严格的时间窗过滤。"""
+    if not pub_date:
+        return None
+
+    text = pub_date.strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+
+    normalized = re.sub(r"\s+", "-", text.replace("/", "-"))
+    month_map = {
+        "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04", "May": "05", "Jun": "06",
+        "Jul": "07", "Aug": "08", "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12",
+    }
+    for month_name, month_num in month_map.items():
+        normalized = normalized.replace(month_name, month_num)
+
+    for fmt in ("%Y-%m-%d", "%Y-%m"):
+        try:
+            return datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
+
+    match = re.search(r"(20\d{2})", text)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%Y")
+        except ValueError:
+            return None
+    return None
+
+
+def _filter_papers_by_days(papers: list[dict], days: int) -> list[dict]:
+    """按真实日期过滤论文，避免超出用户设定的追踪周期。"""
+    cutoff = datetime.now() - timedelta(days=days)
+    filtered = []
+    dropped = 0
+    for paper in papers:
+        parsed_date = _parse_pub_date(paper.get("pub_date", ""))
+        if parsed_date and parsed_date < cutoff:
+            dropped += 1
+            continue
+        filtered.append(paper)
+    if dropped:
+        print(f"[api] 按 {days} 天时间窗过滤掉 {dropped} 篇旧论文")
+    return filtered
+
+
+def _split_profile_terms(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"[，,、/；;]+", text or "") if part.strip()]
+
+
+def _dedupe_terms(terms: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for term in terms:
+        key = (term or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(term.strip())
+    return result
+
+
+def _build_broader_queries(profile: dict) -> list[str]:
+    """当首轮检索过窄时，构造更宽的主题查询作为兜底。"""
+    focus_terms = _normalize_focus_terms(profile.get("focus_areas", ""))
+    discipline = (profile.get("discipline", "") or "").lower()
+    if not focus_terms:
+        return []
+
+    broad_queries = []
+    for term in focus_terms[:4]:
+        broad_queries.append(term)
+        if "nursing" in discipline or "护理" in discipline:
+            broad_queries.append(f"{term} nursing")
+    # 去重并保持顺序
+    seen = set()
+    result = []
+    for query in broad_queries:
+        key = query.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(query)
+    return result[:6]
+
+
+def _normalize_focus_terms(focus: str) -> list[str]:
+    """把常见中文研究主题映射到更稳定的英文检索词。"""
+    alias_map = {
+        "慢阻肺": "COPD",
+        "肺癌": "lung cancer",
+        "肺康复": "pulmonary rehabilitation",
+        "慢病护理": "chronic disease nursing",
+        "护理": "nursing",
+        "解释性现象学": "interpretative phenomenological analysis",
+        "现象学": "phenomenological study",
+        "质性研究": "qualitative research",
+        "扎根理论": "grounded theory",
+        "主题分析": "thematic analysis",
+    }
+    terms = _split_profile_terms(focus)
+    normalized = []
+    for term in terms:
+        normalized.append(alias_map.get(term, term))
+    return normalized
+
+
+def _normalize_method_terms(methods: str, keep_unknown: bool = True) -> list[str]:
+    """把方法兴趣转换成稳定的英文方法术语。"""
+    alias_map = {
+        "解释性现象学": "interpretative phenomenological analysis",
+        "ipa": "interpretative phenomenological analysis",
+        "现象学": "phenomenological study",
+        "质性研究": "qualitative research",
+        "定性研究": "qualitative research",
+        "扎根理论": "grounded theory",
+        "主题分析": "thematic analysis",
+        "机器学习": "machine learning",
+        "预测模型": "prediction model",
+        "孟德尔随机化": "mendelian randomization",
+        "中介效应": "mediation analysis",
+    }
+    normalized = []
+    for term in _split_profile_terms(methods):
+        mapped = alias_map.get(term.lower(), alias_map.get(term))
+        if mapped:
+            normalized.append(mapped)
+        elif keep_unknown:
+            normalized.append(term)
+    return _dedupe_terms(normalized)
+
+
+def _build_method_aware_queries(profile: dict) -> list[list[str] | str]:
+    """基于主题和方法兴趣，构造一批确定性的召回查询，优先保证检索广度。"""
+    focus_terms = _normalize_focus_terms(profile.get("focus_areas", ""))
+    method_terms = _normalize_method_terms(profile.get("method_interests", ""))
+    method_terms.extend(_normalize_method_terms(profile.get("focus_areas", ""), keep_unknown=False))
+    method_terms = _dedupe_terms(method_terms)
+    discipline = (profile.get("discipline", "") or "").lower()
+
+    if not (focus_terms or method_terms):
+        return []
+
+    is_nursing = "nursing" in discipline or "护理" in discipline
+    has_qualitative_family = any(term in method_terms for term in (
+        "qualitative research",
+        "interpretative phenomenological analysis",
+        "phenomenological study",
+        "grounded theory",
+        "thematic analysis",
+    ))
+
+    method_templates = method_terms.copy()
+    if has_qualitative_family:
+        method_templates.extend([
+            "qualitative research",
+            "qualitative study",
+            "patient experience",
+            "lived experience",
+        ])
+    method_templates = _dedupe_terms(method_templates)
+
+    query_groups: list[list[str] | str] = []
+
+    # 主题宽搜：先把研究主轴都召回回来
+    for focus in focus_terms[:4]:
+        focus_group = [focus]
+        if is_nursing:
+            focus_group.append(f"{focus} nursing")
+        query_groups.append(focus_group)
+
+    # 独立方法学查询：方法兴趣本身也可以单独召回，之后再靠相关性排序
+    if method_templates:
+        base_group = method_templates[:4]
+        if is_nursing:
+            base_group.extend(["qualitative research nursing", "nursing patient experience"])
+        query_groups.append(_dedupe_terms(base_group))
+
+    # 主题 + 方法联合宽搜：不是强制 AND，而是把相关面都召回，再靠后端打分排序
+    for focus in focus_terms[:4]:
+        if method_templates:
+            combined_group = [focus, *method_templates[:4]]
+            if is_nursing:
+                combined_group.append(f"{focus} nursing")
+            query_groups.append(_dedupe_terms(combined_group))
+
+    seen = set()
+    result: list[list[str] | str] = []
+    for query in query_groups:
+        key = " | ".join(query).lower().strip() if isinstance(query, list) else query.lower().strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(query)
+    return result[:10]
+
+
 def _generate_search_keywords(profile: dict, client, model: str, saved_titles: list[str] = None) -> list[str]:
     """根据用户画像 + 收藏历史，用 LLM 生成多组搜索关键词"""
     focus = profile.get("focus_areas", "")
+    method_interests = profile.get("method_interests", "")
     background = profile.get("background", "")
-    goal = profile.get("current_goal", "")
     discipline = profile.get("discipline", "")
 
-    if not (focus or background):
+    if not (focus or method_interests or background):
         return []
 
     exclude = profile.get("exclude_areas", "")
@@ -322,10 +585,10 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
         profile_text += f"学科领域：{discipline}\n"
     if focus:
         profile_text += f"研究方向：{focus}\n"
+    if method_interests:
+        profile_text += f"方法兴趣：{method_interests}\n"
     if background:
-        profile_text += f"研究经历：{background}\n"
-    if goal:
-        profile_text += f"当前目标：{goal}\n"
+        profile_text += f"补充说明：{background}\n"
     if exclude:
         profile_text += f"明确排除（不要生成相关关键词）：{exclude}\n"
 
@@ -347,6 +610,7 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
 5. 可以使用 AND/OR 组合多个术语
 6. 如果有收藏历史，参考用户实际感兴趣的论文主题来调整关键词
 7. 严格避免生成用户明确排除的领域的关键词
+8. 如果研究者明确写了方法兴趣，请至少生成 1-2 组能体现这些方法兴趣的查询，但不要完全脱离研究主题
 
 示例输出：["COPD self-management nursing intervention", "pulmonary rehabilitation exercise training", "chronic obstructive pulmonary disease patient education adherence"]
 
@@ -379,7 +643,7 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
 
     # 如果有 LLM 且有画像，用 LLM 生成搜索关键词
     smart_queries = []
-    if client and (profile.get("focus_areas") or profile.get("background")):
+    if client and (profile.get("focus_areas") or profile.get("method_interests") or profile.get("background")):
         smart_queries = _generate_search_keywords(profile, client, model, saved_titles)
 
     # 合并：LLM 生成的关键词 + 用户手动输入的关键词
@@ -390,11 +654,13 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
     # 如果 LLM 生成失败且没有手动关键词，用 LLM 翻译画像方向
     if not all_queries and client:
         focus = profile.get("focus_areas", "")
-        if focus:
+        method_interests = profile.get("method_interests", "")
+        fallback_seed = ", ".join(part for part in [focus, method_interests] if part)
+        if fallback_seed:
             try:
                 tr_resp = client.chat.completions.create(
                     model=model,
-                    messages=[{"role": "user", "content": f'将以下研究方向翻译为英文学术术语，用逗号分隔，只输出翻译结果：{focus}'}],
+                    messages=[{"role": "user", "content": f'将以下研究方向和方法兴趣翻译为英文学术术语，用逗号分隔，只输出翻译结果：{fallback_seed}'}],
                     temperature=0, max_tokens=200,
                 )
                 translated = (tr_resp.choices[0].message.content or "").strip()
@@ -541,6 +807,9 @@ def api_get_papers(
     if poll and cache["current_page"]:
         page = cache["current_page"]
         page_papers = [p for _, p in page]
+        profile = get_profile(uid)
+        if not cache["enriching"]:
+            _start_page_enrich(cache, page_papers, profile, uid)
         all_papers = cache["papers"]
         remaining = len([i for i in range(len(all_papers)) if i not in cache["served_indices"]])
         enriching = cache["enriching"]
@@ -619,20 +888,7 @@ def api_get_papers(
     remaining = len([i for i in range(len(all_papers)) if i not in cache["served_indices"]])
 
     # 对当前页还没解读过的后台补充解读
-    unenriched = [p for p in page_papers if not p.get("summary_zh")]
-    enriching = False
-    if unenriched:
-        client, model = _get_llm_client()
-        if client:
-            cache["enrich_gen"] += 1
-            gen = cache["enrich_gen"]
-            cache["enriching"] = True
-            enriching = True
-            threading.Thread(
-                target=_bg_enrich,
-                args=(cache, unenriched, profile, uid, gen),
-                daemon=True,
-            ).start()
+    enriching = _start_page_enrich(cache, page_papers, profile, uid)
 
     return {
         "papers": page_papers,
@@ -657,8 +913,8 @@ def api_get_paper_by_index(index: int, request: Request):
 def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, model: str, user_id: str = ""):
     """为论文添加详细中文解读和个性化相关性分析"""
     focus = profile.get("focus_areas", "")
+    method_interests = profile.get("method_interests", "")
     background = profile.get("background", "")
-    goal = profile.get("current_goal", "")
     discipline = profile.get("discipline", "")
 
     profile_text = ""
@@ -666,19 +922,13 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
         profile_text += f"学科领域：{discipline}\n"
     if focus:
         profile_text += f"追踪主题：{focus}\n"
+    if method_interests:
+        profile_text += f"方法兴趣（仅辅助参考）：{method_interests}\n"
     if background:
-        profile_text += f"研究经历：{background}\n"
-    if goal:
-        profile_text += f"当前目标：{goal}\n"
-
-    # 获取当前用户的阅读历史
-    history = get_reading_history(user_id, limit=10)
-    history_text = ""
-    if history:
-        recent_titles = [h["title"] for h in history[:5]]
-        history_text = f"\n用户近期阅读过的论文：\n" + "\n".join(f"- {t}" for t in recent_titles)
+        profile_text += f"补充说明：{background}\n"
 
     for i, paper in enumerate(papers):
+        paper["_enrich_attempts"] = paper.get("_enrich_attempts", 0) + 1
         try:
             prompt = f"""你是一位专业的学术论文解读助手。请对以下论文进行详细解读。
 
@@ -686,13 +936,12 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
 论文摘要：{paper['abstract'][:1200]}
 
 {f"研究者背景（仅供参考，不要在输出中罗列这些关键词）：{chr(10)}{profile_text}" if profile_text else ""}
-{history_text}
 
 请用 JSON 格式输出以下内容：
 
 {{
   "summary_zh": "详细中文解读（4-6句话，包含：研究背景与目的、研究方法、主要发现、意义。语言专业但易懂）",
-  "relevance": "这篇论文对研究者的启发（1-2句话。只基于论文实际内容来写，不要罗列研究者画像中的关键词。如果论文没有直接涉及某个方向就不要提它。重点说：论文的什么发现或方法能给研究者带来什么具体启发）",
+  "relevance": "这篇论文对研究者的启发（1-2句话。只基于论文实际内容来写，不要罗列研究者画像中的关键词，也不要因为用户之前读过类似方向就硬说相关。如果论文没有直接涉及某个方向就不要提它。重点说：论文的什么发现或方法能给研究者带来什么具体启发）",
   "key_findings": ["核心发现1", "核心发现2", "核心发现3"]
 }}
 
@@ -712,10 +961,37 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
             paper["relevance"] = result.get("relevance", "")
             paper["key_findings"] = result.get("key_findings", [])
         except Exception as e:
-            print(f"[api] 论文 {i+1} LLM 处理失败: {e}")
-            paper["summary_zh"] = ""
-            paper["relevance"] = ""
-            paper["key_findings"] = []
+            print(f"[api] 论文 {i+1} LLM 处理失败，尝试简化重试: {e}")
+            try:
+                retry_prompt = f"""请只输出 JSON，为这篇论文生成简洁中文解读。
+
+论文标题：{paper['title']}
+论文摘要：{paper.get('abstract', '')[:900]}
+
+JSON 格式：
+{{
+  "summary_zh": "3-4句话，概括研究对象、方法、主要发现和意义",
+  "relevance": "1句话，说明这篇论文对研究者的启发；如果直接关联有限，就明确写直接关联有限"
+}}
+"""
+                retry_resp = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": retry_prompt}],
+                    temperature=0.2,
+                    max_tokens=500,
+                )
+                retry_raw = (retry_resp.choices[0].message.content or "").strip()
+                if retry_raw.startswith("```"):
+                    retry_raw = retry_raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                retry_result = json.loads(retry_raw)
+                paper["summary_zh"] = retry_result.get("summary_zh", "")
+                paper["relevance"] = retry_result.get("relevance", "")
+                paper["key_findings"] = []
+            except Exception as retry_error:
+                print(f"[api] 论文 {i+1} 简化重试仍失败: {retry_error}")
+                paper["summary_zh"] = ""
+                paper["relevance"] = ""
+                paper["key_findings"] = []
 
 
 # ========== 翻译 ==========
@@ -762,10 +1038,8 @@ def api_get_library(request: Request):
 def api_get_library_paper(paper_id: int, request: Request):
     """获取收藏的论文详情 + 笔记 + 对话"""
     uid = _get_user_id(request)
-    paper = get_saved_paper(paper_id)
+    paper = _get_owned_paper_or_none(paper_id, uid)
     if not paper:
-        return {"error": "not found"}
-    if paper.get("user_id") and paper.get("user_id") != uid:
         return {"error": "not found"}
     notes = get_notes(paper_id)
     chats = get_chat_history(paper_id)
@@ -775,10 +1049,8 @@ def api_get_library_paper(paper_id: int, request: Request):
 def api_delete_from_library(paper_id: int, request: Request):
     """取消收藏（需验证归属）"""
     uid = _get_user_id(request)
-    paper = get_saved_paper(paper_id)
+    paper = _get_owned_paper_or_none(paper_id, uid)
     if not paper:
-        return {"ok": False, "error": "not found"}
-    if paper.get("user_id") and paper.get("user_id") != uid:
         return {"ok": False, "error": "not found"}
     delete_saved_paper(paper_id)
     return {"ok": True}
@@ -790,10 +1062,8 @@ def api_delete_from_library(paper_id: int, request: Request):
 def api_save_note(data: SaveNoteRequest, request: Request):
     """保存笔记（需验证归属）"""
     uid = _get_user_id(request)
-    paper = get_saved_paper(data.paper_rowid)
+    paper = _get_owned_paper_or_none(data.paper_rowid, uid)
     if not paper:
-        return {"ok": False, "error": "not found"}
-    if paper.get("user_id") and paper.get("user_id") != uid:
         return {"ok": False, "error": "not found"}
     source = getattr(data, "source", "manual")
     note_id_param = getattr(data, "note_id", None)
@@ -826,18 +1096,19 @@ def api_delete_note(note_id: int, request: Request):
 def api_chat(data: ChatRequest, request: Request):
     """和 AI 讨论一篇论文"""
     uid = _get_user_id(request)
+    if data.paper_rowid and not _get_owned_paper_or_none(data.paper_rowid, uid):
+        return {"reply": "未找到这篇论文，或你没有权限访问它。", "ok": False}
+
     profile = get_profile(uid)
     profile_text = ""
     if profile.get("discipline"):
         profile_text += f"学科领域：{profile['discipline']}\n"
     if profile.get("focus_areas"):
         profile_text += f"追踪主题：{profile['focus_areas']}\n"
+    if profile.get("method_interests"):
+        profile_text += f"方法兴趣：{profile['method_interests']}\n"
     if profile.get("background"):
-        profile_text += f"研究经历：{profile['background']}\n"
-    if profile.get("current_goal"):
-        profile_text += f"当前目标：{profile['current_goal']}\n"
-    if profile.get("interests_summary"):
-        profile_text += f"\n基于使用行为推断的兴趣画像：\n{profile['interests_summary']}\n"
+        profile_text += f"补充说明：{profile['background']}\n"
 
     # 获取该论文的历史笔记
     notes_context = ""
@@ -898,10 +1169,8 @@ def api_summarize_chat(data: SummarizeChatRequest, request: Request):
     if not data.messages or not data.paper_rowid:
         return {"ok": False, "error": "缺少对话内容或论文ID"}
     uid = _get_user_id(request)
-    paper = get_saved_paper(data.paper_rowid)
+    paper = _get_owned_paper_or_none(data.paper_rowid, uid)
     if not paper:
-        return {"ok": False, "error": "not found"}
-    if paper.get("user_id") and paper.get("user_id") != uid:
         return {"ok": False, "error": "not found"}
 
     # 构建对话文本

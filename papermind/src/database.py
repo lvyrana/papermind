@@ -74,6 +74,7 @@ def _ensure_db():
             user_id TEXT PRIMARY KEY,
             focus_areas TEXT DEFAULT '',
             exclude_areas TEXT DEFAULT '',
+            method_interests TEXT DEFAULT '',
             current_goal TEXT DEFAULT '',
             background TEXT DEFAULT '',
             updated_at TEXT
@@ -98,8 +99,9 @@ def _ensure_db():
 
     # 迁移：给 user_profiles 加新列
     for col, default in [
+        ("method_interests", "''"),
         ("discipline", "''"),
-        ("tracking_days", "'7'"),
+        ("tracking_days", "'30'"),
         ("interests_summary", "''"),
         ("interests_summary_updated_at", "''"),
     ]:
@@ -182,10 +184,11 @@ def get_profile(user_id: str) -> dict:
     defaults = {
         "focus_areas": "",
         "exclude_areas": "",
+        "method_interests": "",
         "current_goal": "",
         "background": "",
         "discipline": "",
-        "tracking_days": "7",
+        "tracking_days": "30",
         "interests_summary": "",
         "interests_summary_updated_at": "",
     }
@@ -205,12 +208,13 @@ def save_profile(user_id: str, profile: dict):
     """保存用户研究画像"""
     conn = _ensure_db()
     conn.execute("""
-        INSERT INTO user_profiles (user_id, focus_areas, exclude_areas, current_goal, background,
+        INSERT INTO user_profiles (user_id, focus_areas, exclude_areas, method_interests, current_goal, background,
                                    discipline, tracking_days, interests_summary, interests_summary_updated_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             focus_areas = excluded.focus_areas,
             exclude_areas = excluded.exclude_areas,
+            method_interests = excluded.method_interests,
             current_goal = excluded.current_goal,
             background = excluded.background,
             discipline = excluded.discipline,
@@ -222,10 +226,11 @@ def save_profile(user_id: str, profile: dict):
         user_id,
         profile.get("focus_areas", ""),
         profile.get("exclude_areas", ""),
+        profile.get("method_interests", ""),
         profile.get("current_goal", ""),
         profile.get("background", ""),
         profile.get("discipline", ""),
-        profile.get("tracking_days", "7"),
+        profile.get("tracking_days", "30"),
         profile.get("interests_summary", ""),
         profile.get("interests_summary_updated_at", ""),
         datetime.now().isoformat(),
