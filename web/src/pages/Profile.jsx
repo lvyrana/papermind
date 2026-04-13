@@ -14,6 +14,7 @@ const DEFAULT_PROFILE = {
   tracking_days: '30',
   interests_summary: '',
   interests_summary_updated_at: '',
+  interests_summary_is_manual: '0',
 }
 
 const RANGE_OPTIONS = [
@@ -42,12 +43,15 @@ export default function Profile() {
   const handleSave = async () => {
     try {
       await apiPost('/profile', profile)
-      const refreshed = await apiPost('/profile/interests-summary', {})
-      if (refreshed?.summary) {
-        setProfile(prev => ({ ...prev, interests_summary: refreshed.summary }))
-      } else if (refreshed?.skipped) {
-        const latest = await apiGet('/profile')
-        setProfile(prev => ({ ...prev, ...latest }))
+      // 用户手动编辑或手动清空过摘要时，不触发自动生成，避免覆盖
+      if (profile.interests_summary_is_manual !== '1') {
+        const refreshed = await apiPost('/profile/interests-summary', {})
+        if (refreshed?.summary) {
+          setProfile(prev => ({ ...prev, interests_summary: refreshed.summary, interests_summary_is_manual: '0' }))
+        } else if (refreshed?.skipped) {
+          const latest = await apiGet('/profile')
+          setProfile(prev => ({ ...prev, ...latest }))
+        }
       }
       setSaveError('')
     } catch {
@@ -146,7 +150,12 @@ export default function Profile() {
           <SummaryEditor
             summary={profile.interests_summary}
             updatedAt={profile.interests_summary_updated_at}
-            onChange={value => patchProfile({ interests_summary: value })}
+            isManual={profile.interests_summary_is_manual === '1'}
+            onChange={value => patchProfile({
+              interests_summary: value,
+              interests_summary_is_manual: '1',
+              interests_summary_updated_at: new Date().toISOString(),
+            })}
           />
         </SectionCard>
 
@@ -483,7 +492,7 @@ function formatUpdatedAt(iso) {
   return `${months} 个月前`
 }
 
-function SummaryEditor({ summary, updatedAt, onChange }) {
+function SummaryEditor({ summary, updatedAt, isManual, onChange }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const timeLabel = formatUpdatedAt(updatedAt)
@@ -543,13 +552,21 @@ function SummaryEditor({ summary, updatedAt, onChange }) {
             </button>
           </div>
           {timeLabel && (
-            <p className="text-xs text-warm-gray/50 mt-2">上次更新：{timeLabel}</p>
+            <p className="text-xs text-warm-gray/50 mt-2">
+              {isManual ? '已手动编辑' : '系统生成'}·{timeLabel}
+            </p>
           )}
         </div>
       ) : (
-        <p className="text-sm leading-7 text-warm-gray">
-          保存画像后，系统将根据收藏与对话记录自动生成偏好摘要。
-        </p>
+        isManual ? (
+          <p className="text-sm leading-7 text-warm-gray">
+            你已手动清空系统观察摘要，系统不会自动重新生成，直到你再次编辑或调整画像方向。
+          </p>
+        ) : (
+          <p className="text-sm leading-7 text-warm-gray">
+            保存画像后，系统将根据收藏与对话记录自动生成偏好摘要。
+          </p>
+        )
       )}
     </div>
   )

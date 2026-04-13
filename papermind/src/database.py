@@ -104,6 +104,7 @@ def _ensure_db():
         ("tracking_days", "'30'"),
         ("interests_summary", "''"),
         ("interests_summary_updated_at", "''"),
+        ("interests_summary_is_manual", "'0'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE user_profiles ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -191,6 +192,7 @@ def get_profile(user_id: str) -> dict:
         "tracking_days": "30",
         "interests_summary": "",
         "interests_summary_updated_at": "",
+        "interests_summary_is_manual": "0",
     }
     conn = _ensure_db()
     row = conn.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
@@ -209,8 +211,9 @@ def save_profile(user_id: str, profile: dict):
     conn = _ensure_db()
     conn.execute("""
         INSERT INTO user_profiles (user_id, focus_areas, exclude_areas, method_interests, current_goal, background,
-                                   discipline, tracking_days, interests_summary, interests_summary_updated_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   discipline, tracking_days, interests_summary, interests_summary_updated_at,
+                                   interests_summary_is_manual, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             focus_areas = excluded.focus_areas,
             exclude_areas = excluded.exclude_areas,
@@ -221,6 +224,7 @@ def save_profile(user_id: str, profile: dict):
             tracking_days = excluded.tracking_days,
             interests_summary = excluded.interests_summary,
             interests_summary_updated_at = excluded.interests_summary_updated_at,
+            interests_summary_is_manual = excluded.interests_summary_is_manual,
             updated_at = excluded.updated_at
     """, (
         user_id,
@@ -233,6 +237,7 @@ def save_profile(user_id: str, profile: dict):
         profile.get("tracking_days", "30"),
         profile.get("interests_summary", ""),
         profile.get("interests_summary_updated_at", ""),
+        profile.get("interests_summary_is_manual", "0"),
         datetime.now().isoformat(),
     ))
     conn.commit()

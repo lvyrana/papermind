@@ -49,8 +49,12 @@ app.add_middleware(
 # 启动时初始化数据库
 init_db()
 
-# 每日推荐次数限制
-DAILY_RECOMMEND_LIMIT = 20
+# 每日限速配置（可在 .env 中覆盖）
+DAILY_RECOMMEND_LIMIT = int(os.environ.get("DAILY_RECOMMEND_LIMIT", "20"))
+DAILY_CHAT_LIMIT = int(os.environ.get("DAILY_CHAT_LIMIT", "30"))
+DAILY_TRANSLATE_LIMIT = int(os.environ.get("DAILY_TRANSLATE_LIMIT", "50"))
+# 全局每日 AI 对话熔断（所有用户之和，超了暂停服务）
+GLOBAL_DAILY_CHAT_LIMIT = int(os.environ.get("GLOBAL_DAILY_CHAT_LIMIT", "500"))
 OWNER_UID = os.environ.get("OWNER_UID", "")
 
 
@@ -64,6 +68,8 @@ class ProfileData(BaseModel):
     background: str = ""
     discipline: str = ""
     tracking_days: str = "30"
+    interests_summary: str = ""
+    interests_summary_is_manual: str = "0"
 
 class ChatRequest(BaseModel):
     paper_title: str
@@ -226,9 +232,19 @@ def api_save_profile(data: ProfileData, request: Request):
     profile_changed = any((previous.get(field) or "") != (next_profile.get(field) or "") for field in watched_fields)
 
     if profile_changed:
-        # 画像方向一变，旧行为摘要很容易把新方向“硬拉回去”，这里主动清空并等待重新生成。
+        # 画像方向一变，旧行为摘要很容易把新方向“硬拉回去”，清空并等待重新生成。
         next_profile["interests_summary"] = ""
+        next_profile["interests_summary_is_manual"] = "0"
         next_profile["interests_summary_updated_at"] = ""
+    else:
+        # 摘要字段由前端携带：如果内容变了则更新时间戳，否则沿用已有元数据
+        prev_summary = previous.get("interests_summary", "")
+        new_summary = next_profile.get("interests_summary", "")
+        if new_summary != prev_summary:
+            next_profile["interests_summary_updated_at"] = datetime.now().isoformat()
+        else:
+            next_profile["interests_summary_updated_at"] = previous.get("interests_summary_updated_at", "")
+            next_profile["interests_summary_is_manual"] = previous.get("interests_summary_is_manual", "0")
 
     save_profile(uid, next_profile)
 
@@ -242,6 +258,10 @@ def api_update_interests_summary(request: Request):
     """根据用户行为生成兴趣摘要，存入 profile.interests_summary"""
     uid = _get_user_id(request)
     profile = get_profile(uid)
+
+    # 用户手动编辑过摘要，不自动覆盖
+    if profile.get("interests_summary_is_manual") == "1":
+        return {"ok": True, "skipped": True, "summary": profile.get("interests_summary", "")}
 
     # 24 小时内不重复生成
     last_updated = profile.get("interests_summary_updated_at", "")
@@ -308,7 +328,7 @@ def api_update_interests_summary(request: Request):
             max_tokens=400,
         )
         summary = (resp.choices[0].message.content or "").strip()
-        updated_profile = {**profile, "interests_summary": summary, "interests_summary_updated_at": datetime.now().isoformat()}
+        updated_profile = {**profile, "interests_summary": summary, "interests_summary_updated_at": datetime.now().isoformat(), "interests_summary_is_manual": "0"}
         save_profile(uid, updated_profile)
         return {"ok": True, "summary": summary}
     except Exception as e:
@@ -579,7 +599,6 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
         return []
 
     exclude = profile.get("exclude_areas", "")
-
     profile_text = ""
     if discipline:
         profile_text += f"学科领域：{discipline}\n"
@@ -599,8 +618,8 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
 
     prompt = f"""你是一位学术检索专家。根据以下研究者画像，生成用于 PubMed 检索的英文关键词组合。
 
-{profile_text}
-{history_text}
+    {profile_text}
+    {history_text}
 
 要求：
 1. 生成 3-5 组关键词，每组是一个用于 PubMed 搜索的英文查询字符串
@@ -611,6 +630,7 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
 6. 如果有收藏历史，参考用户实际感兴趣的论文主题来调整关键词
 7. 严格避免生成用户明确排除的领域的关键词
 8. 如果研究者明确写了方法兴趣，请至少生成 1-2 组能体现这些方法兴趣的查询，但不要完全脱离研究主题
+9. 明确输入的研究方向和方法兴趣优先级最高，始终以研究方向为核心组织检索
 
 示例输出：["COPD self-management nursing intervention", "pulmonary rehabilitation exercise training", "chronic obstructive pulmonary disease patient education adherence"]
 
@@ -916,6 +936,8 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
     method_interests = profile.get("method_interests", "")
     background = profile.get("background", "")
     discipline = profile.get("discipline", "")
+    interests_summary = profile.get("interests_summary", "")
+    is_manual = profile.get("interests_summary_is_manual", "0") == "1"
 
     profile_text = ""
     if discipline:
@@ -926,6 +948,9 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
         profile_text += f"方法兴趣（仅辅助参考）：{method_interests}\n"
     if background:
         profile_text += f"补充说明：{background}\n"
+    # 只有用户手动编辑过的摘要才注入 AI 解读，避免自动生成内容影响相关性判断
+    if is_manual and interests_summary:
+        profile_text += f"---\n用户修正后的偏好（高于系统自动观察，但低于以上明确输入）：{interests_summary}\n"
 
     for i, paper in enumerate(papers):
         paper["_enrich_attempts"] = paper.get("_enrich_attempts", 0) + 1
@@ -935,9 +960,9 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
 论文标题：{paper['title']}
 论文摘要：{paper['abstract'][:1200]}
 
-{f"研究者背景（仅供参考，不要在输出中罗列这些关键词）：{chr(10)}{profile_text}" if profile_text else ""}
+    {f"研究者背景（仅供参考，不要在输出中罗列这些关键词）：{chr(10)}{profile_text}" if profile_text else ""}
 
-请用 JSON 格式输出以下内容：
+    请用 JSON 格式输出以下内容：
 
 {{
   "summary_zh": "详细中文解读（4-6句话，包含：研究背景与目的、研究方法、主要发现、意义。语言专业但易懂）",
@@ -945,7 +970,8 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
   "key_findings": ["核心发现1", "核心发现2", "核心发现3"]
 }}
 
-只输出 JSON，不加其他文字。"""
+    只输出 JSON，不加其他文字。
+    如提供了“用户修正后的偏好”，请综合以上信息，优先考虑研究者明确输入和用户修正后的偏好；但相关性判断仍必须以论文实际内容为依据。"""
 
             resp = client.chat.completions.create(
                 model=model,
@@ -1000,8 +1026,14 @@ class TranslateRequest(BaseModel):
     text: str
 
 @app.post("/api/translate")
-def api_translate(data: TranslateRequest):
+def api_translate(data: TranslateRequest, request: Request):
     """将英文文本翻译为中文"""
+    uid = _get_user_id(request)
+    is_owner = OWNER_UID and uid == OWNER_UID
+
+    if not is_owner and not check_rate_limit(uid, "translate", DAILY_TRANSLATE_LIMIT):
+        return {"ok": False, "error": f"今日翻译次数已用完（每天 {DAILY_TRANSLATE_LIMIT} 次），明天再来吧。"}
+
     client, model = _get_llm_client()
     if not client:
         return {"ok": False, "error": "未配置 API"}
@@ -1013,6 +1045,8 @@ def api_translate(data: TranslateRequest):
             max_tokens=2000,
         )
         translated = (resp.choices[0].message.content or "").strip()
+        if not is_owner:
+            increment_rate_limit(uid, "translate")
         return {"ok": True, "translated": translated}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -1099,6 +1133,17 @@ def api_chat(data: ChatRequest, request: Request):
     if data.paper_rowid and not _get_owned_paper_or_none(data.paper_rowid, uid):
         return {"reply": "未找到这篇论文，或你没有权限访问它。", "ok": False}
 
+    is_owner = OWNER_UID and uid == OWNER_UID
+
+    # 全局熔断：所有用户对话总量超限时暂停服务
+    if not check_rate_limit("__global__", "chat", GLOBAL_DAILY_CHAT_LIMIT):
+        return {"reply": "今日 AI 对话服务使用量已达上限，明天零点后恢复，感谢理解。", "ok": False, "rate_limited": True}
+
+    # 用户级限速（owner 不限）
+    if not is_owner and not check_rate_limit(uid, "chat", DAILY_CHAT_LIMIT):
+        remaining_recommend = get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT)
+        return {"reply": f"你今天的 AI 对话次数已用完（每天 {DAILY_CHAT_LIMIT} 次），明天再来吧。", "ok": False, "rate_limited": True}
+
     profile = get_profile(uid)
     profile_text = ""
     if profile.get("discipline"):
@@ -1150,6 +1195,11 @@ def api_chat(data: ChatRequest, request: Request):
             max_tokens=600,
         )
         reply = (resp.choices[0].message.content or "").strip()
+
+        # 计入限速
+        increment_rate_limit("__global__", "chat")
+        if not is_owner:
+            increment_rate_limit(uid, "chat")
 
         # 如果已收藏，持久化对话
         if data.paper_rowid:

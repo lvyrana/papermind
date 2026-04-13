@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, BookOpen, MessageCircle, FileText, Trash2, Clock, Search } from 'lucide-react'
+import { ArrowLeft, BookOpen, MessageCircle, FileText, Search, Trash2 } from 'lucide-react'
 import Navbar from '../components/Navbar'
 import { apiGet, apiDelete } from '../api'
 
@@ -13,15 +13,10 @@ function timeAgo(dateStr) {
   if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
   if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`
   if (diff < 604800) return `${Math.floor(diff / 86400)} 天前`
-  return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return ''
-  const date = new Date(dateStr)
-  return date.toLocaleDateString('zh-CN', {
-    month: 'long', day: 'numeric', weekday: 'short'
-  })
+  const days = Math.floor(diff / 86400)
+  if (days < 30) return `${days} 天前`
+  const months = Math.floor(days / 30)
+  return `${months} 个月前`
 }
 
 export default function Library() {
@@ -29,7 +24,7 @@ export default function Library() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState('全部')
-  const [sortBy, setSortBy] = useState('saved') // 'saved' | 'read'
+  const [notesOnly, setNotesOnly] = useState(false)
 
   useEffect(() => {
     apiGet('/library')
@@ -46,13 +41,11 @@ export default function Library() {
     setPapers(prev => prev.filter(p => p.id !== id))
   }
 
-  // 分类列表（自动提取）
   const categories = useMemo(() => {
     const cats = [...new Set(papers.map(p => p.category).filter(Boolean))]
     return ['全部', ...cats]
   }, [papers])
 
-  // 过滤 + 排序
   const filtered = useMemo(() => {
     let result = papers
     if (search.trim()) {
@@ -62,73 +55,76 @@ export default function Library() {
     if (activeCategory !== '全部') {
       result = result.filter(p => p.category === activeCategory)
     }
-    return [...result].sort((a, b) => {
-      const aTime = sortBy === 'read' ? (a.last_read_at || a.saved_at) : a.saved_at
-      const bTime = sortBy === 'read' ? (b.last_read_at || b.saved_at) : b.saved_at
-      return new Date(bTime) - new Date(aTime)
-    })
-  }, [papers, search, activeCategory, sortBy])
+    if (notesOnly) {
+      result = result.filter(p => p.note_count > 0)
+    }
+    return [...result].sort((a, b) => new Date(b.saved_at) - new Date(a.saved_at))
+  }, [papers, search, activeCategory, notesOnly])
 
-  // 按日期分组
-  const grouped = {}
-  filtered.forEach(p => {
-    const dateKey = formatDate(sortBy === 'read' ? (p.last_read_at || p.saved_at) : p.saved_at)
-    if (!grouped[dateKey]) grouped[dateKey] = []
-    grouped[dateKey].push(p)
-  })
+  const hasNotes = useMemo(() => papers.some(p => p.note_count > 0), [papers])
 
   return (
     <div className="min-h-screen pb-24">
-      <header className="px-6 pt-12 pb-4 max-w-3xl mx-auto">
+      <header className="px-6 pt-12 pb-4 max-w-2xl mx-auto">
         <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors">
           <ArrowLeft size={16} />
           <span>返回</span>
         </Link>
-        <div className="flex items-baseline justify-between">
+        <div className="flex items-baseline justify-between mb-4">
           <h1 className="text-2xl font-bold text-navy font-serif">我的收藏</h1>
-          <button
-            onClick={() => setSortBy(v => v === 'saved' ? 'read' : 'saved')}
-            className="text-xs text-warm-gray hover:text-navy transition-colors"
-          >
-            {sortBy === 'saved' ? '按收藏时间' : '按最近阅读'}
-          </button>
+          {papers.length > 0 && (
+            <span className="text-xs text-warm-gray/50">{filtered.length} / {papers.length} 篇</span>
+          )}
         </div>
 
-        {/* 搜索框 */}
         {papers.length > 0 && (
-          <div className="relative mt-4">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray/50" />
-            <input
-              type="text"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="搜索论文标题..."
-              className="w-full bg-warm-white rounded-xl pl-9 pr-4 py-2.5 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/40"
-            />
-          </div>
-        )}
+          <>
+            {/* 搜索框 */}
+            <div className="relative mb-3">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray/40" />
+              <input
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="搜索论文标题..."
+                className="w-full bg-warm-white rounded-xl pl-9 pr-4 py-2.5 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/40"
+              />
+            </div>
 
-        {/* 分类筛选 */}
-        {categories.length > 1 && (
-          <div className="flex gap-2 mt-3 overflow-x-auto pb-1 scrollbar-hide">
-            {categories.map(cat => (
-              <button
-                key={cat}
-                onClick={() => setActiveCategory(cat)}
-                className={`shrink-0 px-3 py-1 rounded-full text-xs transition-all duration-200 ${
-                  activeCategory === cat
-                    ? 'bg-navy/90 text-warm-white'
-                    : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
+            {/* 分类筛选 + 有笔记 */}
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+              {hasNotes && (
+                <button
+                  onClick={() => setNotesOnly(v => !v)}
+                  className={`shrink-0 px-3 py-1 rounded-full text-xs transition-all duration-200 flex items-center gap-1 ${
+                    notesOnly
+                      ? 'bg-coral/90 text-warm-white'
+                      : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-coral/30 hover:text-coral'
+                  }`}
+                >
+                  <FileText size={11} />
+                  有笔记
+                </button>
+              )}
+              {categories.map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setActiveCategory(cat)}
+                  className={`shrink-0 px-3 py-1 rounded-full text-xs transition-all duration-200 ${
+                    activeCategory === cat
+                      ? 'bg-navy/90 text-warm-white'
+                      : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </>
         )}
       </header>
 
-      <main className="px-6 max-w-3xl mx-auto">
+      <main className="px-6 max-w-2xl mx-auto">
         {loading && (
           <div className="text-center py-12 text-warm-gray text-sm">加载中...</div>
         )}
@@ -137,30 +133,22 @@ export default function Library() {
           <div className="text-center py-16">
             <BookOpen size={32} className="text-cream-dark mx-auto mb-4" />
             <p className="text-warm-gray text-sm mb-4">收藏的论文会出现在这里</p>
-            <Link to="/" className="text-coral text-sm hover:underline">
-              去看看本周论文
-            </Link>
+            <Link to="/" className="text-coral text-sm hover:underline">去看看本周论文</Link>
           </div>
         )}
 
-        {/* 按日期分组的卡片网格 */}
-        {Object.entries(grouped).map(([date, datePapers], groupIdx) => (
-          <div key={date} className="mb-8 breathe-in" style={{ animationDelay: `${groupIdx * 120}ms` }}>
-            {/* 日期时间戳 */}
-            <div className="flex items-center gap-2 mb-4">
-              <Clock size={14} className="text-coral" />
-              <span className="text-sm font-medium text-warm-gray">{date}</span>
-              <div className="flex-1 h-px bg-cream-dark/50" />
-            </div>
+        {!loading && papers.length > 0 && filtered.length === 0 && (
+          <div className="text-center py-12 text-warm-gray/60 text-sm">没有符合条件的论文</div>
+        )}
 
-            {/* 卡片网格 */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {datePapers.map((paper, i) => (
-                <LibraryCard key={paper.id} paper={paper} onDelete={handleDelete} index={i} />
-              ))}
-            </div>
+        {/* 行列表 */}
+        {filtered.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {filtered.map((paper, i) => (
+              <PaperRow key={paper.id} paper={paper} onDelete={handleDelete} index={i} />
+            ))}
           </div>
-        ))}
+        )}
       </main>
 
       <Navbar />
@@ -168,55 +156,60 @@ export default function Library() {
   )
 }
 
-function LibraryCard({ paper, onDelete, index = 0 }) {
-  return (
-    <Link to={`/library/${paper.id}`} className="block breathe-in" style={{ animationDelay: `${index * 80}ms` }}>
-      <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50 relative group h-full">
-        {/* 删除按钮 */}
-        <button
-          onClick={(e) => onDelete(paper.id, e)}
-          className="absolute top-3 right-3 p-1.5 rounded-full opacity-0 group-hover:opacity-100 hover:bg-coral/10 text-warm-gray hover:text-coral transition-all"
-        >
-          <Trash2 size={14} />
-        </button>
+function PaperRow({ paper, onDelete, index = 0 }) {
+  // 取中文摘要第一句作为副标题
+  const chineseHint = paper.summary_zh
+    ? paper.summary_zh.split(/[。！？]/)[0]
+    : ''
 
+  return (
+    <Link
+      to={`/library/${paper.id}`}
+      className="block bg-warm-white border border-cream-dark/50 rounded-2xl px-4 py-3.5 group hover:border-coral/30 hover:shadow-sm transition-all duration-150 breathe-in"
+      style={{ animationDelay: `${index * 40}ms` }}
+    >
+      <div className="flex items-start gap-3">
         {/* 分类标签 */}
-        <div className="flex items-center gap-2 mb-3">
-          <span className="text-xs px-2.5 py-1 rounded-full bg-coral/10 text-coral font-medium">
-            {paper.category || '未分类'}
-          </span>
-          <span className="text-xs text-warm-gray/50">
-            {paper.source === 'pubmed' ? 'PubMed' : 'S2'}
-          </span>
+        <span className="shrink-0 mt-0.5 text-[11px] px-2 py-0.5 rounded-full bg-coral/10 text-coral font-medium leading-5 max-w-[72px] truncate">
+          {paper.category || '未分类'}
+        </span>
+
+        {/* 标题 + 中文提示 */}
+        <div className="flex-1 min-w-0">
+          <p className="text-[13px] text-navy leading-snug line-clamp-2 mb-1">
+            {paper.title}
+          </p>
+          {chineseHint && (
+            <p className="text-[12px] text-warm-gray/60 leading-relaxed line-clamp-1">
+              {chineseHint}
+            </p>
+          )}
         </div>
 
-        {/* 标题 */}
-        <h3 className="text-navy font-medium leading-relaxed text-[14px] line-clamp-3 mb-3">
-          {paper.title}
-        </h3>
-
-        {/* 中文摘要预览 */}
-        {paper.summary_zh && (
-          <p className="text-warm-gray text-xs leading-relaxed line-clamp-2 mb-3">
-            {paper.summary_zh}
-          </p>
-        )}
-
-        {/* 底部：笔记数 + 对话数 + 时间 */}
-        <div className="flex items-center gap-3 text-xs text-warm-gray/60 mt-auto pt-2 border-t border-cream-dark/30">
-          {paper.note_count > 0 && (
-            <span className="flex items-center gap-1">
-              <FileText size={12} />
-              {paper.note_count} 条笔记
-            </span>
-          )}
-          {paper.chat_count > 0 && (
-            <span className="flex items-center gap-1">
-              <MessageCircle size={12} />
-              {paper.chat_count} 条对话
-            </span>
-          )}
-          <span className="ml-auto">{timeAgo(paper.last_read_at || paper.saved_at)}</span>
+        {/* 右侧元数据 */}
+        <div className="shrink-0 flex flex-col items-end gap-1.5 ml-1">
+          <div className="flex items-center gap-2 text-[11px] text-warm-gray/50">
+            {paper.note_count > 0 && (
+              <span className="flex items-center gap-0.5 text-coral/70">
+                <FileText size={11} />
+                {paper.note_count}
+              </span>
+            )}
+            {paper.chat_count > 0 && (
+              <span className="flex items-center gap-0.5">
+                <MessageCircle size={11} />
+                {paper.chat_count}
+              </span>
+            )}
+            <button
+              onClick={(e) => onDelete(paper.id, e)}
+              className="opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:text-coral transition-all p-0.5"
+              aria-label="删除收藏"
+            >
+              <Trash2 size={11} />
+            </button>
+          </div>
+          <span className="text-[11px] text-warm-gray/40">{timeAgo(paper.saved_at)}</span>
         </div>
       </div>
     </Link>
