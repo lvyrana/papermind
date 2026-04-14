@@ -1141,7 +1141,6 @@ def api_chat(data: ChatRequest, request: Request):
 
     # 用户级限速（owner 不限）
     if not is_owner and not check_rate_limit(uid, "chat", DAILY_CHAT_LIMIT):
-        remaining_recommend = get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT)
         return {"reply": f"你今天的 AI 对话次数已用完（每天 {DAILY_CHAT_LIMIT} 次），明天再来吧。", "ok": False, "rate_limited": True}
 
     profile = get_profile(uid)
@@ -1243,9 +1242,15 @@ def api_summarize_chat(data: SummarizeChatRequest, request: Request):
 
 只输出笔记正文，不加标题或前缀。"""
 
+    # 全局熔断同样适用
+    if not check_rate_limit("__global__", "chat", GLOBAL_DAILY_CHAT_LIMIT):
+        return {"ok": False, "error": "今日 AI 服务使用量已达上限，明天零点后恢复。"}
+
     result = _llm_complete(prompt, max_tokens=1200)
     if not result:
         return {"ok": False, "error": "AI 总结失败"}
+
+    increment_rate_limit("__global__", "chat")
 
     # 每次总结作为独立笔记保存，不追加到已有笔记
     save_note(data.paper_rowid, result, source="chat_summary")
@@ -1267,6 +1272,59 @@ def api_get_reading_history(request: Request):
     uid = _get_user_id(request)
     history = get_reading_history(uid, limit=20)
     return {"history": history}
+
+
+# ========== 全量数据导出 ==========
+
+@app.get("/api/export/notes-markdown")
+def api_export_notes_markdown(request: Request):
+    """将用户所有有笔记的论文导出为 Markdown 文本"""
+    from fastapi.responses import Response as FastAPIResponse
+    uid = _get_user_id(request)
+    papers = get_saved_papers(uid)
+
+    lines = ["# PaperMind 笔记导出\n"]
+    lines.append(f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+    lines.append("---\n")
+
+    exported = 0
+    for paper in papers:
+        notes = get_notes(paper["id"])
+        if not notes:
+            continue
+        exported += 1
+        lines.append(f"\n## {paper['title']}\n")
+        if paper.get("journal"):
+            lines.append(f"**期刊**：{paper['journal']}")
+        if paper.get("pub_date"):
+            lines.append(f"  |  **发表**：{paper['pub_date']}")
+        if paper.get("category"):
+            lines.append(f"  |  **分类**：{paper['category']}")
+        lines.append("\n")
+        if paper.get("summary_zh"):
+            lines.append(f"**中文摘要**：{paper['summary_zh']}\n")
+        lines.append("\n### 笔记\n")
+        for note in reversed(notes):  # 按时间正序
+            source_label = {
+                "manual": "手动",
+                "chat_summary": "对话总结",
+                "chat_single": "对话摘录",
+            }.get(note.get("source", ""), "")
+            ts = note.get("created_at", "")[:10]
+            lines.append(f"*{ts}{' · ' + source_label if source_label else ''}*\n")
+            lines.append(f"{note['content']}\n")
+        lines.append("\n---\n")
+
+    if exported == 0:
+        lines = ["# PaperMind 笔记导出\n\n暂无笔记内容。\n"]
+
+    content = "\n".join(lines)
+    filename = f"papermind-notes-{datetime.now().strftime('%Y%m%d')}.md"
+    return FastAPIResponse(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ========== Export / Download ==========

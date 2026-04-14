@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.5.3 - 2026-04-15
+
+### 后端限速与熔断
+- `/api/chat` 新增用户级每日限速（默认 30 次）和全局每日熔断（默认 500 次）
+- `/api/chat/summarize` 接入全局 AI 熔断，并计入全局对话额度
+- `/api/translate` 新增用户级每日限速（默认 50 次）
+- 限速阈值支持通过 `.env` 覆盖，无需改代码
+
+### 数据导出
+- 新增 `GET /api/export/notes-markdown`，支持导出当前设备下所有有笔记的论文为 Markdown
+- 导出内容包含论文标题、中文摘要、笔记正文与来源标签
+- 设置页新增“导出全部笔记”按钮，并补上失败状态处理
+
+### 部署
+- 新增 `deploy/` 目录，提供 ECS 首次部署脚本、更新脚本、systemd 服务配置与 nginx 配置
+- 首次部署脚本会自动安装 Node.js、构建前端并配置 nginx/systemd
+- 更新脚本会执行 `pull → pip install → npm build → reload nginx → restart service`
+
 ## v0.5.2 - 2026-04-13
 
 ### 系统观察摘要策略调整

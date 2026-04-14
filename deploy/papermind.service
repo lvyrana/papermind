@@ -1,0 +1,30 @@
+[Unit]
+Description=PaperMind Backend (FastAPI + uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/papermind/papermind
+
+# 启动命令：绑定 127.0.0.1，只接受 nginx 转发的流量
+ExecStart=/opt/papermind/papermind/.venv/bin/uvicorn api:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 1 \
+    --log-level info
+
+# 崩溃后自动重启
+Restart=always
+RestartSec=5
+
+# 环境变量从项目目录的 .env 加载
+EnvironmentFile=/opt/papermind/papermind/.env
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

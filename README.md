@@ -6,7 +6,7 @@
 
 - **项目名称**: PaperMind
 - **启动时间**: 2026 年 3 月 25 日
-- **当前版本**: v0.5.2
+- **当前版本**: v0.5.3
 - **独立开发**: 雀雀（主导设计、需求定义、产品决策、测试与迭代）
 - **开发方式**: 使用 AI 编程工具（Claude）辅助代码实现
 
@@ -20,6 +20,7 @@
 - **对话式阅读**: 和 AI 深度讨论论文，提问方法学、核心发现、研究启发
 - **对话记忆**: 聊天记录自动保存，收藏后永久留存
 - **研究笔记**: 边读边记，AI 对话可一键保存为笔记
+- **笔记导出**: 支持将全部笔记导出为 Markdown，便于沉淀到 Obsidian / Notion / 本地文件
 - **标题 & 摘要翻译**: 点击即译，原文/中文随时切换（首页、阅读页、收藏页均支持）
 - **收藏库浏览**: 支持论文标题搜索、分类筛选、“有笔记”快速筛选与紧凑行列表回看
 - **研究画像工作台**: 支持研究方向、方法兴趣、排除内容、学科领域、系统观察摘要
@@ -32,17 +33,20 @@
 | 层 | 技术 |
 |---|------|
 | 前端 | React 19 + Vite + Tailwind CSS 4 + Lucide Icons |
-| 后端 | Python + FastAPI + SQLite |
+| 后端 | Python + FastAPI + SQLite + systemd/nginx 部署 |
 | 数据源 | PubMed E-utilities + Semantic Scholar API |
 | AI | 阿里云通义（qwen-flash/plus）→ 智谱 GLM → DeepSeek（内置，无需配置）|
 
-## v0.5.2 相比 v0.5 的主要变化
+## v0.5.3 相比 v0.5 的主要变化
 
 - 研究画像页从旧表单升级为新的分区式页面，新增 `method_interests` 和“系统观察摘要”
 - 搜索链路在 `v0.5` 主题检索基础上，开始显式参考方法兴趣，但系统观察摘要已退出关键词生成，只保留在手动修正后的理解层
 - 首页增加本地缓存恢复与当前批次补解读机制
 - 收藏 / 笔记 / AI 对话相关接口的用户归属校验更严格
 - 收藏页调整为更紧凑的行列表，增加“有笔记”筛选，移动端删除入口可见
+- 新增按端点拆分的 AI 限速与全局熔断
+- 设置页新增 Markdown 笔记导出
+- 新增面向阿里云 ECS 的部署脚本与服务配置
 
 ## 快速开始
 
@@ -100,6 +104,24 @@ npm run dev
 ```
 
 此时 Vite 会把 `/api` 代理到本机 `8000` 端口。
+
+## 部署（ECS）
+
+仓库内已提供一套面向 Ubuntu 22.04 + ECS 的最小部署文件：
+
+- `deploy/setup.sh`：首次部署
+- `deploy/update.sh`：后续更新
+- `deploy/papermind.service`：systemd 服务
+- `deploy/nginx-papermind.conf`：nginx 站点配置
+
+首次部署示例：
+
+```bash
+sudo bash /opt/papermind/deploy/setup.sh
+sudo nano /opt/papermind/papermind/.env
+sudo systemctl restart papermind
+journalctl -u papermind -f
+```
 
 ## 项目结构
 
