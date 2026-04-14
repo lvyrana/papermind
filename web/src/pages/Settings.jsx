@@ -1,21 +1,50 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ArrowLeft, Sparkles, Copy, Check, Download } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import { getUserId, API_BASE } from '../api'
 
 export default function Settings() {
-  const uid = getUserId()
   const [copied, setCopied] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [uid, setUid] = useState('')
+  const [uidUnavailable, setUidUnavailable] = useState(false)
+
+  useEffect(() => {
+    try {
+      const nextUid = getUserId()
+      setUid(nextUid)
+      setUidUnavailable(false)
+    } catch {
+      setUid('')
+      setUidUnavailable(true)
+    }
+  }, [])
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(uid)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    if (!uid) {
+      alert('当前环境暂时无法读取设备 ID，请稍后重试。')
+      return
+    }
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(uid)
+        .then(() => {
+          setCopied(true)
+          setTimeout(() => setCopied(false), 2000)
+        })
+        .catch(() => {
+          alert('当前环境不支持一键复制，请手动长按设备 ID 复制。')
+        })
+      return
+    }
+    alert('当前环境不支持一键复制，请手动长按设备 ID 复制。')
   }
 
   const handleExport = async () => {
+    if (!uid) {
+      alert('当前环境暂时无法读取设备 ID，暂时无法导出笔记。')
+      return
+    }
     setExporting(true)
     try {
       const res = await fetch(`${API_BASE}/export/notes-markdown`, {
@@ -82,7 +111,7 @@ export default function Settings() {
             </div>
             <div className="flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-              <span>每人每天最多 20 次论文推荐、30 次 AI 对话、50 次翻译</span>
+              <span>每人每天最多获取 8 批推荐结果、20 次 AI 对话、30 次翻译</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-coral/60" />
@@ -108,12 +137,17 @@ export default function Settings() {
         {/* 设备 ID */}
         <div className="bg-warm-white rounded-2xl p-5 shadow-sm border border-cream-dark/50">
           <p className="text-xs font-medium text-navy/50 mb-2">设备 ID</p>
-          <p className="text-xs text-warm-gray mb-2">你的数据与此设备绑定，换设备或清除浏览器数据后将重新开始。</p>
+          <p className="text-xs text-warm-gray mb-2">
+            {uidUnavailable
+              ? '当前浏览器暂时无法读取设备 ID，但不影响浏览。建议稍后刷新或切换到常规浏览模式。'
+              : '你的数据与此设备绑定，换设备或清除浏览器数据后将重新开始。'}
+          </p>
           <div className="flex items-center gap-2">
             <code className="flex-1 text-xs text-navy/60 bg-cream-dark/30 rounded-lg px-3 py-2 break-all font-mono">
-              {uid}
+              {uid || '当前环境暂时无法读取设备 ID'}
             </code>
             <button onClick={handleCopy}
+              disabled={!uid}
               className="p-2 rounded-lg hover:bg-cream-dark/50 transition-colors text-warm-gray hover:text-navy flex-shrink-0">
               {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
             </button>

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.5.4 - 2026-04-15
+
+### 安全与稳定性
+- `/api/settings/test` 改为仅 `OWNER_UID` 对应设备可调用；若服务端未配置 `OWNER_UID`，会返回明确提示
+- CORS 改为 `allow_credentials = false`，并支持通过 `ALLOWED_ORIGINS` 环境变量在生产环境收紧来源
+- 翻译、聊天、兴趣摘要生成等接口不再把底层异常 `str(e)` 直接回传前端，改为通用错误提示并保留服务端日志
+- `ChatRequest` 增加长度限制，降低超长输入意外消耗 token 的风险
+
+### 设置页与设备 ID
+- 设置页改为更稳的设备 ID 读取方式：即使移动端浏览器无法访问 `localStorage` 或 `crypto.randomUUID`，页面也不会白屏
+- 新增基于内存的降级设备 ID 兜底逻辑，保证移动端 Edge / Safari 等环境仍可正常打开设置页
+- 设置页限额文案同步更新为“每天最多获取 8 批推荐结果、20 次 AI 对话、30 次翻译”
+
+### 配置
+- `.env.example` 默认限额更新为推荐 8 批 / 对话 20 次 / 翻译 30 次
+- `.env.example` 增加 `ALLOWED_ORIGINS` 示例，方便后续接入域名后收紧跨域来源
+
 ## v0.5.3 - 2026-04-15
 
 ### 后端限速与熔断

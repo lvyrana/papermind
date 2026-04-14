@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai import OpenAI
 
 from src.fetch_papers import get_papers as pubmed_get_papers
@@ -38,21 +38,26 @@ load_dotenv(Path(__file__).parent / ".env")
 
 app = FastAPI(title="PaperMind API")
 
+# 生产环境在 .env 中设置 ALLOWED_ORIGINS=https://yourdomain.com
+# 不设置则默认允许所有来源（开发用）
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "")
+_allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_credentials=False,   # 我们用 X-User-ID header，不需要 cookie
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "X-User-ID"],
 )
 
 # 启动时初始化数据库
 init_db()
 
 # 每日限速配置（可在 .env 中覆盖）
-DAILY_RECOMMEND_LIMIT = int(os.environ.get("DAILY_RECOMMEND_LIMIT", "20"))
-DAILY_CHAT_LIMIT = int(os.environ.get("DAILY_CHAT_LIMIT", "30"))
-DAILY_TRANSLATE_LIMIT = int(os.environ.get("DAILY_TRANSLATE_LIMIT", "50"))
+DAILY_RECOMMEND_LIMIT = int(os.environ.get("DAILY_RECOMMEND_LIMIT", "8"))
+DAILY_CHAT_LIMIT = int(os.environ.get("DAILY_CHAT_LIMIT", "20"))
+DAILY_TRANSLATE_LIMIT = int(os.environ.get("DAILY_TRANSLATE_LIMIT", "30"))
 # 全局每日 AI 对话熔断（所有用户之和，超了暂停服务）
 GLOBAL_DAILY_CHAT_LIMIT = int(os.environ.get("GLOBAL_DAILY_CHAT_LIMIT", "500"))
 OWNER_UID = os.environ.get("OWNER_UID", "")
@@ -72,9 +77,9 @@ class ProfileData(BaseModel):
     interests_summary_is_manual: str = "0"
 
 class ChatRequest(BaseModel):
-    paper_title: str
-    paper_abstract: str
-    message: str
+    paper_title: str = Field(max_length=500)
+    paper_abstract: str = Field(default="", max_length=5000)
+    message: str = Field(max_length=2000)
     history: list[dict] = []
     paper_rowid: int = 0
 
@@ -198,22 +203,22 @@ def api_save_settings():
     return {"ok": True, "builtin": True}
 
 @app.post("/api/settings/test")
-def api_test_settings():
+def api_test_settings(request: Request):
+    uid = _get_user_id(request)
+    if not OWNER_UID:
+        return {
+            "ok": False,
+            "error": "服务端尚未配置 OWNER_UID，请先在 .env 中填入你的设备 ID。",
+            "needs_owner_uid": True,
+        }
+    is_owner = OWNER_UID and uid == OWNER_UID
+    # 仅 owner 可调用，防止任意用户消耗 token 做连通性测试
+    if not is_owner:
+        return {"ok": False, "error": "无权限，仅限 owner 设备测试 AI 连通性。"}
     result = _llm_complete("请回复两个字：成功", max_tokens=10)
     if result:
         return {"ok": True, "reply": result}
-    client, model = _get_llm_client()
-    if not client:
-        return {"ok": False, "error": "未配置内置 API Key"}
-    try:
-        client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": "hi"}],
-            max_tokens=5,
-        )
-        return {"ok": True}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    return {"ok": False, "error": "AI 服务不可用，请检查 API Key 配置"}
 
 
 # ========== Profile Routes ==========
@@ -332,7 +337,8 @@ def api_update_interests_summary(request: Request):
         save_profile(uid, updated_profile)
         return {"ok": True, "summary": summary}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        print(f"[api] interests-summary 生成失败: {e}")
+        return {"ok": False, "error": "摘要生成失败，请稍后重试"}
 
 
 # ========== Papers Cache（按用户隔离） ==========
@@ -856,7 +862,7 @@ def api_get_papers(
                 "papers": [],
                 "total": 0,
                 "remaining": 0,
-                "error": f"今日推荐次数已用完（每天 {DAILY_RECOMMEND_LIMIT} 次），明天再来吧",
+                "error": f"今日推荐批次已用完（每天 {DAILY_RECOMMEND_LIMIT} 批），明天再来吧",
                 "rate_limited": True,
             }
 
@@ -1049,7 +1055,8 @@ def api_translate(data: TranslateRequest, request: Request):
             increment_rate_limit(uid, "translate")
         return {"ok": True, "translated": translated}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        print(f"[api] 翻译失败: {e}")
+        return {"ok": False, "error": "翻译失败，请稍后重试"}
 
 
 # ========== Library / 收藏库 Routes ==========
@@ -1207,7 +1214,8 @@ def api_chat(data: ChatRequest, request: Request):
 
         return {"reply": reply, "ok": True}
     except Exception as e:
-        return {"reply": f"AI 回复失败: {str(e)}", "ok": False}
+        print(f"[api] chat 失败: {e}")
+        return {"reply": "AI 回复失败，请稍后重试。", "ok": False}
 
 
 # ========== Chat Summary → Notes ==========

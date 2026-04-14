@@ -3,14 +3,35 @@
  */
 
 const API_BASE = '/api'
+let memoryUid = ''
+
+function fallbackUuid() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
 
 function getUserId() {
-  let uid = localStorage.getItem('papermind-uid')
-  if (!uid) {
-    uid = crypto.randomUUID()
-    localStorage.setItem('papermind-uid', uid)
+  try {
+    let uid = localStorage.getItem('papermind-uid')
+    if (!uid) {
+      uid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : fallbackUuid()
+      localStorage.setItem('papermind-uid', uid)
+    }
+    return uid
+  } catch {
+    // 某些移动浏览器 / 隐私模式下 localStorage 可能不可用，退回到内存 UID
+    if (!memoryUid) {
+      memoryUid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : fallbackUuid()
+    }
+    return memoryUid
   }
-  return uid
 }
 
 function headers(extra = {}) {
