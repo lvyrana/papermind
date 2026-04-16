@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.5 - 2026-04-16
+
+### 数据备份
+- 新增 `deploy/backup.sh`，使用 SQLite 原生 `.backup` 方式生成数据库备份并自动 gzip 压缩
+- 新增 `papermind-backup.service` 与 `papermind-backup.timer`，默认每天 `04:30` 自动备份
+- 默认保留最近 `14` 天备份，过期文件自动清理
+- `setup.sh` / `update.sh` 会自动同步并启用备份定时器
+
 ## v0.5.4 - 2026-04-15
 
 ### 安全与稳定性

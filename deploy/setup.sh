@@ -13,7 +13,7 @@ fi
 
 echo "=== [1/7] 安装系统依赖 ==="
 apt-get update -qq
-apt-get install -y nginx python3.11 python3.11-venv python3-pip git curl ca-certificates gnupg
+apt-get install -y nginx python3.11 python3.11-venv python3-pip git curl ca-certificates gnupg sqlite3
 
 if ! command -v node >/dev/null 2>&1; then
     echo "=== 安装 Node.js 22 ==="
@@ -35,6 +35,7 @@ else
     git clone "$REPO_URL" "$PROJECT_DIR"
 fi
 chown -R ubuntu:ubuntu "$PROJECT_DIR"
+chmod +x "$PROJECT_DIR/deploy/backup.sh"
 
 echo "=== [3/7] 创建 Python 虚拟环境并安装依赖 ==="
 cd "$PROJECT_DIR/papermind"
@@ -62,11 +63,17 @@ fi
 
 echo "=== [7/8] 配置 systemd 服务 ==="
 cp "$PROJECT_DIR/deploy/papermind.service" /etc/systemd/system/papermind.service
+cp "$PROJECT_DIR/deploy/papermind-backup.service" /etc/systemd/system/papermind-backup.service
+cp "$PROJECT_DIR/deploy/papermind-backup.timer" /etc/systemd/system/papermind-backup.timer
 systemctl daemon-reload
 systemctl enable papermind
+systemctl enable papermind-backup.timer
+systemctl start papermind-backup.timer
 systemctl restart papermind
 echo "后端服务状态："
 systemctl status papermind --no-pager -l | head -20
+echo "备份定时器状态："
+systemctl status papermind-backup.timer --no-pager -l | head -12
 
 echo "=== [8/8] 配置 nginx ==="
 cp "$PROJECT_DIR/deploy/nginx-papermind.conf" /etc/nginx/sites-available/papermind
@@ -84,4 +91,6 @@ echo ""
 echo "常用命令："
 echo "   查看后端日志：journalctl -u papermind -f"
 echo "   重启后端：    systemctl restart papermind"
+echo "   手动备份：    systemctl start papermind-backup"
+echo "   查看备份：    ls -lh /opt/papermind/backups"
 echo "   有域名后升HTTPS：sudo certbot --nginx -d yourdomain.com"

@@ -6,7 +6,7 @@
 
 - **项目名称**: PaperMind
 - **启动时间**: 2026 年 3 月 25 日
-- **当前版本**: v0.5.4
+- **当前版本**: v0.5.5
 - **独立开发**: 雀雀（主导设计、需求定义、产品决策、测试与迭代）
 - **开发方式**: 使用 AI 编程工具（Claude）辅助代码实现
 
@@ -50,6 +50,7 @@
 - 设置页移动端兼容性增强，设备 ID 读取失败不再导致整页空白
 - `/api/settings/test` 改为仅 owner 设备可调用，生产环境可通过 `ALLOWED_ORIGINS` 收紧跨域
 - 新增面向阿里云 ECS 的部署脚本与服务配置
+- 新增 SQLite 日备份脚本与 `systemd timer`，默认每天自动备份并保留 14 天
 
 ## 快速开始
 
@@ -115,6 +116,9 @@ npm run dev
 - `deploy/setup.sh`：首次部署
 - `deploy/update.sh`：后续更新
 - `deploy/papermind.service`：systemd 服务
+- `deploy/papermind-backup.service`：数据库备份任务
+- `deploy/papermind-backup.timer`：数据库日备份定时器
+- `deploy/backup.sh`：SQLite 备份脚本
 - `deploy/nginx-papermind.conf`：nginx 站点配置
 
 首次部署示例：
@@ -124,6 +128,14 @@ sudo bash /opt/papermind/deploy/setup.sh
 sudo nano /opt/papermind/papermind/.env
 sudo systemctl restart papermind
 journalctl -u papermind -f
+```
+
+常用线上命令：
+
+```bash
+sudo systemctl start papermind-backup
+ls -lh /opt/papermind/backups
+systemctl status papermind-backup.timer
 ```
 
 ## 项目结构
