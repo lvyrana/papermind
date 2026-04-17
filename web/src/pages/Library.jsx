@@ -65,15 +65,15 @@ export default function Library() {
 
   return (
     <div className="min-h-screen pb-24">
-      <header className="px-6 pt-12 pb-4 max-w-2xl mx-auto">
+      <header className="px-6 pt-14 pb-10 max-w-2xl mx-auto">
         <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors">
           <ArrowLeft size={16} />
           <span>返回</span>
         </Link>
-        <div className="flex items-baseline justify-between mb-4">
-          <h1 className="text-2xl font-bold text-navy font-serif">我的收藏</h1>
+        <div className="flex items-baseline justify-between mb-5">
+          <h1 className="text-3xl font-bold text-navy font-serif leading-snug">我的收藏</h1>
           {papers.length > 0 && (
-            <span className="text-xs text-warm-gray/50">{filtered.length} / {papers.length} 篇</span>
+            <span className="text-xs text-warm-gray/70">{filtered.length} / {papers.length} 篇</span>
           )}
         </div>
 
@@ -87,7 +87,7 @@ export default function Library() {
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 placeholder="搜索论文标题..."
-                className="w-full bg-warm-white rounded-xl pl-9 pr-4 py-2.5 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/40"
+                className="w-full bg-warm-white rounded-2xl pl-9 pr-4 py-2.5 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/40"
               />
             </div>
 
@@ -133,7 +133,7 @@ export default function Library() {
           <div className="text-center py-16">
             <BookOpen size={32} className="text-cream-dark mx-auto mb-4" />
             <p className="text-warm-gray text-sm mb-4">收藏的论文会出现在这里</p>
-            <Link to="/" className="text-coral text-sm hover:underline">去看看本周论文</Link>
+            <Link to="/" className="text-coral text-sm hover:underline">去看看推荐论文</Link>
           </div>
         )}
 

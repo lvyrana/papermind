@@ -264,11 +264,11 @@ export default function Home() {
           )}
 
           {!loading && papers.length === 0 && !error && (
-            <div className="text-center py-12">
-              <p className="text-warm-gray text-sm">还没有论文。</p>
+            <div className="flex flex-col items-center gap-3 py-12">
+              <p className="text-warm-gray text-sm">还没有推荐结果。</p>
               <button onClick={() => fetchPapers()}
-                className="mt-3 px-4 py-2 bg-navy text-warm-white rounded-full text-sm hover:bg-navy-light transition-colors">
-                获取本周文献
+                className="px-4 py-2 bg-navy text-warm-white rounded-full text-sm hover:bg-navy-light transition-colors">
+                获取推荐论文
               </button>
             </div>
           )}

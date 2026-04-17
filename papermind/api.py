@@ -741,6 +741,7 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
         return []
 
     all_papers = []
+    scholar_query_count = 0
 
     for query in all_queries:
         query_keywords = [k.strip() for k in query.split(" OR ") if k.strip()] if " OR " in query else [query]
@@ -756,9 +757,14 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
 
         if source in ("semantic_scholar", "all"):
             try:
-                year_from = (datetime.now() - timedelta(days=days * 4)).strftime("%Y")
-                scholar_papers = scholar_get_papers(query_keywords, max_results=20, year_from=year_from)
-                all_papers.extend(scholar_papers)
+                if scholar_query_count >= 4:
+                    print("[api] Semantic Scholar 查询已达本轮上限，跳过剩余查询")
+                else:
+                    year_from = (datetime.now() - timedelta(days=max(days * 2, 60))).strftime("%Y")
+                    scholar_papers = scholar_get_papers(query_keywords, max_results=15, year_from=year_from)
+                    all_papers.extend(scholar_papers)
+                    scholar_query_count += 1
+                    time.sleep(0.6)
             except Exception as e:
                 print(f"[api] Semantic Scholar 获取失败 ({query}): {e}")
 
@@ -795,6 +801,11 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
             p["pub_date"] = f"{parts[0]}-{_month_map[parts[1]]}-{parts[2].zfill(2)}"
         elif len(parts) == 2 and len(parts[1]) == 3 and parts[1] in _month_map:
             p["pub_date"] = f"{parts[0]}-{_month_map[parts[1]]}"
+
+    unique_papers = _filter_papers_by_days(unique_papers, days)
+    if not unique_papers:
+        print("[api] 时间窗过滤后无论文")
+        return []
 
     # LLM 打分 + 动态分类 + 排序（已按分数降序）
     if client:

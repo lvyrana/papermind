@@ -6,6 +6,7 @@
 from __future__ import annotations
 import os
 import time
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
@@ -62,13 +63,33 @@ def build_query(keywords: list[str], days: int = 7) -> str:
 
     parts = []
     for kw in keywords:
-        words = kw.strip().split()
+        text = kw.strip()
+        if not text:
+            continue
+
+        connector_split = [seg.strip() for seg in re.split(r"\bAND\b", text, flags=re.IGNORECASE) if seg.strip()]
+        if len(connector_split) >= 2:
+            primary = f'"{connector_split[0]}"[tiab]'
+            secondary = [f'"{seg}"[tiab]' for seg in connector_split[1:4]]
+            if len(secondary) == 1:
+                parts.append(f"({primary} AND {secondary[0]})")
+            else:
+                parts.append(f"({primary} AND ({' OR '.join(secondary)}))")
+            continue
+
+        words = re.findall(r"[A-Za-z0-9-]+", text)
         if len(words) <= 3:
-            parts.append(f'"{kw}"[tiab]')
+            parts.append(f'"{text}"[tiab]')
+            continue
+
+        _stop = {"and", "or", "the", "of", "in", "for", "with", "on", "to", "a", "an", "by", "from", "using", "based"}
+        significant = [w for w in words if len(w) > 2 and w.lower() not in _stop]
+        if len(significant) <= 5:
+            parts.append(f'"{text}"[tiab]')
         else:
-            _stop = {"and", "or", "the", "of", "in", "for", "with", "on", "to", "a", "an", "by", "from"}
-            word_parts = " AND ".join(f"{w}[tiab]" for w in words if len(w) > 2 and w.lower() not in _stop)
-            parts.append(f"({word_parts})")
+            anchor_words = significant[:5]
+            anchor_query = " AND ".join(f"{w}[tiab]" for w in anchor_words)
+            parts.append(f'("{text}"[tiab] OR ({anchor_query}))')
 
     keyword_query = " OR ".join(parts)
     return f"({keyword_query}) AND {date_range}"

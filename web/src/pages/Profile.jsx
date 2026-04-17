@@ -65,15 +65,14 @@ export default function Profile() {
 
   return (
     <div className="min-h-screen pb-24">
-      <header className="px-6 pt-12 pb-6 max-w-3xl mx-auto">
+      <header className="px-6 pt-14 pb-10 max-w-3xl mx-auto">
         <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors">
           <ArrowLeft size={16} />
           <span>返回</span>
         </Link>
         <div className="bg-warm-white/85 backdrop-blur-sm border border-cream-dark/60 rounded-[28px] p-6 shadow-sm">
-          <p className="text-xs uppercase tracking-[0.24em] text-warm-gray/70 mb-3">Research Compass</p>
-          <h1 className="text-3xl font-bold text-navy font-serif leading-tight">我的研究画像</h1>
-          <p className="text-warm-gray mt-3 leading-relaxed text-sm max-w-2xl">
+          <h1 className="text-3xl font-bold text-navy font-serif leading-snug">我的研究画像</h1>
+          <p className="text-warm-gray mt-4 leading-relaxed text-sm max-w-2xl">
             标记你关注的方向与近期需求，系统会逐步理解你的研究偏好。
           </p>
 
@@ -101,12 +100,9 @@ export default function Profile() {
       </header>
 
       <main className="px-6 max-w-3xl mx-auto space-y-6">
-        <SectionCard
-          eyebrow="研究画像"
-          title="研究方向"
-        >
+        <SectionCard title="长期关注">
           <TagInput
-            label="我的研究方向"
+            label="研究方向"
             value={profile.focus_areas}
             onChange={value => patchProfile({ focus_areas: value })}
             placeholder="例如：老年护理、慢性病管理、术后康复、患者安全"
@@ -143,9 +139,8 @@ export default function Profile() {
         </SectionCard>
 
         <SectionCard
-          eyebrow="系统观察"
           title="系统观察摘要"
-          description="由系统根据你的收藏与对话行为自动归纳，仅作参考，不直接参与检索。"
+          description="由系统根据你的收藏与对话行为自动归纳，不参与检索，但会作为上下文背景，让 AI 更贴近你的研究脉络来解读论文、回应你的问题。"
         >
           <SummaryEditor
             summary={profile.interests_summary}
@@ -191,11 +186,11 @@ export default function Profile() {
 
 function SectionCard({ eyebrow, title, description, children }) {
   return (
-    <section className="bg-warm-white/82 backdrop-blur-sm border border-cream-dark/60 rounded-[28px] p-6 shadow-sm space-y-6">
+    <section className="bg-warm-white/82 backdrop-blur-sm border border-cream-dark/60 rounded-[28px] p-6 shadow-sm space-y-7">
       <div>
-        <p className="text-[11px] uppercase tracking-[0.24em] text-warm-gray/65 mb-3">{eyebrow}</p>
-        <h2 className="text-xl font-semibold text-navy font-serif">{title}</h2>
-        {description && <p className="text-sm text-warm-gray mt-2 leading-relaxed">{description}</p>}
+        {eyebrow && <p className="text-[11px] uppercase tracking-[0.24em] text-warm-gray/65 mb-3">{eyebrow}</p>}
+        <h2 className="text-[22px] font-semibold text-navy font-serif leading-snug">{title}</h2>
+        {description && <p className="text-sm text-warm-gray mt-3 leading-relaxed">{description}</p>}
       </div>
       {children}
     </section>
@@ -208,7 +203,7 @@ function ProfileField({ label, hint, value, onChange, placeholder, multiline = f
 
   return (
     <div>
-      <label className="text-sm font-medium text-navy mb-2 block">{label}</label>
+      <label className="text-sm font-medium text-navy/75 mb-2 block">{label}</label>
       {hint && <p className="text-xs text-warm-gray mb-3">{hint}</p>}
       {multiline ? (
         <textarea
@@ -251,7 +246,7 @@ function TagInput({ label, hint, value, onChange, placeholder }) {
 
   return (
     <div>
-      <label className="text-sm font-medium text-navy mb-2 block">{label}</label>
+      <label className="text-sm font-medium text-navy/75 mb-2 block">{label}</label>
       {hint && <p className="text-xs text-warm-gray mb-3">{hint}</p>}
       <div className="flex flex-wrap gap-2 mb-3">
         {tags.map(tag => (
@@ -454,7 +449,7 @@ function VoiceTextarea({ label, value, onChange, placeholder }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <label className="text-sm font-medium text-navy">{label}</label>
+        <label className="text-sm font-medium text-navy/75">{label}</label>
         {hasSR && (
           <button
             type="button"
@@ -564,7 +559,7 @@ function SummaryEditor({ summary, updatedAt, isManual, onChange }) {
           </p>
         ) : (
           <p className="text-sm leading-7 text-warm-gray">
-            保存画像后，系统将根据收藏与对话记录自动生成偏好摘要。
+            填写并保存上方的研究画像后，系统会结合你的收藏与对话记录，自动在这里生成一份观察摘要。
           </p>
         )
       )}
