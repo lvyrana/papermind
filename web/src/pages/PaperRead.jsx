@@ -141,7 +141,7 @@ export default function PaperRead() {
     } else {
       // 收藏
       try {
-        const data = await apiPost('/library/save', { paper })
+        const data = await apiPost('/library/save', { paper, chats: chatMessages })
         setSavedRowId(data.id)
         localStorage.setItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`, String(data.id))
         setBookmarked(true)
@@ -187,7 +187,7 @@ export default function PaperRead() {
     let rowId = savedRowId
     if (!rowId && paper) {
       try {
-        const data = await apiPost('/library/save', { paper })
+        const data = await apiPost('/library/save', { paper, chats: chatMessages })
         rowId = data.id
         setSavedRowId(rowId)
         localStorage.setItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`, String(rowId))
@@ -208,10 +208,7 @@ export default function PaperRead() {
       if (data.ok) {
         setSummarized(true)
         triggerRipple()
-        // 切换到笔记 tab 并更新笔记内容
-        const existingNote = notes ? notes + '\n\n---\n\n' : ''
-        setNotes(existingNote + '💬 AI 对话笔记：\n' + data.note)
-        setActiveTab('notes')
+        setActiveTab('chat')
       } else {
         setSummarizeError(data.error || '总结失败，请重试。')
       }

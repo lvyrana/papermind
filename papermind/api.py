@@ -90,6 +90,7 @@ class SummarizeChatRequest(BaseModel):
 
 class SavePaperRequest(BaseModel):
     paper: dict
+    chats: list[dict] = []
 
 class SaveNoteRequest(BaseModel):
     paper_rowid: int
@@ -119,12 +120,6 @@ def _get_owned_paper_or_none(paper_id: int, user_id: str) -> Optional[dict]:
 
 _LLM_PROVIDERS = [
     {
-        "name": "qwen",
-        "api_key": os.environ.get("QWEN_API_KEY", ""),
-        "base_url": os.environ.get("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        "model": os.environ.get("QWEN_MODEL", "qwen-plus"),
-    },
-    {
         "name": "glm",
         "api_key": os.environ.get("GLM_API_KEY", ""),
         "base_url": os.environ.get("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
@@ -138,22 +133,54 @@ _LLM_PROVIDERS = [
     },
 ]
 
+def _get_qwen_models() -> list[str]:
+    primary = os.environ.get("QWEN_MODEL", "qwen-plus").strip()
+    fallback_raw = os.environ.get("QWEN_FALLBACK_MODELS", "")
+    fallback_models = [m.strip() for m in fallback_raw.split(",") if m.strip()]
+    models: list[str] = []
+    for model in [primary, *fallback_models]:
+        if model and model not in models:
+            models.append(model)
+    return models
+
+
+def _get_llm_slots() -> list[dict]:
+    slots: list[dict] = []
+
+    qwen_api_key = os.environ.get("QWEN_API_KEY", "").strip()
+    if qwen_api_key:
+        qwen_base_url = os.environ.get("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        for model in _get_qwen_models():
+            slots.append({
+                "name": "qwen",
+                "api_key": qwen_api_key,
+                "base_url": qwen_base_url,
+                "model": model,
+            })
+
+    slots.extend(_LLM_PROVIDERS)
+    return slots
+
+
+def _build_llm_client(provider: dict) -> OpenAI:
+    http_client = httpx.Client(
+        transport=httpx.HTTPTransport(local_address="0.0.0.0"),
+    )
+    return OpenAI(
+        api_key=provider["api_key"],
+        base_url=provider["base_url"],
+        http_client=http_client,
+    )
+
 
 def _get_llm_client() -> tuple[Optional[OpenAI], str]:
-    """返回内置 LLM client（GLM 优先，DeepSeek 备用）"""
-    for provider in _LLM_PROVIDERS:
+    """返回当前首选内置 LLM client（用于状态展示等轻量场景）"""
+    for provider in _get_llm_slots():
         api_key = provider["api_key"].strip()
         if not api_key:
             continue
         try:
-            http_client = httpx.Client(
-                transport=httpx.HTTPTransport(local_address="0.0.0.0"),
-            )
-            client = OpenAI(
-                api_key=api_key,
-                base_url=provider["base_url"],
-                http_client=http_client,
-            )
+            client = _build_llm_client(provider)
             return client, provider["model"]
         except Exception as e:
             print(f"[llm] {provider['name']} 初始化失败: {e}")
@@ -161,21 +188,36 @@ def _get_llm_client() -> tuple[Optional[OpenAI], str]:
     return None, ""
 
 
+def _llm_chat_complete(messages: list[dict], max_tokens: int = 800, temperature: float = 0.3) -> tuple[str, str, str]:
+    for provider in _get_llm_slots():
+        api_key = provider["api_key"].strip()
+        if not api_key:
+            continue
+        try:
+            client = _build_llm_client(provider)
+            resp = client.chat.completions.create(
+                model=provider["model"],
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            content = (resp.choices[0].message.content or "").strip()
+            if content:
+                print(f"[llm] 使用 {provider['name']} / {provider['model']} 成功")
+                return content, provider["name"], provider["model"]
+        except Exception as e:
+            print(f"[llm] {provider['name']} / {provider['model']} 调用失败: {e}")
+            continue
+    return "", "", ""
+
+
 def _llm_complete(prompt: str, max_tokens: int = 800) -> str:
-    client, model = _get_llm_client()
-    if not client:
-        return ""
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=max_tokens,
-        )
-        return (resp.choices[0].message.content or "").strip()
-    except Exception as e:
-        print(f"[llm] 调用失败: {e}")
-        return ""
+    content, _, _ = _llm_chat_complete(
+        [{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        temperature=0.3,
+    )
+    return content
 
 
 # ========== Settings Routes（简化：只显示内置状态） ==========
@@ -326,13 +368,13 @@ def api_update_interests_summary(request: Request):
 - 只输出摘要正文，不加标题"""
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+        summary, _, _ = _llm_chat_complete(
+            [{"role": "user", "content": prompt}],
             max_tokens=400,
+            temperature=0.3,
         )
-        summary = (resp.choices[0].message.content or "").strip()
+        if not summary:
+            raise RuntimeError("empty response")
         updated_profile = {**profile, "interests_summary": summary, "interests_summary_updated_at": datetime.now().isoformat(), "interests_summary_is_manual": "0"}
         save_profile(uid, updated_profile)
         return {"ok": True, "summary": summary}
@@ -643,13 +685,13 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
 只输出 JSON 数组，不要 markdown 代码块，不要其他文字。"""
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+        raw, _, _ = _llm_chat_complete(
+            [{"role": "user", "content": prompt}],
             max_tokens=400,
+            temperature=0.3,
         )
-        raw = (resp.choices[0].message.content or "").strip()
+        if not raw:
+            raise RuntimeError("empty response")
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         keywords = json.loads(raw)
@@ -684,12 +726,11 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
         fallback_seed = ", ".join(part for part in [focus, method_interests] if part)
         if fallback_seed:
             try:
-                tr_resp = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": f'将以下研究方向和方法兴趣翻译为英文学术术语，用逗号分隔，只输出翻译结果：{fallback_seed}'}],
-                    temperature=0, max_tokens=200,
+                translated, _, _ = _llm_chat_complete(
+                    [{"role": "user", "content": f'将以下研究方向和方法兴趣翻译为英文学术术语，用逗号分隔，只输出翻译结果：{fallback_seed}'}],
+                    max_tokens=200,
+                    temperature=0,
                 )
-                translated = (tr_resp.choices[0].message.content or "").strip()
                 all_queries = [t.strip() for t in translated.split(",") if t.strip()]
                 print(f"[api] 翻译画像关键词: {all_queries}")
             except Exception:
@@ -787,7 +828,7 @@ def _bg_fetch_and_enrich(cache, keyword_list, days, source, profile, uid):
         if unenriched:
             client, model = _get_llm_client()
             if client:
-                _enrich_papers_with_llm(unenriched, profile, client, model, uid)
+                _enrich_papers_with_llm(unenriched, profile, uid)
         print(f"[api] 后台抓取完成: {len(papers)} 篇")
     except Exception as e:
         print(f"[api] 后台抓取失败: {e}")
@@ -800,7 +841,7 @@ def _bg_enrich(cache, papers, profile, uid, gen):
     try:
         client, model = _get_llm_client()
         if client:
-            _enrich_papers_with_llm(papers, profile, client, model, uid)
+            _enrich_papers_with_llm(papers, profile, uid)
     except Exception as e:
         print(f"[api] 后台解读失败: {e}")
     finally:
@@ -936,7 +977,7 @@ def api_get_paper_by_index(index: int, request: Request):
     return {"paper": None}
 
 
-def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, model: str, user_id: str = ""):
+def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""):
     """为论文添加详细中文解读和个性化相关性分析"""
     focus = profile.get("focus_areas", "")
     method_interests = profile.get("method_interests", "")
@@ -979,13 +1020,13 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, client: OpenAI, m
     只输出 JSON，不加其他文字。
     如提供了“用户修正后的偏好”，请综合以上信息，优先考虑研究者明确输入和用户修正后的偏好；但相关性判断仍必须以论文实际内容为依据。"""
 
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+            raw, _, _ = _llm_chat_complete(
+                [{"role": "user", "content": prompt}],
                 max_tokens=800,
+                temperature=0.3,
             )
-            raw = (resp.choices[0].message.content or "").strip()
+            if not raw:
+                raise RuntimeError("empty response")
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             result = json.loads(raw)
@@ -1006,13 +1047,13 @@ JSON 格式：
   "relevance": "1句话，说明这篇论文对研究者的启发；如果直接关联有限，就明确写直接关联有限"
 }}
 """
-                retry_resp = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": retry_prompt}],
-                    temperature=0.2,
+                retry_raw, _, _ = _llm_chat_complete(
+                    [{"role": "user", "content": retry_prompt}],
                     max_tokens=500,
+                    temperature=0.2,
                 )
-                retry_raw = (retry_resp.choices[0].message.content or "").strip()
+                if not retry_raw:
+                    raise RuntimeError("empty response")
                 if retry_raw.startswith("```"):
                     retry_raw = retry_raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
                 retry_result = json.loads(retry_raw)
@@ -1044,13 +1085,13 @@ def api_translate(data: TranslateRequest, request: Request):
     if not client:
         return {"ok": False, "error": "未配置 API"}
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": f"请将以下英文学术文本准确翻译为中文，保持专业术语的准确性，只输出翻译结果：\n\n{data.text[:3000]}"}],
-            temperature=0.2,
+        translated, _, _ = _llm_chat_complete(
+            [{"role": "user", "content": f"请将以下英文学术文本准确翻译为中文，保持专业术语的准确性，只输出翻译结果：\n\n{data.text[:3000]}"}],
             max_tokens=2000,
+            temperature=0.2,
         )
-        translated = (resp.choices[0].message.content or "").strip()
+        if not translated:
+            raise RuntimeError("empty response")
         if not is_owner:
             increment_rate_limit(uid, "translate")
         return {"ok": True, "translated": translated}
@@ -1066,6 +1107,17 @@ def api_save_to_library(data: SavePaperRequest, request: Request):
     """收藏一篇论文"""
     uid = _get_user_id(request)
     row_id = save_paper(data.paper, uid)
+
+    # 首次收藏时，把未收藏阶段暂存在前端的对话记录迁移到后端
+    existing_chats = get_chat_history(row_id)
+    if not existing_chats and data.chats:
+        for msg in data.chats:
+            role = msg.get("role", "")
+            content = (msg.get("content", "") or "").strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            save_chat_message(row_id, role, content)
+
     return {"ok": True, "id": row_id}
 
 @app.get("/api/library")
@@ -1194,13 +1246,13 @@ def api_chat(data: ChatRequest, request: Request):
     messages.append({"role": "user", "content": data.message})
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.4,
+        reply, _, _ = _llm_chat_complete(
+            messages,
             max_tokens=600,
+            temperature=0.4,
         )
-        reply = (resp.choices[0].message.content or "").strip()
+        if not reply:
+            raise RuntimeError("empty response")
 
         # 计入限速
         increment_rate_limit("__global__", "chat")

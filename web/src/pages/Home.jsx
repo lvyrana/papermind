@@ -144,7 +144,7 @@ export default function Home() {
           {now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}
         </p>
         <h1 className="text-3xl font-bold text-navy-light font-serif leading-snug tracking-wide">
-          {greeting}，<span className="wavy-underline">研究者</span>
+          <span className="wavy-underline">{greeting}</span>
         </h1>
         <p className="text-navy/45 mt-4 leading-relaxed tracking-wide">
           {subtitle}
@@ -235,10 +235,10 @@ export default function Home() {
                   window.scrollTo({ top: 0, behavior: 'smooth' })
                 }}
                 disabled={loading || allExplored}
-                className={`flex-1 py-3 rounded-xl text-sm font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm ${
+                className={`flex-1 py-3 rounded-full text-sm font-medium transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm ${
                   allExplored
                     ? 'bg-cream-dark/50 text-warm-gray cursor-not-allowed'
-                    : 'bg-coral text-warm-white hover:bg-coral-light'
+                    : 'bg-coral text-warm-white hover:bg-coral-light shadow-[0_3px_14px_rgba(232,135,122,0.35)]'
                 }`}
               >
                 {loading ? (
@@ -246,7 +246,7 @@ export default function Home() {
                 ) : allExplored ? (
                   '已全部探索完'
                 ) : (
-                  <><RefreshCw size={14} /> 换一批{remaining > 0 ? `（剩 ${remaining} 篇）` : ''}</>
+                  <><RefreshCw size={14} /> 换一批{remaining > 0 ? <span className="opacity-60 text-xs ml-1">剩 {remaining} 篇</span> : null}</>
                 )}
               </button>
               <button
@@ -255,7 +255,7 @@ export default function Home() {
                   window.scrollTo({ top: 0, behavior: 'smooth' })
                 }}
                 disabled={loading}
-                className="py-3 px-5 rounded-xl text-sm text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/20 transition-all disabled:opacity-50 flex items-center gap-1.5"
+                className="py-3 px-5 rounded-full text-sm text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/20 transition-all disabled:opacity-50 flex items-center gap-1.5"
               >
                 <RotateCcw size={14} />
                 重新抓取

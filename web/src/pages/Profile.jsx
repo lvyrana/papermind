@@ -109,7 +109,7 @@ export default function Profile() {
             label="我的研究方向"
             value={profile.focus_areas}
             onChange={value => patchProfile({ focus_areas: value })}
-            placeholder="例如：慢阻肺、肺康复、肺癌、慢病护理"
+            placeholder="例如：老年护理、慢性病管理、术后康复、患者安全"
           />
 
           <TagInput
@@ -117,28 +117,28 @@ export default function Profile() {
             hint="会和研究方向一起生成检索词"
             value={profile.method_interests}
             onChange={value => patchProfile({ method_interests: value })}
-            placeholder="例如：预测模型、机器学习、孟德尔随机化"
+            placeholder="例如：系统综述、随机对照试验、质性研究、Meta分析"
           />
 
           <VoiceTextarea
             label="随手补充"
             value={profile.background}
             onChange={val => patchProfile({ background: val })}
-            placeholder="随便写，比如：最近在准备慢阻肺护理综述，对预测模型感兴趣，想多看干预性研究"
+            placeholder="随便写，比如：最近在准备综述，想多看干预研究，也关注预测模型相关内容"
           />
 
           <TagInput
             label="不想看的内容"
             value={profile.exclude_areas}
             onChange={value => patchProfile({ exclude_areas: value })}
-            placeholder="例如：纯分子机制、动物实验"
+            placeholder="例如：基础实验研究、动物模型、药物合成、纯分子机制"
           />
 
           <TagInput
             label="学科领域"
             value={profile.discipline}
             onChange={value => patchProfile({ discipline: value })}
-            placeholder="例如：护理学、公共卫生"
+            placeholder="例如：护理学、公共卫生、心理学、康复医学、老年医学"
           />
         </SectionCard>
 
@@ -164,7 +164,7 @@ export default function Profile() {
           className={`w-full py-4 rounded-2xl font-medium text-sm transition-all duration-300 flex items-center justify-center gap-2 ${
             saved
               ? 'bg-mint/20 text-navy'
-              : 'bg-navy text-warm-white hover:bg-navy-light shadow-sm'
+              : 'bg-coral text-warm-white hover:bg-coral-light shadow-sm'
           }`}
         >
           {saved ? (

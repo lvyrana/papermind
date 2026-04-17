@@ -6,6 +6,11 @@ DB_PATH="/opt/papermind/papermind/data/paperdiary.db"
 BACKUP_DIR="/opt/papermind/backups"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
 
+if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo "未安装 sqlite3，无法执行数据库备份。"
+    exit 1
+fi
+
 if [ ! -f "$DB_PATH" ]; then
     echo "数据库不存在，跳过备份：$DB_PATH"
     exit 0

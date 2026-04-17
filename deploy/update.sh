@@ -14,6 +14,10 @@ echo "=== 拉取最新代码 ==="
 cd "$PROJECT_DIR"
 git pull
 
+echo "=== 确保备份依赖存在 ==="
+apt-get update -qq
+apt-get install -y sqlite3
+
 echo "=== 安装/更新 Python 依赖 ==="
 cd "$PROJECT_DIR/papermind"
 .venv/bin/pip install --upgrade pip -q
