@@ -13,25 +13,33 @@ function fallbackUuid() {
   })
 }
 
+function getCookie(name) {
+  const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'))
+  return match ? decodeURIComponent(match[1]) : null
+}
+
+function setCookie(name, value) {
+  // 365 天，路径根目录，SameSite=Lax
+  const expires = new Date(Date.now() + 365 * 864e5).toUTCString()
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`
+}
+
 function getUserId() {
-  try {
-    let uid = localStorage.getItem('papermind-uid')
-    if (!uid) {
-      uid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : fallbackUuid()
-      localStorage.setItem('papermind-uid', uid)
-    }
-    return uid
-  } catch {
-    // 某些移动浏览器 / 隐私模式下 localStorage 可能不可用，退回到内存 UID
-    if (!memoryUid) {
-      memoryUid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : fallbackUuid()
-    }
-    return memoryUid
+  // 优先读 localStorage，其次 cookie，两者都写入保证跨设备恢复
+  let uid = null
+  try { uid = localStorage.getItem('papermind-uid') } catch {}
+  if (!uid) uid = getCookie('papermind-uid')
+
+  if (!uid) {
+    uid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : fallbackUuid()
   }
+
+  try { localStorage.setItem('papermind-uid', uid) } catch {}
+  setCookie('papermind-uid', uid)
+
+  return uid
 }
 
 function headers(extra = {}) {
@@ -74,4 +82,9 @@ export async function apiGetRaw(path) {
   return fetch(`${API_BASE}${path}`, { headers: headers() })
 }
 
-export { API_BASE, getUserId }
+function setUserId(uid) {
+  try { localStorage.setItem('papermind-uid', uid) } catch {}
+  setCookie('papermind-uid', uid)
+}
+
+export { API_BASE, getUserId, setUserId }

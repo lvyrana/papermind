@@ -2,13 +2,15 @@ import { useEffect, useState } from 'react'
 import { ArrowLeft, Sparkles, Copy, Check, Download } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
-import { getUserId, API_BASE } from '../api'
+import { getUserId, setUserId, API_BASE } from '../api'
 
 export default function Settings() {
   const [copied, setCopied] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [uid, setUid] = useState('')
   const [uidUnavailable, setUidUnavailable] = useState(false)
+  const [syncInput, setSyncInput] = useState('')
+  const [syncError, setSyncError] = useState('')
 
   useEffect(() => {
     try {
@@ -20,6 +22,17 @@ export default function Settings() {
       setUidUnavailable(true)
     }
   }, [])
+
+  const handleSync = () => {
+    const val = syncInput.trim()
+    const uuidReg = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    if (!uuidReg.test(val)) {
+      setSyncError('格式不对，请粘贴完整的同步码')
+      return
+    }
+    setUserId(val)
+    window.location.reload()
+  }
 
   const handleCopy = () => {
     if (!uid) {
@@ -152,6 +165,29 @@ export default function Settings() {
               {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
             </button>
           </div>
+        </div>
+
+        {/* 同步码 */}
+        <div className="bg-warm-white rounded-2xl p-5 shadow-sm border border-cream-dark/50">
+          <p className="text-xs font-medium text-navy/50 mb-1">切换账号</p>
+          <p className="text-xs text-warm-gray mb-3">粘贴另一台设备的 ID，即可在本设备访问那个账号的数据。</p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={syncInput}
+              onChange={e => { setSyncInput(e.target.value); setSyncError('') }}
+              placeholder="粘贴同步码"
+              className="flex-1 text-xs bg-cream-dark/30 rounded-lg px-3 py-2 text-navy outline-none border border-transparent focus:border-coral/40 font-mono"
+            />
+            <button
+              onClick={handleSync}
+              disabled={!syncInput.trim()}
+              className="px-3 py-2 rounded-lg bg-navy/90 text-warm-white text-xs hover:bg-navy transition-colors disabled:opacity-40"
+            >
+              应用
+            </button>
+          </div>
+          {syncError && <p className="text-xs text-coral mt-2">{syncError}</p>}
         </div>
       </main>
 
