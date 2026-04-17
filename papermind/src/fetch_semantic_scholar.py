@@ -18,9 +18,9 @@ def _build_session() -> requests.Session:
     retry = Retry(
         total=2,
         backoff_factor=2,
-        status_forcelist=[429, 500, 502, 503],
+        status_forcelist=[500, 502, 503],
         allowed_methods=frozenset(["GET"]),
-        respect_retry_after_header=True,
+        respect_retry_after_header=False,
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
@@ -57,6 +57,7 @@ def search_papers(query: str, limit: int = 20, year_from: str = "") -> list[dict
         print(f"[semantic_scholar] 搜索失败: {e}")
         return []
 
+    raw_count = len(data.get("data", []))
     papers = []
     for item in data.get("data", []):
         if not item.get("abstract"):
@@ -100,7 +101,7 @@ def search_papers(query: str, limit: int = 20, year_from: str = "") -> list[dict
             "citation_count": item.get("citationCount", 0),
         })
 
-    print(f"[semantic_scholar] 搜索到 {len(papers)} 篇有摘要的文献")
+    print(f"[semantic_scholar] 原始 {raw_count} 篇，过滤无摘要后剩 {len(papers)} 篇")
     return papers
 
 

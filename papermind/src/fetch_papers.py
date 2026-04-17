@@ -84,10 +84,10 @@ def build_query(keywords: list[str], days: int = 7) -> str:
 
         _stop = {"and", "or", "the", "of", "in", "for", "with", "on", "to", "a", "an", "by", "from", "using", "based"}
         significant = [w for w in words if len(w) > 2 and w.lower() not in _stop]
-        if len(significant) <= 5:
+        if len(significant) <= 3:
             parts.append(f'"{text}"[tiab]')
         else:
-            anchor_words = significant[:5]
+            anchor_words = significant[:3]
             anchor_query = " AND ".join(f"{w}[tiab]" for w in anchor_words)
             parts.append(f'("{text}"[tiab] OR ({anchor_query}))')
 

@@ -15,6 +15,8 @@ function loadCachedJson(key, fallback) {
 
 export default function Home() {
   const [papers, setPapers] = useState(() => loadCachedJson('cached-papers', []))
+  const [searchDebug, setSearchDebug] = useState(() => loadCachedJson('cached-search-debug', null))
+  const [showSearchDebug, setShowSearchDebug] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [lastReading] = useState(() => loadCachedJson('last-reading', null))
@@ -67,11 +69,13 @@ export default function Home() {
 
   const handlePapersData = (data) => {
     setPapers(data.papers || [])
+    setSearchDebug(data.search_debug || null)
     setTotal(data.total || 0)
     setRemaining(data.remaining ?? 0)
     setAllExplored(data.all_explored || false)
     localStorage.setItem('cached-papers', JSON.stringify(data.papers || []))
     localStorage.setItem('cached-papers-time', new Date().toISOString())
+    localStorage.setItem('cached-search-debug', JSON.stringify(data.search_debug || null))
   }
 
   // 轮询：当前页解读补全
@@ -83,6 +87,10 @@ export default function Home() {
         if (poll.papers?.length) {
           setPapers(poll.papers)
           localStorage.setItem('cached-papers', JSON.stringify(poll.papers))
+        }
+        if (poll.search_debug) {
+          setSearchDebug(poll.search_debug)
+          localStorage.setItem('cached-search-debug', JSON.stringify(poll.search_debug))
         }
         if (!poll.enriching) {
           stopPolling()
@@ -263,6 +271,69 @@ export default function Home() {
             </div>
           )}
 
+          {searchDebug && (
+            <div className="mt-5 rounded-2xl border border-cream-dark/60 bg-warm-white/75">
+              <button
+                type="button"
+                onClick={() => setShowSearchDebug(prev => !prev)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left"
+              >
+                <div>
+                  <p className="text-sm font-medium text-navy/75">本次检索轨迹</p>
+                  <p className="text-xs text-warm-gray mt-1">
+                    {formatTraceSummary(searchDebug)}
+                  </p>
+                </div>
+                <span className="text-xs text-coral">{showSearchDebug ? '收起' : '查看'}</span>
+              </button>
+
+              {showSearchDebug && (
+                <div className="px-4 pb-4 pt-1 space-y-3 border-t border-cream-dark/50">
+                  {searchDebug.dropped_queries?.length > 0 && (
+                    <div className="rounded-xl bg-cream/70 px-3 py-3">
+                      <p className="text-xs font-medium text-navy/65 mb-2">被丢弃的宽泛查询</p>
+                      <div className="space-y-2">
+                        {searchDebug.dropped_queries.slice(0, 4).map((item, index) => (
+                          <div key={`${item.query}-${index}`} className="text-xs text-warm-gray">
+                            <span className="font-mono text-navy/75">{item.query}</span>
+                            <span className="ml-2 text-warm-gray/70">{formatDropReason(item.reason)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    {(searchDebug.queries || []).map((item, index) => (
+                      <div key={`${item.query}-${index}`} className="rounded-xl bg-cream/60 px-3 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm text-navy leading-relaxed">{item.query}</p>
+                          <span className="text-[11px] text-warm-gray whitespace-nowrap">{formatOrigin(item.origin)}</span>
+                        </div>
+                        <p className="text-[11px] text-warm-gray mt-2 font-mono break-all">
+                          PubMed: {item.pubmed_query || '未调用'}
+                        </p>
+                        <p className="text-[11px] text-warm-gray mt-1 font-mono break-all">
+                          S2: {item.semantic_query || '未调用'}
+                        </p>
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          {(item.sources || []).map((sourceItem, sourceIndex) => (
+                            <span
+                              key={`${sourceItem.source}-${sourceIndex}`}
+                              className="text-[11px] px-2 py-1 rounded-full bg-warm-white text-warm-gray"
+                            >
+                              {formatSourceBadge(sourceItem)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {!loading && papers.length === 0 && !error && (
             <div className="flex flex-col items-center gap-3 py-12">
               <p className="text-warm-gray text-sm">还没有推荐结果。</p>
@@ -334,4 +405,34 @@ function PaperCard({ paper, index }) {
       </div>
     </Link>
   )
+}
+
+function formatTraceSummary(trace) {
+  const totals = trace?.totals || {}
+  const sourceCounts = trace?.final_source_counts || {}
+  const sourceParts = Object.entries(sourceCounts).map(([source, count]) => `${source === 'pubmed' ? 'PubMed' : 'S2'} ${count}`)
+  const queryCount = totals.query_count || trace?.queries?.length || 0
+  const finalPapers = totals.final_papers ?? 0
+  return `${queryCount} 组查询，最终保留 ${finalPapers} 篇${sourceParts.length ? `，${sourceParts.join(' / ')}` : ''}`
+}
+
+function formatDropReason(reason) {
+  if (reason === 'missing_focus_anchor') return '缺少研究主题锚点'
+  if (reason === 'too_generic') return '过于宽泛，容易跑偏'
+  return '已过滤'
+}
+
+function formatOrigin(origin) {
+  if (origin === 'manual') return '手动输入'
+  if (origin === 'deterministic') return '系统补充'
+  if (origin === 'broad_fallback') return '宽松兜底'
+  if (origin === 'translated_fallback') return '翻译兜底'
+  return 'LLM 生成'
+}
+
+function formatSourceBadge(sourceItem) {
+  const sourceLabel = sourceItem.source === 'pubmed' ? 'PubMed' : 'S2'
+  if (sourceItem.status === 'ok') return `${sourceLabel} ${sourceItem.count} 篇`
+  if (sourceItem.status === 'skipped_limit') return `${sourceLabel} 已跳过`
+  return `${sourceLabel} 失败`
 }

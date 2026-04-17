@@ -9,6 +9,7 @@ import json
 import httpx
 import threading
 import re
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -21,7 +22,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from openai import OpenAI
 
-from src.fetch_papers import get_papers as pubmed_get_papers
+from src.fetch_papers import get_papers as pubmed_get_papers, build_query as build_pubmed_query
 from src.fetch_semantic_scholar import get_papers as scholar_get_papers
 from src.categorize_papers import score_and_categorize_papers
 from src.database import (
@@ -29,7 +30,7 @@ from src.database import (
     delete_saved_paper, save_note, delete_note, get_note_owner, get_notes, save_chat_message,
     get_saved_categories,
     get_chat_history, record_reading, get_reading_history,
-    get_profile, save_profile, get_saved_titles,
+    get_profile, save_profile, get_saved_titles, save_search_run, get_latest_search_run,
     check_rate_limit, increment_rate_limit, get_rate_limit_remaining,
 )
 
@@ -397,6 +398,7 @@ def _get_user_cache(user_id: str) -> dict:
             "enriching": False,   # 是否正在后台解读
             "enrich_gen": 0,      # 解读代次，防止旧线程清掉新状态
             "current_page": [],   # 当前页 (index, paper) 列表
+            "search_debug": get_latest_search_run(user_id),
         }
     return _papers_cache[user_id]
 
@@ -411,6 +413,7 @@ def _reset_user_cache(user_id: str):
     cache["enriching"] = False
     cache["enrich_gen"] = 0
     cache["current_page"] = []
+    cache["search_debug"] = None
 
 
 def _start_page_enrich(cache: dict, papers: list[dict], profile: dict, uid: str) -> bool:
@@ -525,6 +528,11 @@ def _build_broader_queries(profile: dict) -> list[str]:
     return result[:6]
 
 
+def _is_nursing_profile(profile: dict) -> bool:
+    discipline = (profile.get("discipline", "") or "").lower()
+    return "nursing" in discipline or "护理" in discipline
+
+
 def _normalize_focus_terms(focus: str) -> list[str]:
     """把常见中文研究主题映射到更稳定的英文检索词。"""
     alias_map = {
@@ -571,18 +579,17 @@ def _normalize_method_terms(methods: str, keep_unknown: bool = True) -> list[str
     return _dedupe_terms(normalized)
 
 
-def _build_method_aware_queries(profile: dict) -> list[list[str] | str]:
-    """基于主题和方法兴趣，构造一批确定性的召回查询，优先保证检索广度。"""
+def _build_method_aware_queries(profile: dict) -> list[str]:
+    """基于主题和方法兴趣，构造一批带主题锚点的确定性查询。"""
     focus_terms = _normalize_focus_terms(profile.get("focus_areas", ""))
     method_terms = _normalize_method_terms(profile.get("method_interests", ""))
     method_terms.extend(_normalize_method_terms(profile.get("focus_areas", ""), keep_unknown=False))
     method_terms = _dedupe_terms(method_terms)
-    discipline = (profile.get("discipline", "") or "").lower()
 
     if not (focus_terms or method_terms):
         return []
 
-    is_nursing = "nursing" in discipline or "护理" in discipline
+    is_nursing = _is_nursing_profile(profile)
     has_qualitative_family = any(term in method_terms for term in (
         "qualitative research",
         "interpretative phenomenological analysis",
@@ -601,39 +608,20 @@ def _build_method_aware_queries(profile: dict) -> list[list[str] | str]:
         ])
     method_templates = _dedupe_terms(method_templates)
 
-    query_groups: list[list[str] | str] = []
+    query_groups: list[str] = []
 
-    # 主题宽搜：先把研究主轴都召回回来
     for focus in focus_terms[:4]:
-        focus_group = [focus]
         if is_nursing:
-            focus_group.append(f"{focus} nursing")
-        query_groups.append(focus_group)
-
-    # 独立方法学查询：方法兴趣本身也可以单独召回，之后再靠相关性排序
-    if method_templates:
-        base_group = method_templates[:4]
-        if is_nursing:
-            base_group.extend(["qualitative research nursing", "nursing patient experience"])
-        query_groups.append(_dedupe_terms(base_group))
-
-    # 主题 + 方法联合宽搜：不是强制 AND，而是把相关面都召回，再靠后端打分排序
-    for focus in focus_terms[:4]:
+            query_groups.append(f"{focus} nursing")
+        query_groups.append(focus)
         if method_templates:
-            combined_group = [focus, *method_templates[:4]]
-            if is_nursing:
-                combined_group.append(f"{focus} nursing")
-            query_groups.append(_dedupe_terms(combined_group))
+            for method in method_templates[:3]:
+                if is_nursing:
+                    query_groups.append(f"{focus} nursing {method}")
+                else:
+                    query_groups.append(f"{focus} {method}")
 
-    seen = set()
-    result: list[list[str] | str] = []
-    for query in query_groups:
-        key = " | ".join(query).lower().strip() if isinstance(query, list) else query.lower().strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        result.append(query)
-    return result[:10]
+    return _dedupe_terms(query_groups)[:8]
 
 
 def _generate_search_keywords(profile: dict, client, model: str, saved_titles: list[str] = None) -> list[str]:
@@ -670,17 +658,19 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
     {history_text}
 
 要求：
-1. 生成 3-5 组关键词，每组是一个用于 PubMed 搜索的英文查询字符串
-2. 覆盖研究者关注方向的不同角度和子领域
-3. 必须使用英文专业学术术语（PubMed 只支持英文检索）
-4. 每组关键词要具体且有针对性，不要太宽泛
-5. 可以使用 AND/OR 组合多个术语
+1. 生成 4-6 组关键词，每组是一个用于 PubMed 搜索的英文查询字符串
+2. 每组关键词控制在 2-4 个词以内，不要堆砌过多词汇
+3. 覆盖研究者关注方向的不同角度：至少 2 组聚焦疾病/临床场景，1-2 组聚焦方法，不要每组都把所有关键词堆在一起
+4. 必须使用英文专业学术术语（PubMed 只支持英文检索）
+5. 可以使用 AND/OR 组合，但每组词之间不需要全部 AND，允许适度宽泛
 6. 如果有收藏历史，参考用户实际感兴趣的论文主题来调整关键词
 7. 严格避免生成用户明确排除的领域的关键词
 8. 如果研究者明确写了方法兴趣，请至少生成 1-2 组能体现这些方法兴趣的查询，但不要完全脱离研究主题
 9. 明确输入的研究方向和方法兴趣优先级最高，始终以研究方向为核心组织检索
+10. 每一组查询都必须保留至少一个”研究主题锚点”（疾病、人群、场景、护理问题等），不能只剩方法词，例如不能只写 qualitative research、thematic analysis、patient experience 这类宽泛查询
+11. 如果学科领域是护理，优先使用 nursing、patient、caregiver、self-management、symptom management 等临床/护理语境词，避免跑到代谢组学、影像学（CT、MRI、radiomics）、纯基础研究。特别是：生成预测模型/机器学习相关查询时，必须同时带上临床结局词（如 mortality、readmission、quality of life、prognosis、symptom、functional status），禁止单独生成"疾病+prediction model"这种没有临床/护理锚点的查询
 
-示例输出：["COPD self-management nursing intervention", "pulmonary rehabilitation exercise training", "chronic obstructive pulmonary disease patient education adherence"]
+示例输出：[“COPD nursing self-management”, “lung cancer mortality prediction nursing”, “COPD exacerbation readmission risk”, “nursing intervention symptom management”, “machine learning hospital readmission”]
 
 只输出 JSON 数组，不要 markdown 代码块，不要其他文字。"""
 
@@ -702,9 +692,147 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
         return []
 
 
+def _clean_query_text(query: str) -> str:
+    return re.sub(r"\s+", " ", (query or "").replace("\n", " ")).strip().strip(",;")
+
+
+def _query_has_focus_anchor(query: str, focus_terms: list[str]) -> bool:
+    english_focus_terms = [term for term in focus_terms if re.search(r"[A-Za-z]", term or "")]
+    if not english_focus_terms:
+        return True
+    lower_query = query.lower()
+    return any(term.lower() in lower_query for term in english_focus_terms)
+
+
+def _is_overly_generic_query(query: str, method_terms: list[str]) -> bool:
+    lower_query = query.lower()
+    generic_queries = {
+        "qualitative research",
+        "qualitative study",
+        "patient experience",
+        "lived experience",
+        "grounded theory",
+        "thematic analysis",
+        "phenomenological study",
+        "interpretative phenomenological analysis",
+        "nursing",
+        "nursing patient experience",
+    }
+    if lower_query in generic_queries:
+        return True
+
+    generic_tokens = {
+        "qualitative", "research", "study", "patient", "experience", "lived",
+        "grounded", "theory", "thematic", "analysis", "phenomenological",
+        "interpretative", "nursing", "care", "caregiver",
+    }
+    generic_tokens.update(
+        token
+        for term in method_terms
+        for token in re.findall(r"[a-z0-9-]+", term.lower())
+    )
+    tokens = re.findall(r"[a-z0-9-]+", lower_query)
+    return bool(tokens) and all(token in generic_tokens for token in tokens)
+
+
+def _sanitize_generated_queries(raw_queries: list[str], profile: dict) -> tuple[list[str], list[dict]]:
+    focus_terms = _normalize_focus_terms(profile.get("focus_areas", ""))
+    method_terms = _normalize_method_terms(profile.get("method_interests", ""))
+    dropped: list[dict] = []
+    sanitized: list[str] = []
+
+    for raw_query in raw_queries or []:
+        query = _clean_query_text(raw_query)
+        if not query:
+            continue
+        if not _query_has_focus_anchor(query, focus_terms):
+            dropped.append({"query": query, "reason": "missing_focus_anchor"})
+            continue
+        if _is_overly_generic_query(query, method_terms):
+            dropped.append({"query": query, "reason": "too_generic"})
+            continue
+        sanitized.append(query)
+
+    return _dedupe_terms(sanitized), dropped
+
+
+def _build_query_specs(profile: dict, keyword_list: list[str], smart_queries: list[str]) -> tuple[list[dict], list[dict]]:
+    query_specs: list[dict] = []
+    dropped_queries: list[dict] = []
+
+    sanitized_llm, dropped = _sanitize_generated_queries(smart_queries, profile)
+    dropped_queries.extend([{**item, "origin": "llm"} for item in dropped])
+    for query in sanitized_llm:
+        query_specs.append({"query": query, "origin": "llm"})
+
+    if keyword_list:
+        manual_query = " OR ".join(_dedupe_terms(keyword_list))
+        if manual_query:
+            query_specs.append({"query": manual_query, "origin": "manual"})
+
+    if len(query_specs) < 3:
+        for query in _build_method_aware_queries(profile):
+            query_specs.append({"query": query, "origin": "deterministic"})
+
+    if len(query_specs) < 3:
+        for query in _build_broader_queries(profile):
+            query_specs.append({"query": query, "origin": "broad_fallback"})
+
+    deduped_specs = []
+    seen = set()
+    for spec in query_specs:
+        query = _clean_query_text(spec.get("query", ""))
+        key = query.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped_specs.append({**spec, "query": query})
+
+    return deduped_specs[:6], dropped_queries
+
+
+def _round_robin_sources(papers: list[dict]) -> list[dict]:
+    buckets: dict[str, list[dict]] = {}
+    for paper in papers:
+        buckets.setdefault(paper.get("source", "unknown"), []).append(paper)
+
+    if len(buckets) <= 1:
+        return papers
+
+    source_order = sorted(buckets.keys(), key=lambda key: (-len(buckets[key]), key))
+    mixed: list[dict] = []
+    while True:
+        progressed = False
+        for source in source_order:
+            if buckets[source]:
+                mixed.append(buckets[source].pop(0))
+                progressed = True
+        if not progressed:
+            break
+    return mixed
+
+
 def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = ""):
-    """从 PubMed + Semantic Scholar 抓取论文并缓存"""
+    """从 PubMed + Semantic Scholar 抓取论文并缓存，同时记录检索轨迹。"""
     client, model = _get_llm_client()
+    trace = {
+        "created_at": datetime.now().isoformat(),
+        "source_requested": source,
+        "input_keywords": keyword_list or [],
+        "profile_snapshot": {
+            "discipline": profile.get("discipline", ""),
+            "focus_areas": profile.get("focus_areas", ""),
+            "method_interests": profile.get("method_interests", ""),
+            "exclude_areas": profile.get("exclude_areas", ""),
+            "tracking_days": str(days),
+        },
+        "llm_queries_raw": [],
+        "translated_queries_raw": [],
+        "dropped_queries": [],
+        "queries": [],
+        "totals": {},
+        "final_source_counts": {},
+    }
 
     # 获取用户收藏标题，用于优化搜索
     saved_titles = get_saved_titles(user_id) if user_id else []
@@ -713,14 +841,13 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
     smart_queries = []
     if client and (profile.get("focus_areas") or profile.get("method_interests") or profile.get("background")):
         smart_queries = _generate_search_keywords(profile, client, model, saved_titles)
+    trace["llm_queries_raw"] = smart_queries
 
-    # 合并：LLM 生成的关键词 + 用户手动输入的关键词
-    all_queries = smart_queries.copy()
-    if keyword_list:
-        all_queries.append(" OR ".join(keyword_list))
+    query_specs, dropped_queries = _build_query_specs(profile, keyword_list, smart_queries)
+    trace["dropped_queries"] = dropped_queries
 
-    # 如果 LLM 生成失败且没有手动关键词，用 LLM 翻译画像方向
-    if not all_queries and client:
+    # 如果 LLM 生成失败且没有足够查询，用翻译后的确定性词兜底
+    if len(query_specs) < 2 and client:
         focus = profile.get("focus_areas", "")
         method_interests = profile.get("method_interests", "")
         fallback_seed = ", ".join(part for part in [focus, method_interests] if part)
@@ -731,45 +858,92 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
                     max_tokens=200,
                     temperature=0,
                 )
-                all_queries = [t.strip() for t in translated.split(",") if t.strip()]
-                print(f"[api] 翻译画像关键词: {all_queries}")
+                translated_queries = [t.strip() for t in translated.split(",") if t.strip()]
+                trace["translated_queries_raw"] = translated_queries
+                print(f"[api] 翻译画像关键词: {translated_queries}")
+                translated_specs, translated_dropped = _build_query_specs(profile, [], translated_queries)
+                trace["dropped_queries"].extend([{**item, "origin": "translated_fallback"} for item in translated_dropped])
+                for spec in translated_specs:
+                    query_specs.append({**spec, "origin": "translated_fallback"})
             except Exception:
                 pass
 
-    if not all_queries:
+    deduped_specs = []
+    seen_queries = set()
+    for spec in query_specs:
+        query = _clean_query_text(spec.get("query", ""))
+        key = query.lower()
+        if not key or key in seen_queries:
+            continue
+        seen_queries.add(key)
+        deduped_specs.append({**spec, "query": query})
+    query_specs = deduped_specs[:6]
+
+    if not query_specs:
         print("[api] 无搜索关键词，跳过")
-        return []
+        trace["totals"] = {"query_count": 0, "raw_papers": 0, "final_papers": 0}
+        trace["run_id"] = save_search_run(user_id, source, trace)
+        return [], trace
 
     all_papers = []
     scholar_query_count = 0
 
-    for query in all_queries:
+    for spec in query_specs:
+        query = spec["query"]
+        origin = spec.get("origin", "unknown")
         query_keywords = [k.strip() for k in query.split(" OR ") if k.strip()] if " OR " in query else [query]
+        query_trace = {
+            "query": query,
+            "origin": origin,
+            "query_keywords": query_keywords,
+            "pubmed_query": build_pubmed_query(query_keywords, days) if source in ("pubmed", "all") else "",
+            "semantic_query": " ".join(query_keywords) if source in ("semantic_scholar", "all") else "",
+            "sources": [],
+        }
 
         if source in ("pubmed", "all"):
             try:
                 pubmed_papers = pubmed_get_papers(query_keywords, days=days, max_results=30)
                 for p in pubmed_papers:
                     p["source"] = "pubmed"
+                    p.setdefault("_matched_queries", []).append(query)
                 all_papers.extend(pubmed_papers)
+                query_trace["sources"].append({"source": "pubmed", "status": "ok", "count": len(pubmed_papers)})
             except Exception as e:
                 print(f"[api] PubMed 获取失败 ({query}): {e}")
+                query_trace["sources"].append({"source": "pubmed", "status": "error", "count": 0, "error": str(e)})
 
         if source in ("semantic_scholar", "all"):
             try:
                 if scholar_query_count >= 4:
                     print("[api] Semantic Scholar 查询已达本轮上限，跳过剩余查询")
+                    query_trace["sources"].append({"source": "semantic_scholar", "status": "skipped_limit", "count": 0})
                 else:
-                    year_from = (datetime.now() - timedelta(days=max(days * 2, 60))).strftime("%Y")
+                    # 往前多推 1 年，避免最新论文在 S2 尚无摘要导致全部被过滤
+                    year_from = (datetime.now() - timedelta(days=max(days, 30) + 365)).strftime("%Y")
                     scholar_papers = scholar_get_papers(query_keywords, max_results=15, year_from=year_from)
+                    for p in scholar_papers:
+                        p.setdefault("_matched_queries", []).append(query)
                     all_papers.extend(scholar_papers)
                     scholar_query_count += 1
+                    query_trace["sources"].append({"source": "semantic_scholar", "status": "ok", "count": len(scholar_papers)})
                     time.sleep(0.6)
             except Exception as e:
                 print(f"[api] Semantic Scholar 获取失败 ({query}): {e}")
+                query_trace["sources"].append({"source": "semantic_scholar", "status": "error", "count": 0, "error": str(e)})
+        trace["queries"].append(query_trace)
 
     if not all_papers:
-        return []
+        trace["totals"] = {
+            "query_count": len(query_specs),
+            "raw_papers": 0,
+            "after_dedupe": 0,
+            "after_saved_filter": 0,
+            "after_day_filter": 0,
+            "final_papers": 0,
+        }
+        trace["run_id"] = save_search_run(user_id, source, trace)
+        return [], trace
 
     # 去重
     seen_titles = set()
@@ -781,6 +955,9 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
             unique_papers.append(p)
 
     print(f"[api] 去重后 {len(unique_papers)} 篇论文")
+    trace["totals"]["query_count"] = len(query_specs)
+    trace["totals"]["raw_papers"] = len(all_papers)
+    trace["totals"]["after_dedupe"] = len(unique_papers)
 
     # 过滤已收藏论文（避免推荐用户已保存的）
     if saved_titles and user_id:
@@ -790,6 +967,7 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
         filtered_saved = before - len(unique_papers)
         if filtered_saved:
             print(f"[api] 过滤已收藏论文 {filtered_saved} 篇")
+    trace["totals"]["after_saved_filter"] = len(unique_papers)
 
     # 统一日期格式为 YYYY-MM-DD
     _month_map = {"Jan":"01","Feb":"02","Mar":"03","Apr":"04","May":"05","Jun":"06",
@@ -803,25 +981,48 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
             p["pub_date"] = f"{parts[0]}-{_month_map[parts[1]]}"
 
     unique_papers = _filter_papers_by_days(unique_papers, days)
+    trace["totals"]["after_day_filter"] = len(unique_papers)
     if not unique_papers:
         print("[api] 时间窗过滤后无论文")
-        return []
+        trace["totals"]["final_papers"] = 0
+        trace["run_id"] = save_search_run(user_id, source, trace)
+        return [], trace
 
     # LLM 打分 + 动态分类 + 排序（已按分数降序）
     if client:
         unique_papers = score_and_categorize_papers(unique_papers, profile, client, model)
-        # 过滤掉分数过低的（3分以下），但至少保留 10 篇
         scored = [p for p in unique_papers if p.get("relevance_score", 5) >= 3]
-        if len(scored) >= 10:
+        if len(scored) >= 8:
             filtered = len(unique_papers) - len(scored)
             unique_papers = scored
             if filtered:
                 print(f"[api] 过滤低相关性论文 {filtered} 篇")
         else:
-            print(f"[api] 高分论文不足 10 篇，保留全部 {len(unique_papers)} 篇")
+            target_count = min(10, len(unique_papers))
+            borderline = [
+                p for p in unique_papers
+                if 2 <= p.get("relevance_score", 5) < 3
+            ][: max(target_count - len(scored), 0)]
+            unique_papers = scored + borderline
+            unique_papers.sort(key=lambda p: p.get("relevance_score", 0), reverse=True)
+            print(f"[api] 高分论文不足 8 篇，保留 {len(unique_papers)} 篇不重复的中高相关论文")
+
+    if source == "all":
+        unique_papers = _round_robin_sources(unique_papers)
+
+    for paper in unique_papers:
+        paper.pop("_matched_queries", None)
+
+    final_source_counts: dict[str, int] = {}
+    for paper in unique_papers:
+        paper_source = paper.get("source", "unknown")
+        final_source_counts[paper_source] = final_source_counts.get(paper_source, 0) + 1
+    trace["final_source_counts"] = final_source_counts
+    trace["totals"]["final_papers"] = len(unique_papers)
+    trace["run_id"] = save_search_run(user_id, source, trace)
 
     print(f"[api] 最终缓存 {len(unique_papers)} 篇论文")
-    return unique_papers
+    return unique_papers, trace
 
 
 # ========== Papers Routes ==========
@@ -829,10 +1030,11 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
 def _bg_fetch_and_enrich(cache, keyword_list, days, source, profile, uid):
     """后台线程：抓取论文 + AI 解读"""
     try:
-        papers = _fetch_and_cache_papers(keyword_list, days, source, profile, uid)
+        papers, search_debug = _fetch_and_cache_papers(keyword_list, days, source, profile, uid)
         cache["papers"] = papers
         cache["fetched_at"] = datetime.now()
         cache["served_indices"] = set()
+        cache["search_debug"] = search_debug
 
         # 对前 10 篇做 AI 解读
         unenriched = [p for p in papers[:10] if not p.get("summary_zh")]
@@ -896,6 +1098,7 @@ def api_get_papers(
             "total": len(all_papers),
             "remaining": remaining,
             "enriching": enriching,
+            "search_debug": cache.get("search_debug"),
         }
 
     keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
@@ -903,7 +1106,7 @@ def api_get_papers(
 
     # 正在后台抓取中，返回加载状态
     if cache["fetching"]:
-        return {"papers": [], "total": 0, "remaining": 0, "loading": True}
+        return {"papers": [], "total": 0, "remaining": 0, "loading": True, "search_debug": cache.get("search_debug")}
 
     # Rate limit（owner 不限量）
     is_owner = OWNER_UID and uid == OWNER_UID
@@ -916,6 +1119,7 @@ def api_get_papers(
                 "remaining": 0,
                 "error": f"今日推荐批次已用完（每天 {DAILY_RECOMMEND_LIMIT} 批），明天再来吧",
                 "rate_limited": True,
+                "search_debug": cache.get("search_debug"),
             }
 
     # 判断是否需要重新抓取
@@ -934,11 +1138,11 @@ def api_get_papers(
             daemon=True,
         )
         t.start()
-        return {"papers": [], "total": 0, "remaining": 0, "loading": True}
+        return {"papers": [], "total": 0, "remaining": 0, "loading": True, "search_debug": cache.get("search_debug")}
 
     all_papers = cache["papers"]
     if not all_papers:
-        return {"papers": [], "total": 0, "remaining": 0}
+        return {"papers": [], "total": 0, "remaining": 0, "search_debug": cache.get("search_debug")}
 
     # 选 10 篇还没展示过的
     all_explored = False
@@ -975,6 +1179,7 @@ def api_get_papers(
         "all_explored": all_explored,
         "enriching": enriching,
         "daily_remaining": get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT),
+        "search_debug": cache.get("search_debug"),
     }
 
 @app.get("/api/papers/{index}")

@@ -89,6 +89,15 @@ def _ensure_db():
             PRIMARY KEY (user_id, action, date)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'all',
+            created_at TEXT NOT NULL,
+            trace_json TEXT NOT NULL DEFAULT '{}'
+        )
+    """)
 
     # 迁移：给旧表加 user_id 列（如果不存在）
     for table in ("saved_papers", "reading_history"):
@@ -122,6 +131,7 @@ def _ensure_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reading_history_user ON reading_history(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_notes_paper ON paper_notes(paper_rowid)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_chats_paper ON paper_chats(paper_rowid)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_search_runs_user_created ON search_runs(user_id, created_at DESC)")
 
     conn.commit()
     return conn
@@ -242,6 +252,61 @@ def save_profile(user_id: str, profile: dict):
     ))
     conn.commit()
     conn.close()
+
+
+def save_search_run(user_id: str, source: str, trace: dict) -> int:
+    """保存一次检索轨迹，便于后续排查召回问题。"""
+    conn = _ensure_db()
+    now = datetime.now().isoformat()
+    cursor = conn.execute(
+        "INSERT INTO search_runs (user_id, source, created_at, trace_json) VALUES (?, ?, ?, ?)",
+        (user_id, source or "all", now, json.dumps(trace, ensure_ascii=False)),
+    )
+    # 每个用户只保留最近 30 次，避免调试日志无限增长。
+    conn.execute(
+        """
+        DELETE FROM search_runs
+        WHERE user_id = ?
+          AND id NOT IN (
+              SELECT id FROM search_runs
+              WHERE user_id = ?
+              ORDER BY created_at DESC, id DESC
+              LIMIT 30
+          )
+        """,
+        (user_id, user_id),
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    conn.close()
+    return row_id
+
+
+def get_latest_search_run(user_id: str = "") -> Optional[dict]:
+    """获取最近一次检索轨迹。"""
+    conn = _ensure_db()
+    row = conn.execute(
+        """
+        SELECT id, source, created_at, trace_json
+        FROM search_runs
+        WHERE user_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+
+    try:
+        trace = json.loads(row["trace_json"] or "{}")
+    except json.JSONDecodeError:
+        trace = {}
+    trace["run_id"] = row["id"]
+    trace["created_at"] = trace.get("created_at") or row["created_at"]
+    trace["source_requested"] = trace.get("source_requested") or row["source"]
+    return trace
 
 
 # ========== Saved Papers ==========
