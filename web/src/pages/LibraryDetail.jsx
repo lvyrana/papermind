@@ -465,6 +465,7 @@ function NoteCard({ note, onSave, onDelete }) {
   const [editing, setEditing] = useState(note.isNew || false)
   const [content, setContent] = useState(note.content)
   const [saveStatus, setSaveStatus] = useState('idle')
+  const isLongformNote = note.source === 'chat_summary' || (content?.length || 0) > 240
 
   useEffect(() => {
     if (!editing || !content.trim()) return
@@ -490,7 +491,7 @@ function NoteCard({ note, onSave, onDelete }) {
             {note.created_at ? new Date(note.created_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }) : ''}
           </span>
         </div>
-        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
           {!editing && (
             <button onClick={() => setEditing(true)} className="text-xs text-warm-gray hover:text-navy transition-colors">编辑</button>
           )}
@@ -506,9 +507,9 @@ function NoteCard({ note, onSave, onDelete }) {
             value={content}
             onChange={e => setContent(e.target.value)}
             onBlur={() => { if (content.trim()) setEditing(false) }}
-            rows={4}
+            rows={isLongformNote ? 10 : 6}
             placeholder="写下你的思考..."
-            className="w-full bg-transparent text-sm text-navy outline-none resize-none placeholder:text-warm-gray/40 leading-relaxed"
+            className={`w-full bg-transparent text-sm text-navy outline-none resize-y placeholder:text-warm-gray/40 leading-relaxed ${isLongformNote ? 'min-h-[260px]' : 'min-h-[140px]'}`}
           />
           <p className="text-xs text-warm-gray/40 mt-1">
             {saveStatus === 'saving' ? '保存中...' : saveStatus === 'saved' ? '已保存' : '自动保存'}
