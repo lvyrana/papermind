@@ -168,50 +168,44 @@ function PaperRow({ paper, onDelete, index = 0 }) {
       className="block bg-warm-white border border-cream-dark/50 rounded-2xl px-4 py-3.5 group hover:border-coral/30 hover:shadow-sm transition-all duration-150 breathe-in"
       style={{ animationDelay: `${index * 40}ms` }}
     >
-      <div className="flex items-start gap-3">
-        {/* 分类标签 */}
-        <span className="shrink-0 mt-0.5 text-[11px] px-2 py-0.5 rounded-full bg-coral/10 text-coral font-medium leading-5 max-w-[72px] truncate">
+      {/* 第一行：分类标签 + 元数据 */}
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] px-2 py-0.5 rounded-full bg-coral/10 text-coral font-medium leading-5 max-w-[120px] truncate">
           {paper.category || '未分类'}
         </span>
-
-        {/* 标题 + 中文提示 */}
-        <div className="flex-1 min-w-0">
-          <p className="text-[13px] text-navy leading-snug line-clamp-3 mb-1">
-            {paper.title}
-          </p>
-          {chineseHint && (
-            <p className="text-[12px] text-warm-gray/60 leading-relaxed line-clamp-1">
-              {chineseHint}
-            </p>
+        <div className="flex items-center gap-2 text-[11px] text-warm-gray/50">
+          {paper.note_count > 0 && (
+            <span className="flex items-center gap-0.5 text-coral/70">
+              <FileText size={11} />
+              {paper.note_count}
+            </span>
           )}
-        </div>
-
-        {/* 右侧元数据 */}
-        <div className="shrink-0 flex flex-col items-end gap-1.5 ml-1">
-          <div className="flex items-center gap-2 text-[11px] text-warm-gray/50">
-            {paper.note_count > 0 && (
-              <span className="flex items-center gap-0.5 text-coral/70">
-                <FileText size={11} />
-                {paper.note_count}
-              </span>
-            )}
-            {paper.chat_count > 0 && (
-              <span className="flex items-center gap-0.5">
-                <MessageCircle size={11} />
-                {paper.chat_count}
-              </span>
-            )}
-            <button
-              onClick={(e) => onDelete(paper.id, e)}
-              className="opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:text-coral transition-all p-0.5"
-              aria-label="删除收藏"
-            >
-              <Trash2 size={11} />
-            </button>
-          </div>
-          <span className="text-[11px] text-warm-gray/40">{timeAgo(paper.saved_at)}</span>
+          {paper.chat_count > 0 && (
+            <span className="flex items-center gap-0.5">
+              <MessageCircle size={11} />
+              {paper.chat_count}
+            </span>
+          )}
+          <span className="text-warm-gray/40">{timeAgo(paper.saved_at)}</span>
+          <button
+            onClick={(e) => onDelete(paper.id, e)}
+            className="opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:text-coral transition-all p-0.5"
+            aria-label="删除收藏"
+          >
+            <Trash2 size={11} />
+          </button>
         </div>
       </div>
+
+      {/* 第二行：标题独占全宽 */}
+      <p className="text-[13px] text-navy leading-snug line-clamp-3 mb-1">
+        {paper.title}
+      </p>
+      {chineseHint && (
+        <p className="text-[12px] text-warm-gray/60 leading-relaxed line-clamp-1 mt-1">
+          {chineseHint}
+        </p>
+      )}
     </Link>
   )
 }
