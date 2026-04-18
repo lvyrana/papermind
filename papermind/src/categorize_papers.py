@@ -79,7 +79,7 @@ def score_and_categorize_papers(papers: list[dict], profile: dict, client, model
 
 
 def _score_batch(papers: list[dict], profile_text: str, categories: dict, client, model: str):
-    “””对一批论文打分和分类”””
+    “””batch score and categorize papers”””
     titles_block = “\n”.join(
         f”{i+1}. {p['title']}” + (f” | {p['abstract'][:150]}” if p.get('abstract') else “”)
         for i, p in enumerate(papers)
