@@ -7,27 +7,31 @@ import json
 import re
 
 
-def _build_category_list(focus: str) -> list[str]:
-    """根据研究方向构建个性化分类候选列表。
-
-    取用户填写的研究方向标签（最多 5 个）作为主题类，
-    加上 3 个通用方法类，最后加兜底「其他」。
-    """
-    topic_tags = []
-    if focus:
-        raw = [t.strip() for t in re.split(r'[,，、]', focus) if t.strip()]
-        topic_tags = raw[:5]
-
-    method_tags = ["系统综述", "预测模型", "干预研究"]
-
-    seen = set()
+def _extract_focus_tags(focus: str) -> list[str]:
+    """清洗并拆分用户填写的研究方向，支持多种分隔符和括号补充说明。"""
+    if not focus:
+        return []
+    # 去掉括号里的补充说明，如"老年护理（失能老人、居家照护）"→"老年护理"
+    cleaned = re.sub(r'[（(][^）)]*[）)]', '', focus)
+    # 支持 ,，、/；;| 和换行作为分隔符
+    raw = [t.strip() for t in re.split(r'[,，、/；;|\n]+', cleaned) if t.strip()]
+    seen: set[str] = set()
     result = []
-    for tag in topic_tags + method_tags:
+    for tag in raw:
         if tag not in seen:
             seen.add(tag)
             result.append(tag)
-    result.append("其他")
-    return result
+    return result[:5]
+
+
+def _build_category_list(focus: str) -> dict:
+    """根据研究方向构建主题类和方法类候选列表。
+
+    返回 {"topic": [...], "method": [...]} 供提示词分层展示。
+    """
+    topic_tags = _extract_focus_tags(focus)
+    method_tags = ["系统综述", "预测模型", "干预研究", "观察性研究", "质性研究"]
+    return {"topic": topic_tags, "method": method_tags}
 
 
 def score_and_categorize_papers(papers: list[dict], profile: dict, client, model: str) -> list[dict]:
@@ -60,28 +64,31 @@ def score_and_categorize_papers(papers: list[dict], profile: dict, client, model
     if is_manual_summary and interests_summary:
         profile_text += f"---\n用户修正后的偏好（辅助参考，低于以上明确输入，不影响分类标签命名）：\n{interests_summary}\n"
 
-    category_list = _build_category_list(focus)
-    print(f"[categorize] 分类候选列表: {category_list}")
+    categories = _build_category_list(focus)
+    print(f"[categorize] 主题类: {categories['topic']}  方法类: {categories['method']}")
 
     # 分批处理，每批最多 20 篇
     batch_size = 20
     for start in range(0, len(papers), batch_size):
         batch = papers[start:start + batch_size]
-        _score_batch(batch, profile_text, category_list, client, model)
+        _score_batch(batch, profile_text, categories, client, model)
 
     # 按分数降序排列
     papers.sort(key=lambda p: p.get("relevance_score", 0), reverse=True)
     return papers
 
 
-def _score_batch(papers: list[dict], profile_text: str, category_list: list[str], client, model: str):
-    """对一批论文打分和分类"""
-    titles_block = "\n".join(
-        f"{i+1}. {p['title']}" + (f" | {p['abstract'][:150]}" if p.get('abstract') else "")
+def _score_batch(papers: list[dict], profile_text: str, categories: dict, client, model: str):
+    “””对一批论文打分和分类”””
+    titles_block = “\n”.join(
+        f”{i+1}. {p['title']}” + (f” | {p['abstract'][:150]}” if p.get('abstract') else “”)
         for i, p in enumerate(papers)
     )
 
-    prompt = f"""你是一位学术文献筛选助手。请根据研究者画像，对以下论文进行相关性评分和分类。
+    topic_line = “、”.join(categories[“topic”]) if categories[“topic”] else “（无）”
+    method_line = “、”.join(categories[“method”])
+
+    prompt = f”””你是一位学术文献筛选助手。请根据研究者画像，对以下论文进行相关性评分和分类。
 
 {profile_text}
 
@@ -89,11 +96,13 @@ def _score_batch(papers: list[dict], profile_text: str, category_list: list[str]
 {titles_block}
 
 请为每篇论文：
-1. 打一个相关性分数（0-10）：10=高度相关核心方向，7-9=相关，4-6=一般相关，1-3=不太相关。特别注意：如果论文内容属于研究者"不想看的内容"中列出的领域，必须打 0 分，即使标题看起来和研究方向有关；如果论文主要只是方法学（如机器学习、预测模型、孟德尔随机化、中介分析），但研究主题/对象与研究者主方向不一致，最高只能打 4 分；如果论文主题与研究者方向相关，同时方法又明显命中研究者的方法兴趣，可以额外加 1-2 分
-2. 从以下候选大类中选一个最匹配的分类标签，必须严格从列表中选，不得自造新标签：
-   {"、".join(category_list)}
-   选择依据：优先看论文的研究主题/对象，其次看研究方法；只有当论文核心贡献就是方法本身（如开发通用预测工具、方法学综述）时才选方法类标签；若主题与任何候选类都不符，选"其他"
-3. 请综合以上信息评分，但优先依据研究者的明确输入；如果存在“用户修正后的偏好”，可作为低于明确输入的辅助参考
+1. 打一个相关性分数（0-10）：10=高度相关核心方向，7-9=相关，4-6=一般相关，1-3=不太相关。特别注意：如果论文内容属于研究者”不想看的内容”中列出的领域，必须打 0 分，即使标题看起来和研究方向有关；如果论文主要只是方法学（如机器学习、预测模型、孟德尔随机化、中介分析），但研究主题/对象与研究者主方向不一致，最高只能打 4 分；如果论文主题与研究者方向相关，同时方法又明显命中研究者的方法兴趣，可以额外加 1-2 分
+2. 从以下两层候选中选一个分类标签，必须严格从列表中选，不得自造新标签：
+   主题类（优先选）：{topic_line}
+   方法类（主题对不上时才选）：{method_line}
+   兜底：其他
+   规则：先看论文研究的对象/疾病/人群能否落入主题类；只有主题类完全对不上，才选方法类；方法类只描述研究设计本身（如：这篇就是在做系统综述/质性访谈），不因为论文用了某方法就归方法类
+3. 请综合以上信息评分，但优先依据研究者的明确输入；如果存在”用户修正后的偏好”，可作为低于明确输入的辅助参考
 
 只输出 JSON 数组，格式：
 [{{"score": 8, "category": "分类标签"}}, ...]

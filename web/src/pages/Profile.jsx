@@ -75,14 +75,13 @@ export default function Profile() {
           <p className="text-warm-gray mt-4 leading-relaxed text-sm max-w-2xl">
             标记你关注的方向与近期需求，系统会逐步理解你的研究偏好。
           </p>
-
           <div className="grid grid-cols-2 gap-3 mt-5">
             <div className="rounded-2xl border border-cream-dark/60 bg-cream/60 px-4 py-3">
               <p className="text-xs text-warm-gray/60 mb-2">关注方向</p>
               <div className="flex flex-wrap gap-1.5">
                 {splitTags(profile.focus_areas).length > 0 ? (
                   splitTags(profile.focus_areas).map(tag => (
-                    <span key={tag} className="px-2.5 py-1 rounded-full bg-warm-white/80 text-navy text-xs">
+                    <span key={tag} className="px-2.5 py-1 rounded-full bg-coral/10 text-coral text-xs font-medium">
                       {tag}
                     </span>
                   ))
@@ -100,14 +99,13 @@ export default function Profile() {
       </header>
 
       <main className="px-6 max-w-3xl mx-auto space-y-6">
-        <SectionCard title="长期关注">
+        <SectionCard title="研究偏好">
           <TagInput
             label="研究方向"
             value={profile.focus_areas}
             onChange={value => patchProfile({ focus_areas: value })}
             placeholder="例如：老年护理、慢性病管理、术后康复、患者安全"
           />
-
           <TagInput
             label="方法兴趣"
             hint="会和研究方向一起生成检索词"
@@ -115,21 +113,18 @@ export default function Profile() {
             onChange={value => patchProfile({ method_interests: value })}
             placeholder="例如：系统综述、随机对照试验、质性研究、Meta分析"
           />
-
           <VoiceTextarea
             label="随手补充"
             value={profile.background}
             onChange={val => patchProfile({ background: val })}
             placeholder="随便写，比如：最近在准备综述，想多看干预研究，也关注预测模型相关内容"
           />
-
           <TagInput
             label="不想看的内容"
             value={profile.exclude_areas}
             onChange={value => patchProfile({ exclude_areas: value })}
             placeholder="例如：基础实验研究、动物模型、药物合成、纯分子机制"
           />
-
           <TagInput
             label="学科领域"
             value={profile.discipline}
@@ -140,7 +135,7 @@ export default function Profile() {
 
         <SectionCard
           title="系统观察摘要"
-          description="由系统根据你的收藏与对话行为自动归纳，不参与检索，但会作为上下文背景，让 AI 更贴近你的研究脉络来解读论文、回应你的问题。"
+          description="由系统根据你的收藏与对话行为自动归纳，作为上下文背景让 AI 更贴近你的研究脉络。"
         >
           <SummaryEditor
             summary={profile.interests_summary}
