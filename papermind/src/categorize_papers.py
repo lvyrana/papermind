@@ -4,6 +4,30 @@
 """
 
 import json
+import re
+
+
+def _build_category_list(focus: str) -> list[str]:
+    """根据研究方向构建个性化分类候选列表。
+
+    取用户填写的研究方向标签（最多 5 个）作为主题类，
+    加上 3 个通用方法类，最后加兜底「其他」。
+    """
+    topic_tags = []
+    if focus:
+        raw = [t.strip() for t in re.split(r'[,，、]', focus) if t.strip()]
+        topic_tags = raw[:5]
+
+    method_tags = ["系统综述", "预测模型", "干预研究"]
+
+    seen = set()
+    result = []
+    for tag in topic_tags + method_tags:
+        if tag not in seen:
+            seen.add(tag)
+            result.append(tag)
+    result.append("其他")
+    return result
 
 
 def score_and_categorize_papers(papers: list[dict], profile: dict, client, model: str) -> list[dict]:
@@ -36,18 +60,21 @@ def score_and_categorize_papers(papers: list[dict], profile: dict, client, model
     if is_manual_summary and interests_summary:
         profile_text += f"---\n用户修正后的偏好（辅助参考，低于以上明确输入，不影响分类标签命名）：\n{interests_summary}\n"
 
+    category_list = _build_category_list(focus)
+    print(f"[categorize] 分类候选列表: {category_list}")
+
     # 分批处理，每批最多 20 篇
     batch_size = 20
     for start in range(0, len(papers), batch_size):
         batch = papers[start:start + batch_size]
-        _score_batch(batch, profile_text, client, model)
+        _score_batch(batch, profile_text, category_list, client, model)
 
     # 按分数降序排列
     papers.sort(key=lambda p: p.get("relevance_score", 0), reverse=True)
     return papers
 
 
-def _score_batch(papers: list[dict], profile_text: str, client, model: str):
+def _score_batch(papers: list[dict], profile_text: str, category_list: list[str], client, model: str):
     """对一批论文打分和分类"""
     titles_block = "\n".join(
         f"{i+1}. {p['title']}" + (f" | {p['abstract'][:150]}" if p.get('abstract') else "")
@@ -63,9 +90,9 @@ def _score_batch(papers: list[dict], profile_text: str, client, model: str):
 
 请为每篇论文：
 1. 打一个相关性分数（0-10）：10=高度相关核心方向，7-9=相关，4-6=一般相关，1-3=不太相关。特别注意：如果论文内容属于研究者"不想看的内容"中列出的领域，必须打 0 分，即使标题看起来和研究方向有关；如果论文主要只是方法学（如机器学习、预测模型、孟德尔随机化、中介分析），但研究主题/对象与研究者主方向不一致，最高只能打 4 分；如果论文主题与研究者方向相关，同时方法又明显命中研究者的方法兴趣，可以额外加 1-2 分
-2. 从以下固定大类中选一个最匹配的分类标签，必须严格从列表中选，不得自造新标签：
-   预测模型、系统综述、干预研究、症状管理、患者教育、慢性病管理、肿瘤护理、老年护理、心理健康、其他
-   选择依据：优先看论文的研究主题/对象，其次看研究方法；若方法是预测模型/机器学习但主题是肿瘤，选"肿瘤护理"而非"预测模型"；若是 RCT/干预研究但主题是症状管理，选"症状管理"；只有当论文核心贡献就是方法本身（如开发通用预测工具、方法学综述）时才选方法类标签
+2. 从以下候选大类中选一个最匹配的分类标签，必须严格从列表中选，不得自造新标签：
+   {"、".join(category_list)}
+   选择依据：优先看论文的研究主题/对象，其次看研究方法；只有当论文核心贡献就是方法本身（如开发通用预测工具、方法学综述）时才选方法类标签；若主题与任何候选类都不符，选"其他"
 3. 请综合以上信息评分，但优先依据研究者的明确输入；如果存在“用户修正后的偏好”，可作为低于明确输入的辅助参考
 
 只输出 JSON 数组，格式：
