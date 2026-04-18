@@ -1,12 +1,26 @@
+import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { User, Home, Settings, BookOpen } from 'lucide-react'
 
 export default function Navbar() {
   const location = useLocation()
   const isActive = (path) => location.pathname === path || location.pathname.startsWith(path + '/')
+  const [visible, setVisible] = useState(true)
+  const lastY = useRef(0)
+
+  useEffect(() => {
+    const onScroll = () => {
+      const y = window.scrollY
+      if (y < 60) { setVisible(true); lastY.current = y; return }
+      setVisible(y < lastY.current)
+      lastY.current = y
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
 
   return (
-    <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
+    <nav className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 ${visible ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0'}`}>
       <div className="flex items-center gap-1 px-5 py-3 bg-navy/90 backdrop-blur-lg rounded-full shadow-lg">
         <NavItem to="/" icon={<Home size={18} />} label="首页" active={location.pathname === '/'} />
         <NavItem to="/library" icon={<BookOpen size={18} />} label="收藏" active={isActive('/library')} />
