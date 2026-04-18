@@ -176,7 +176,7 @@ function PaperRow({ paper, onDelete, index = 0 }) {
 
         {/* 标题 + 中文提示 */}
         <div className="flex-1 min-w-0">
-          <p className="text-[13px] text-navy leading-snug line-clamp-2 mb-1">
+          <p className="text-[13px] text-navy leading-snug line-clamp-3 mb-1">
             {paper.title}
           </p>
           {chineseHint && (
