@@ -79,16 +79,16 @@ def score_and_categorize_papers(papers: list[dict], profile: dict, client, model
 
 
 def _score_batch(papers: list[dict], profile_text: str, categories: dict, client, model: str):
-    “””batch score and categorize papers”””
-    titles_block = “\n”.join(
-        f”{i+1}. {p['title']}” + (f” | {p['abstract'][:150]}” if p.get('abstract') else “”)
+    """batch score and categorize papers"""
+    titles_block = "\n".join(
+        f"{i+1}. {p['title']}" + (f" | {p['abstract'][:150]}" if p.get('abstract') else "")
         for i, p in enumerate(papers)
     )
 
-    topic_line = “、”.join(categories[“topic”]) if categories[“topic”] else “（无）”
-    method_line = “、”.join(categories[“method”])
+    topic_line = "、".join(categories["topic"]) if categories["topic"] else "（无）"
+    method_line = "、".join(categories["method"])
 
-    prompt = f”””你是一位学术文献筛选助手。请根据研究者画像，对以下论文进行相关性评分和分类。
+    prompt = f"""你是一位学术文献筛选助手。请根据研究者画像，对以下论文进行相关性评分和分类。
 
 {profile_text}
 
@@ -96,13 +96,13 @@ def _score_batch(papers: list[dict], profile_text: str, categories: dict, client
 {titles_block}
 
 请为每篇论文：
-1. 打一个相关性分数（0-10）：10=高度相关核心方向，7-9=相关，4-6=一般相关，1-3=不太相关。特别注意：如果论文内容属于研究者”不想看的内容”中列出的领域，必须打 0 分，即使标题看起来和研究方向有关；如果论文主要只是方法学（如机器学习、预测模型、孟德尔随机化、中介分析），但研究主题/对象与研究者主方向不一致，最高只能打 4 分；如果论文主题与研究者方向相关，同时方法又明显命中研究者的方法兴趣，可以额外加 1-2 分
+1. 打一个相关性分数（0-10）：10=高度相关核心方向，7-9=相关，4-6=一般相关，1-3=不太相关。特别注意：如果论文内容属于研究者"不想看的内容"中列出的领域，必须打 0 分，即使标题看起来和研究方向有关；如果论文主要只是方法学（如机器学习、预测模型、孟德尔随机化、中介分析），但研究主题/对象与研究者主方向不一致，最高只能打 4 分；如果论文主题与研究者方向相关，同时方法又明显命中研究者的方法兴趣，可以额外加 1-2 分
 2. 从以下两层候选中选一个分类标签，必须严格从列表中选，不得自造新标签：
    主题类（优先选）：{topic_line}
    方法类（主题对不上时才选）：{method_line}
    兜底：其他
    规则：先看论文研究的对象/疾病/人群能否落入主题类；只有主题类完全对不上，才选方法类；方法类只描述研究设计本身（如：这篇就是在做系统综述/质性访谈），不因为论文用了某方法就归方法类
-3. 请综合以上信息评分，但优先依据研究者的明确输入；如果存在”用户修正后的偏好”，可作为低于明确输入的辅助参考
+3. 请综合以上信息评分，但优先依据研究者的明确输入；如果存在"用户修正后的偏好"，可作为低于明确输入的辅助参考
 
 只输出 JSON 数组，格式：
 [{{"score": 8, "category": "分类标签"}}, ...]
