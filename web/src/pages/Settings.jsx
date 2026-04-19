@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { ArrowLeft, Sparkles, Copy, Check, Download, Link2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
-import { getUserId, setUserId, API_BASE } from '../api'
+import { getUserId, API_BASE } from '../api'
 
 export default function Settings() {
   const [copied, setCopied] = useState(false)
@@ -10,9 +10,6 @@ export default function Settings() {
   const [exporting, setExporting] = useState(false)
   const [uid, setUid] = useState('')
   const [uidUnavailable, setUidUnavailable] = useState(false)
-  const [syncInput, setSyncInput] = useState('')
-  const [syncError, setSyncError] = useState('')
-
   useEffect(() => {
     try {
       const nextUid = getUserId()
@@ -23,17 +20,6 @@ export default function Settings() {
       setUidUnavailable(true)
     }
   }, [])
-
-  const handleSync = () => {
-    const val = syncInput.trim()
-    const uuidReg = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-    if (!uuidReg.test(val)) {
-      setSyncError('格式不对，请粘贴完整的同步码')
-      return
-    }
-    setUserId(val)
-    window.location.reload()
-  }
 
   const handleCopyLink = () => {
     if (!uid) return
@@ -181,8 +167,8 @@ export default function Settings() {
 
         {/* 专属链接 */}
         <div className="bg-warm-white rounded-2xl p-5 shadow-sm border border-cream-dark/50">
-          <p className="text-xs font-medium text-navy/50 mb-1">在其他设备继续使用</p>
-          <p className="text-xs text-warm-gray mb-3">复制专属链接，在手机或其他浏览器打开，数据会自动同步。</p>
+          <p className="text-xs font-medium text-navy/50 mb-1">多端同步</p>
+          <p className="text-xs text-warm-gray mb-3">复制专属链接，在手机或其他浏览器中打开，即可访问同一份数据。</p>
           <button
             onClick={handleCopyLink}
             disabled={!uid}
@@ -191,29 +177,6 @@ export default function Settings() {
             {linkCopied ? <Check size={13} /> : <Link2 size={13} />}
             {linkCopied ? '链接已复制！' : '复制我的专属链接'}
           </button>
-        </div>
-
-        {/* 同步码 */}
-        <div className="bg-warm-white rounded-2xl p-5 shadow-sm border border-cream-dark/50">
-          <p className="text-xs font-medium text-navy/50 mb-1">切换账号</p>
-          <p className="text-xs text-warm-gray mb-3">粘贴另一台设备的 ID，即可在本设备访问那个账号的数据。</p>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={syncInput}
-              onChange={e => { setSyncInput(e.target.value); setSyncError('') }}
-              placeholder="粘贴同步码"
-              className="flex-1 text-xs bg-cream-dark/30 rounded-lg px-3 py-2 text-navy outline-none border border-transparent focus:border-coral/40 font-mono"
-            />
-            <button
-              onClick={handleSync}
-              disabled={!syncInput.trim()}
-              className="px-3 py-2 rounded-lg bg-navy/90 text-warm-white text-xs hover:bg-navy transition-colors disabled:opacity-40"
-            >
-              应用
-            </button>
-          </div>
-          {syncError && <p className="text-xs text-coral mt-2">{syncError}</p>}
         </div>
       </main>
 
