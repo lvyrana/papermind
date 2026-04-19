@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Sparkles, Copy, Check, Download, Link2 } from 'lucide-react'
+import { ArrowLeft, Sparkles, Check, Download, Link2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import { getUserId, API_BASE } from '../api'
 
 export default function Settings() {
-  const [copied, setCopied] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [uid, setUid] = useState('')
@@ -30,25 +29,6 @@ export default function Settings() {
     }).catch(() => {
       alert(`复制失败，请手动复制：\n${link}`)
     })
-  }
-
-  const handleCopy = () => {
-    if (!uid) {
-      alert('当前环境暂时无法读取设备 ID，请稍后重试。')
-      return
-    }
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(uid)
-        .then(() => {
-          setCopied(true)
-          setTimeout(() => setCopied(false), 2000)
-        })
-        .catch(() => {
-          alert('当前环境不支持一键复制，请手动长按设备 ID 复制。')
-        })
-      return
-    }
-    alert('当前环境不支持一键复制，请手动长按设备 ID 复制。')
   }
 
   const handleExport = async () => {
@@ -145,30 +125,14 @@ export default function Settings() {
           </button>
         </div>
 
-        {/* 设备 ID */}
-        <div className="bg-warm-white rounded-2xl p-5 shadow-sm border border-cream-dark/50">
-          <p className="text-xs font-medium text-navy/50 mb-2">设备 ID</p>
-          <p className="text-xs text-warm-gray mb-2">
-            {uidUnavailable
-              ? '当前浏览器暂时无法读取设备 ID，但不影响浏览。建议稍后刷新或切换到常规浏览模式。'
-              : '你的数据与此设备绑定，换设备或清除浏览器数据后将重新开始。'}
-          </p>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 text-xs text-navy/60 bg-cream-dark/30 rounded-lg px-3 py-2 break-all font-mono">
-              {uid || '当前环境暂时无法读取设备 ID'}
-            </code>
-            <button onClick={handleCopy}
-              disabled={!uid}
-              className="p-2 rounded-lg hover:bg-cream-dark/50 transition-colors text-warm-gray hover:text-navy flex-shrink-0">
-              {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
-            </button>
-          </div>
-        </div>
-
         {/* 专属链接 */}
         <div className="bg-warm-white rounded-2xl p-5 shadow-sm border border-cream-dark/50">
           <p className="text-xs font-medium text-navy/50 mb-1">多端同步</p>
-          <p className="text-xs text-warm-gray mb-3">复制专属链接，在手机或其他浏览器中打开，即可访问同一份数据。</p>
+          <p className="text-xs text-warm-gray mb-3">
+            {uidUnavailable
+              ? '当前浏览器暂时无法读取设备 ID，但不影响浏览。建议稍后刷新或切换到常规浏览模式。'
+              : '你的数据存储在此设备。复制专属链接，在手机或其他浏览器中打开，即可访问同一份数据。'}
+          </p>
           <button
             onClick={handleCopyLink}
             disabled={!uid}

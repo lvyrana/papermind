@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.5.19 - 2026-04-19
+
+### 设置页简化：移除设备 ID 模块
+
+- 删除"设备 ID"卡片（原始 UUID 对普通用户无实际用途）
+- 将"数据存储在此设备"的说明文字合并入"多端同步"卡片，信息不丢失，页面更简洁
+- 移除关联的 `copied` state、`handleCopy` 函数及 `Copy` 图标 import
+
+## v0.5.18 - 2026-04-19
+
+### 新功能：AI 对话支持语音输入
+
+- 新增 `useSpeechInput` hook，封装 Web Speech API（`SpeechRecognition` / `webkitSpeechRecognition`）
+- 论文阅读页（`PaperRead`）和收藏详情页（`LibraryDetail`）的 AI 对话输入框旁新增麦克风按钮
+- 点击后开始识别，识别结果追加到输入框；再次点击或识别结束自动停止；录音中按钮变为珊瑚色脉冲动效
+- 不支持 Web Speech API 的浏览器（如部分 Firefox）自动隐藏麦克风按钮，不影响正常使用
+
 ## v0.5.17 - 2026-04-19
 
 ### Bug 修复：per-paper 缓存串账 / 解读轮询无终止条件

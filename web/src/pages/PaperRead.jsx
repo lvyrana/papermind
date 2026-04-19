@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages } from 'lucide-react'
+import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages, Mic, MicOff } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, API_BASE, getUserId } from '../api'
+import { useSpeechInput } from '../hooks/useSpeechInput'
 
 export default function PaperRead() {
   const { id } = useParams()
@@ -14,6 +15,9 @@ export default function PaperRead() {
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
+  const { listening, supported: speechSupported, startListening, stopListening } = useSpeechInput(
+    (text) => setChatInput(prev => prev ? prev + ' ' + text : text)
+  )
   const [summarizing, setSummarizing] = useState(false)
   const [summarized, setSummarized] = useState(false)
   const [bookmarked, setBookmarked] = useState(false)
@@ -569,6 +573,15 @@ export default function PaperRead() {
                   onKeyDown={(e) => e.key === 'Enter' && handleSendChat()}
                   placeholder="关于这篇论文，你想聊什么？"
                   className="flex-1 bg-warm-white rounded-xl px-4 py-3 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/50" />
+                {speechSupported && (
+                  <button
+                    onClick={listening ? stopListening : startListening}
+                    type="button"
+                    className={`p-3 rounded-xl transition-all ${listening ? 'bg-coral text-warm-white animate-pulse' : 'bg-cream-dark/60 text-warm-gray hover:text-navy'}`}
+                  >
+                    {listening ? <MicOff size={16} /> : <Mic size={16} />}
+                  </button>
+                )}
                 <button onClick={handleSendChat} disabled={chatLoading}
                   className="p-3 bg-navy text-warm-white rounded-xl hover:bg-navy-light transition-colors disabled:opacity-50">
                   <Send size={16} />
