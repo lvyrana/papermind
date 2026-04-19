@@ -487,7 +487,7 @@ function OnboardingScreen() {
           有记忆的<br />学术文献助手
         </h1>
         <p className="text-navy/55 leading-relaxed mb-10">
-          告诉它你在研究什么，它会记住——每天自动筛选最新文献，笔记和对话永久留存，越用越懂你。
+          告诉它你在研究什么，它会记住——随时检索最新文献，笔记和对话永久留存，越用越懂你。
         </p>
 
         <div className="space-y-4 mb-10">
@@ -505,8 +505,8 @@ function OnboardingScreen() {
               <BookOpen size={15} className="text-coral" />
             </div>
             <div>
-              <p className="text-sm font-medium text-navy">每天帮你过滤一遍</p>
-              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">从 PubMed 自动抓取最新文献，AI 筛出最相关那几篇并生成中文解读</p>
+              <p className="text-sm font-medium text-navy">一键检索，AI 替你筛</p>
+              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">根据你的研究画像从 PubMed 检索最新文献，AI 打分筛选出相关论文并生成中文解读</p>
             </div>
           </div>
           <div className="flex items-start gap-3">
