@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from 'react'
-import { Link } from 'react-router-dom'
-import { ArrowLeft, BookOpen, MessageCircle, FileText, Search, Trash2 } from 'lucide-react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ArrowLeft, BookOpen, MessageCircle, FileText, Search, Trash2, Plus, X, Loader2 } from 'lucide-react'
 import Navbar from '../components/Navbar'
-import { apiGet, apiDelete } from '../api'
+import { apiGet, apiDelete, apiPost } from '../api'
 
 function timeAgo(dateStr) {
   if (!dateStr) return ''
@@ -20,11 +20,13 @@ function timeAgo(dateStr) {
 }
 
 export default function Library() {
+  const navigate = useNavigate()
   const [papers, setPapers] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState('全部')
   const [notesOnly, setNotesOnly] = useState(false)
+  const [showAddModal, setShowAddModal] = useState(false)
 
   useEffect(() => {
     apiGet('/library')
@@ -70,11 +72,20 @@ export default function Library() {
           <ArrowLeft size={16} />
           <span>返回</span>
         </Link>
-        <div className="flex items-baseline justify-between mb-5">
+        <div className="flex items-center justify-between mb-5">
           <h1 className="text-3xl font-bold text-navy font-serif leading-snug">我的收藏</h1>
-          {papers.length > 0 && (
-            <span className="text-xs text-warm-gray/70">{filtered.length} / {papers.length} 篇</span>
-          )}
+          <div className="flex items-center gap-3">
+            {papers.length > 0 && (
+              <span className="text-xs text-warm-gray/70">{filtered.length} / {papers.length} 篇</span>
+            )}
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-full bg-coral text-warm-white text-xs font-medium hover:bg-coral-light transition-colors"
+            >
+              <Plus size={13} />
+              添加论文
+            </button>
+          </div>
         </div>
 
         {papers.length > 0 && (
@@ -152,6 +163,16 @@ export default function Library() {
       </main>
 
       <Navbar />
+
+      {showAddModal && (
+        <AddPaperModal
+          onClose={() => setShowAddModal(false)}
+          onAdded={(id) => {
+            setShowAddModal(false)
+            navigate(`/library/${id}`)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -207,5 +228,109 @@ function PaperRow({ paper, onDelete, index = 0 }) {
         </p>
       )}
     </Link>
+  )
+}
+
+function AddPaperModal({ onClose, onAdded }) {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState(null)
+  const [searching, setSearching] = useState(false)
+  const [saving, setSaving] = useState(null)
+  const [error, setError] = useState('')
+  const inputRef = useRef(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  const handleSearch = async () => {
+    if (!query.trim()) return
+    setSearching(true)
+    setError('')
+    setResults(null)
+    try {
+      const data = await apiPost('/lookup-paper', { query: query.trim() })
+      if (data.error) { setError(data.error); return }
+      setResults(data.papers || [])
+      if ((data.papers || []).length === 0) setError('未找到相关论文，请尝试更换关键词')
+    } catch {
+      setError('查询失败，请稍后重试')
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const handleAdd = async (paper) => {
+    setSaving(paper.pmid || paper.title)
+    try {
+      const res = await apiPost('/library/save', { paper, chats: [] })
+      if (res.ok) onAdded(res.id)
+    } catch {
+      setError('收藏失败')
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-navy/40 backdrop-blur-sm">
+      <div className="w-full max-w-lg bg-warm-white rounded-3xl shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b border-cream-dark/50">
+          <h2 className="text-base font-semibold text-navy">添加论文</h2>
+          <button onClick={onClose} className="text-warm-gray hover:text-navy transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4">
+          <p className="text-xs text-warm-gray mb-3">输入 PMID、DOI 或标题关键词</p>
+          <div className="flex gap-2">
+            <input
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleSearch()}
+              placeholder="例：38765432 / 10.1016/j.xxx / frailty elderly care"
+              className="flex-1 bg-cream/50 rounded-xl px-3 py-2.5 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/40"
+            />
+            <button
+              onClick={handleSearch}
+              disabled={searching || !query.trim()}
+              className="px-4 py-2.5 bg-coral text-warm-white rounded-xl text-sm font-medium hover:bg-coral-light transition-colors disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {searching ? <Loader2 size={14} className="animate-spin" /> : '搜索'}
+            </button>
+          </div>
+
+          {error && <p className="text-xs text-coral mt-3">{error}</p>}
+
+          {results !== null && results.length > 0 && (
+            <div className="mt-4 space-y-2 max-h-72 overflow-y-auto">
+              {results.map((paper, i) => (
+                <div key={paper.pmid || i} className="bg-cream/40 rounded-2xl p-3.5 border border-cream-dark/40">
+                  <p className="text-[13px] text-navy leading-snug font-medium line-clamp-2 mb-1.5">{paper.title}</p>
+                  <p className="text-[11px] text-warm-gray/70 mb-3">
+                    {paper.pub_date && <span className="mr-2">{paper.pub_date}</span>}
+                    {paper.journal && <span>{paper.journal}</span>}
+                  </p>
+                  <button
+                    onClick={() => handleAdd(paper)}
+                    disabled={!!saving}
+                    className="w-full py-2 rounded-xl text-xs font-medium bg-navy text-warm-white hover:bg-navy-light transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  >
+                    {saving === (paper.pmid || paper.title) ? (
+                      <><Loader2 size={12} className="animate-spin" /> 正在添加...</>
+                    ) : (
+                      <>收藏并讨论</>
+                    )}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   )
 }

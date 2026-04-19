@@ -27,7 +27,7 @@ from src.fetch_semantic_scholar import get_papers as scholar_get_papers
 from src.categorize_papers import score_and_categorize_papers
 from src.database import (
     init_db, save_paper, get_saved_papers, get_saved_paper,
-    delete_saved_paper, save_note, delete_note, get_note_owner, get_notes, save_chat_message,
+    delete_saved_paper, update_paper_enrichment, save_note, delete_note, get_note_owner, get_notes, save_chat_message,
     get_saved_categories,
     get_chat_history, record_reading, get_reading_history,
     get_profile, save_profile, get_saved_titles, save_search_run, get_latest_search_run,
@@ -398,6 +398,7 @@ def _get_user_cache(user_id: str) -> dict:
             "enriching": False,   # 是否正在后台解读
             "enrich_gen": 0,      # 解读代次，防止旧线程清掉新状态
             "current_page": [],   # 当前页 (index, paper) 列表
+            "pages_history": [],  # 历史页列表，用于回退
             "search_debug": get_latest_search_run(user_id),
         }
     return _papers_cache[user_id]
@@ -413,6 +414,7 @@ def _reset_user_cache(user_id: str):
     cache["enriching"] = False
     cache["enrich_gen"] = 0
     cache["current_page"] = []
+    cache["pages_history"] = []
     cache["search_debug"] = None
 
 
@@ -1034,6 +1036,8 @@ def _bg_fetch_and_enrich(cache, keyword_list, days, source, profile, uid):
         cache["papers"] = papers
         cache["fetched_at"] = datetime.now()
         cache["served_indices"] = set()
+        cache["current_page"] = []
+        cache["pages_history"] = []   # 新批次开始，旧翻页历史全部作废
         cache["search_debug"] = search_debug
 
         # 对前 10 篇做 AI 解读
@@ -1073,6 +1077,7 @@ def api_get_papers(
     refresh: bool = Query(default=False),
     force_fetch: bool = Query(default=False),
     poll: bool = Query(default=False),
+    back: bool = Query(default=False),
 ):
     """获取论文。首次请求触发后台抓取，前端轮询获取结果。"""
     uid = _get_user_id(request)
@@ -1098,6 +1103,30 @@ def api_get_papers(
             "total": len(all_papers),
             "remaining": remaining,
             "enriching": enriching,
+            "can_go_back": len(cache.get("pages_history", [])) > 0,
+            "search_debug": cache.get("search_debug"),
+        }
+
+    # back=true: 回退到上一批
+    if back and cache.get("pages_history"):
+        prev_page = cache["pages_history"].pop()
+        # 把当前页从 served_indices 移除（回退），再换回上一页
+        for idx, _ in cache["current_page"]:
+            cache["served_indices"].discard(idx)
+        cache["current_page"] = prev_page
+        all_papers = cache["papers"]
+        page_papers = []
+        for idx, p in prev_page:
+            p["_cache_index"] = idx
+            page_papers.append(p)
+        remaining = len([i for i in range(len(all_papers)) if i not in cache["served_indices"]])
+        return {
+            "papers": page_papers,
+            "total": len(all_papers),
+            "remaining": remaining,
+            "all_explored": False,
+            "enriching": False,
+            "can_go_back": len(cache["pages_history"]) > 0,
             "search_debug": cache.get("search_debug"),
         }
 
@@ -1130,6 +1159,20 @@ def api_get_papers(
             need_fetch = True
 
     if need_fetch:
+        # 画像为空时拒绝抓取，不扣配额
+        has_profile = any([
+            (profile.get("focus_areas") or "").strip(),
+            (profile.get("method_interests") or "").strip(),
+            (profile.get("background") or "").strip(),
+            (profile.get("current_goal") or "").strip(),
+        ])
+        if not has_profile:
+            return {
+                "papers": [], "total": 0, "remaining": 0,
+                "needs_profile": True,
+                "error": "还没有填写研究方向，推荐无法生成。请先完善研究画像。",
+                "search_debug": cache.get("search_debug"),
+            }
         cache["fetching"] = True
         increment_rate_limit(uid, "recommend")
         t = threading.Thread(
@@ -1147,6 +1190,9 @@ def api_get_papers(
     # 选 10 篇还没展示过的
     all_explored = False
     if refresh:
+        # 换一批前先把当前页存入历史
+        if cache["current_page"]:
+            cache.setdefault("pages_history", []).append(cache["current_page"])
         available = [(i, p) for i, p in enumerate(all_papers) if i not in cache["served_indices"]]
         if not available:
             all_explored = True
@@ -1178,6 +1224,7 @@ def api_get_papers(
         "remaining": remaining,
         "all_explored": all_explored,
         "enriching": enriching,
+        "can_go_back": len(cache.get("pages_history", [])) > 0,
         "daily_remaining": get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT),
         "search_debug": cache.get("search_debug"),
     }
@@ -1318,6 +1365,37 @@ def api_translate(data: TranslateRequest, request: Request):
 
 # ========== Library / 收藏库 Routes ==========
 
+class LookupPaperRequest(BaseModel):
+    query: str
+
+
+def _bg_enrich_saved_paper(row_id: int, paper: dict, profile: dict, uid: str):
+    """后台为手动添加的论文生成 AI 解读，并更新数据库。"""
+    try:
+        papers = [dict(paper)]
+        _enrich_papers_with_llm(papers, profile, uid)
+        enriched = papers[0]
+        # 同时补充分类标签
+        category = ""
+        try:
+            from src.categorize_papers import score_and_categorize_papers as _categorize
+            client, model = _get_llm_client()
+            if client:
+                _categorize([enriched], profile, client, model)
+                category = enriched.get("category", "")
+        except Exception:
+            pass
+        update_paper_enrichment(
+            row_id,
+            enriched.get("summary_zh", ""),
+            enriched.get("relevance", ""),
+            category,
+        )
+        print(f"[api] 手动添加论文解读完成 row_id={row_id}")
+    except Exception as e:
+        print(f"[api] 手动添加论文解读失败: {e}")
+
+
 @app.post("/api/library/save")
 def api_save_to_library(data: SavePaperRequest, request: Request):
     """收藏一篇论文"""
@@ -1334,7 +1412,46 @@ def api_save_to_library(data: SavePaperRequest, request: Request):
                 continue
             save_chat_message(row_id, role, content)
 
+    # 手动添加的论文（无 summary_zh）触发后台解读
+    if not data.paper.get("summary_zh") and data.paper.get("abstract"):
+        profile = get_profile(uid)
+        t = threading.Thread(
+            target=_bg_enrich_saved_paper,
+            args=(row_id, data.paper, profile, uid),
+            daemon=True,
+        )
+        t.start()
+
     return {"ok": True, "id": row_id}
+
+
+@app.post("/api/lookup-paper")
+def api_lookup_paper(data: LookupPaperRequest, request: Request):
+    """按 PMID / DOI / 标题关键词搜索论文（不保存，供手动添加预览）"""
+    from src.fetch_papers import fetch_paper_details, search_pmids
+    query = data.query.strip()
+    if not query:
+        return {"papers": []}
+
+    try:
+        # 纯数字 → PMID
+        if re.match(r'^\d{5,9}$', query):
+            papers = fetch_paper_details([query])
+        # DOI
+        elif re.match(r'^10\.\d{4,}/', query):
+            pmids = search_pmids(f'"{query}"[doi]', max_results=3)
+            papers = fetch_paper_details(pmids[:3]) if pmids else []
+        # 标题搜索
+        else:
+            pmids = search_pmids(f'{query}[ti]', max_results=5)
+            if not pmids:
+                pmids = search_pmids(f'{query}[tiab]', max_results=5)
+            papers = fetch_paper_details(pmids[:3]) if pmids else []
+    except Exception as e:
+        print(f"[api] lookup-paper 失败: {e}")
+        return {"papers": [], "error": "查询失败，请稍后重试"}
+
+    return {"papers": papers}
 
 @app.get("/api/library")
 def api_get_library(request: Request):

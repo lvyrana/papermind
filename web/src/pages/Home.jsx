@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
-import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Sprout, Heart, Lightbulb } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Sprout, Heart, Lightbulb, ChevronLeft, BookOpen, MessageCircle, Bookmark } from 'lucide-react'
 import Navbar from '../components/Navbar'
 import { apiGet, apiPost } from '../api'
 
@@ -14,6 +14,7 @@ function loadCachedJson(key, fallback) {
 }
 
 export default function Home() {
+  const navigate = useNavigate()
   const [papers, setPapers] = useState(() => loadCachedJson('cached-papers', []))
   const [searchDebug, setSearchDebug] = useState(() => loadCachedJson('cached-search-debug', null))
   const [showSearchDebug, setShowSearchDebug] = useState(false)
@@ -23,7 +24,10 @@ export default function Home() {
   const [total, setTotal] = useState(0)
   const [remaining, setRemaining] = useState(0)
   const [allExplored, setAllExplored] = useState(false)
+  const [canGoBack, setCanGoBack] = useState(false)
   const [profileFilled, setProfileFilled] = useState(true)
+  const [profileChecked, setProfileChecked] = useState(false)
+  const [needsProfile, setNeedsProfile] = useState(false)
 
   const now = new Date()
   const hour = now.getHours()
@@ -54,8 +58,9 @@ export default function Home() {
       .then(data => {
         const filled = !!(data.focus_areas || data.method_interests || data.background || data.current_goal)
         setProfileFilled(filled)
+        setProfileChecked(true)
       })
-      .catch(() => {})
+      .catch(() => { setProfileChecked(true) })
   }, [])
 
   const pollRef = React.useRef(null)
@@ -73,6 +78,7 @@ export default function Home() {
     setTotal(data.total || 0)
     setRemaining(data.remaining ?? 0)
     setAllExplored(data.all_explored || false)
+    setCanGoBack(data.can_go_back || false)
     localStorage.setItem('cached-papers', JSON.stringify(data.papers || []))
     localStorage.setItem('cached-papers-time', new Date().toISOString())
     localStorage.setItem('cached-search-debug', JSON.stringify(data.search_debug || null))
@@ -100,7 +106,7 @@ export default function Home() {
   }
 
   const fetchPapers = async (opts = {}) => {
-    const { refresh = false, forceFetch = false } = opts
+    const { refresh = false, forceFetch = false, back = false } = opts
     setLoading(true)
     setError(null)
     stopPolling()
@@ -108,11 +114,17 @@ export default function Home() {
       const params = new URLSearchParams()
       if (refresh) params.set('refresh', 'true')
       if (forceFetch) params.set('force_fetch', 'true')
+      if (back) params.set('back', 'true')
       const data = await apiGet(`/papers?${params}`)
-      if (data.rate_limited) {
+      if (data.needs_profile) {
+        setNeedsProfile(true)
+        setLoading(false)
+      } else if (data.rate_limited) {
+        setNeedsProfile(false)
         setError(data.error)
         setLoading(false)
       } else if (data.loading) {
+        setNeedsProfile(false)
         // 后端在抓取中，轮询等待抓取完成
         pollRef.current = setInterval(async () => {
           try {
@@ -144,6 +156,11 @@ export default function Home() {
   useEffect(() => {
     return () => stopPolling()
   }, [])
+
+  // 新用户引导页：画像未填且无任何缓存论文
+  if (profileChecked && !profileFilled && papers.length === 0) {
+    return <OnboardingScreen />
+  }
 
   return (
     <div className="min-h-screen pb-24">
@@ -212,7 +229,16 @@ export default function Home() {
             )}
           </div>
 
-          {error && (
+          {needsProfile && (
+            <div className="bg-coral/5 border border-coral/20 rounded-xl p-4 mb-4">
+              <p className="text-sm text-navy/70 mb-2">还没有填写研究方向，推荐无法生成。</p>
+              <Link to="/profile" className="inline-flex items-center gap-1 text-coral text-sm font-medium hover:underline">
+                去填写研究画像 <ArrowRight size={13} />
+              </Link>
+            </div>
+          )}
+
+          {error && !needsProfile && (
             <div className="bg-coral/5 border border-coral/20 rounded-xl p-4 mb-4 flex items-start gap-2">
               <AlertCircle size={16} className="text-coral flex-shrink-0 mt-0.5" />
               <p className="text-sm text-navy/70">{error}</p>
@@ -237,6 +263,19 @@ export default function Home() {
           {/* 操作按钮 */}
           {papers.length > 0 && (
             <div className="flex gap-3 mt-6">
+              {canGoBack && (
+                <button
+                  onClick={() => {
+                    fetchPapers({ back: true })
+                    window.scrollTo({ top: 0, behavior: 'smooth' })
+                  }}
+                  disabled={loading}
+                  className="py-3 px-4 rounded-full text-sm text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/20 transition-all disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <ChevronLeft size={14} />
+                  上一批
+                </button>
+              )}
               <button
                 onClick={() => {
                   fetchPapers({ refresh: true })
@@ -257,17 +296,19 @@ export default function Home() {
                   <><RefreshCw size={14} /> 换一批{remaining > 0 ? <span className="opacity-60 text-xs ml-1">剩 {remaining} 篇</span> : null}</>
                 )}
               </button>
-              <button
-                onClick={() => {
-                  fetchPapers({ forceFetch: true })
-                  window.scrollTo({ top: 0, behavior: 'smooth' })
-                }}
-                disabled={loading}
-                className="py-3 px-5 rounded-full text-sm text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/20 transition-all disabled:opacity-50 flex items-center gap-1.5"
-              >
-                <RotateCcw size={14} />
-                重新抓取
-              </button>
+              {profileFilled && (
+                <button
+                  onClick={() => {
+                    fetchPapers({ forceFetch: true })
+                    window.scrollTo({ top: 0, behavior: 'smooth' })
+                  }}
+                  disabled={loading}
+                  className="py-3 px-5 rounded-full text-sm text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/20 transition-all disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <RotateCcw size={14} />
+                  重新抓取
+                </button>
+              )}
             </div>
           )}
 
@@ -337,9 +378,9 @@ export default function Home() {
           {!loading && papers.length === 0 && !error && (
             <div className="flex flex-col items-center gap-3 py-12">
               <p className="text-warm-gray text-sm">还没有推荐结果。</p>
-              <button onClick={() => fetchPapers()}
+              <button onClick={() => profileFilled ? fetchPapers() : navigate('/profile')}
                 className="px-4 py-2 bg-navy text-warm-white rounded-full text-sm hover:bg-navy-light transition-colors">
-                获取推荐论文
+                {profileFilled ? '获取推荐论文' : '先填写研究方向'}
               </button>
             </div>
           )}
@@ -435,4 +476,62 @@ function formatSourceBadge(sourceItem) {
   if (sourceItem.status === 'ok') return `${sourceLabel} ${sourceItem.count} 篇`
   if (sourceItem.status === 'skipped_limit') return `${sourceLabel} 已跳过`
   return `${sourceLabel} 失败`
+}
+
+function OnboardingScreen() {
+  return (
+    <div className="min-h-screen flex flex-col pb-24">
+      <div className="flex-1 px-6 pt-16 max-w-lg mx-auto w-full">
+        <p className="text-xs text-coral font-medium tracking-wider uppercase mb-6">PaperMind</p>
+        <h1 className="text-3xl font-bold text-navy font-serif leading-snug mb-4">
+          有记忆的<br />学术文献助手
+        </h1>
+        <p className="text-navy/55 leading-relaxed mb-10">
+          告诉它你在研究什么，它会记住——每天自动筛选最新文献，笔记和对话永久留存，越用越懂你。
+        </p>
+
+        <div className="space-y-4 mb-10">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-coral/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <Heart size={15} className="text-coral" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-navy">记住你是谁</p>
+              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">填写一次研究画像，它永远记得你的方向——推荐越用越准，解读越来越懂你</p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-coral/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <BookOpen size={15} className="text-coral" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-navy">每天帮你过滤一遍</p>
+              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">从 PubMed 自动抓取最新文献，AI 筛出最相关那几篇并生成中文解读</p>
+            </div>
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-coral/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+              <MessageCircle size={15} className="text-coral" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-navy">沉淀你的思考</p>
+              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">对话、笔记、收藏全部保存，随时翻回来——你的研究积累不会消失</p>
+            </div>
+          </div>
+        </div>
+
+        <Link
+          to="/profile"
+          className="block w-full py-3.5 rounded-full bg-coral text-warm-white text-center text-sm font-semibold hover:bg-coral-light transition-colors shadow-[0_4px_16px_rgba(232,135,122,0.4)]"
+        >
+          开始告诉它你在研究什么 →
+        </Link>
+        <p className="text-center text-xs text-warm-gray/60 mt-4">
+          大约 2 分钟，设置一次，长期受益
+        </p>
+      </div>
+
+      <Navbar />
+    </div>
+  )
 }

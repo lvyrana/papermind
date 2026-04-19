@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Sparkles, Copy, Check, Download } from 'lucide-react'
+import { ArrowLeft, Sparkles, Copy, Check, Download, Link2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import { getUserId, setUserId, API_BASE } from '../api'
 
 export default function Settings() {
   const [copied, setCopied] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [uid, setUid] = useState('')
   const [uidUnavailable, setUidUnavailable] = useState(false)
@@ -32,6 +33,17 @@ export default function Settings() {
     }
     setUserId(val)
     window.location.reload()
+  }
+
+  const handleCopyLink = () => {
+    if (!uid) return
+    const link = `${window.location.origin}/?uid=${uid}`
+    navigator.clipboard?.writeText(link).then(() => {
+      setLinkCopied(true)
+      setTimeout(() => setLinkCopied(false), 2500)
+    }).catch(() => {
+      alert(`复制失败，请手动复制：\n${link}`)
+    })
   }
 
   const handleCopy = () => {
@@ -165,6 +177,20 @@ export default function Settings() {
               {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
             </button>
           </div>
+        </div>
+
+        {/* 专属链接 */}
+        <div className="bg-warm-white rounded-2xl p-5 shadow-sm border border-cream-dark/50">
+          <p className="text-xs font-medium text-navy/50 mb-1">在其他设备继续使用</p>
+          <p className="text-xs text-warm-gray mb-3">复制专属链接，在手机或其他浏览器打开，数据会自动同步。</p>
+          <button
+            onClick={handleCopyLink}
+            disabled={!uid}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-coral text-warm-white text-xs font-medium hover:bg-coral-light transition-colors disabled:opacity-40"
+          >
+            {linkCopied ? <Check size={13} /> : <Link2 size={13} />}
+            {linkCopied ? '链接已复制！' : '复制我的专属链接'}
+          </button>
         </div>
 
         {/* 同步码 */}

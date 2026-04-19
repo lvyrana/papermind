@@ -391,6 +391,21 @@ def delete_saved_paper(paper_id: int):
     conn.close()
 
 
+def update_paper_enrichment(paper_id: int, summary_zh: str, relevance: str, category: str = ""):
+    """更新收藏论文的 AI 解读字段"""
+    conn = _ensure_db()
+    conn.execute(
+        """UPDATE saved_papers SET
+               summary_zh = COALESCE(NULLIF(?, ''), summary_zh),
+               relevance  = COALESCE(NULLIF(?, ''), relevance),
+               category   = COALESCE(NULLIF(?, ''), category)
+           WHERE id = ?""",
+        (summary_zh, relevance, category, paper_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 # ========== Notes ==========
 
 def save_note(paper_rowid: int, content: str, source: str = "manual", note_id: int = None) -> int:

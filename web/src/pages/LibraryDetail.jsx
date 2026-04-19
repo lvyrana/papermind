@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle, Download, ExternalLink, Languages, BookmarkPlus, Trash2, Plus } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -23,15 +23,47 @@ export default function LibraryDetail() {
   const [titleTranslating, setTitleTranslating] = useState(false)
   const [savedMsgIndexes, setSavedMsgIndexes] = useState(new Set())
 
+  const enrichPollRef = useRef(null)
+  const enrichPollCountRef = useRef(0)
+  const ENRICH_POLL_MAX = 15  // 最多轮询 15 次（60s），超时自动放弃
+
+  const stopEnrichPoll = () => {
+    if (enrichPollRef.current) {
+      clearInterval(enrichPollRef.current)
+      enrichPollRef.current = null
+    }
+    enrichPollCountRef.current = 0
+  }
+
   useEffect(() => {
     apiGet(`/library/${id}`)
       .then(data => {
-        setPaper(data.paper)
+        const p = data.paper
+        setPaper(p)
         setNotes(data.notes || [])
         setChats(data.chats || [])
+        // 手动添加的论文可能还没有 AI 解读，轮询等待后台补全
+        if (p && p.abstract && !p.summary_zh) {
+          enrichPollCountRef.current = 0
+          enrichPollRef.current = setInterval(async () => {
+            enrichPollCountRef.current += 1
+            if (enrichPollCountRef.current >= ENRICH_POLL_MAX) {
+              stopEnrichPoll()  // 超时放弃，不再转圈
+              return
+            }
+            try {
+              const fresh = await apiGet(`/library/${id}`)
+              if (fresh.paper?.summary_zh) {
+                setPaper(fresh.paper)
+                stopEnrichPoll()
+              }
+            } catch { /* ignore */ }
+          }, 4000)
+        }
       })
       .catch(() => {})
       .finally(() => setLoading(false))
+    return () => stopEnrichPoll()
   }, [id])
 
   const handleAddNote = async () => {
@@ -237,12 +269,17 @@ export default function LibraryDetail() {
             </div>
           </div>
 
-          {paper.summary_zh && (
+          {paper.summary_zh ? (
             <div className="bg-warm-white rounded-2xl p-5 mt-6 border border-cream-dark/50">
               <h3 className="text-sm font-medium text-navy mb-2">中文解读</h3>
               <p className="text-sm text-navy/80 leading-relaxed">{paper.summary_zh}</p>
             </div>
-          )}
+          ) : paper.abstract && enrichPollRef.current ? (
+            <div className="bg-warm-white rounded-2xl p-5 mt-6 border border-cream-dark/50 flex items-center gap-2 text-warm-gray text-sm">
+              <Loader2 size={14} className="animate-spin text-coral flex-shrink-0" />
+              AI 解读生成中，稍等片刻…
+            </div>
+          ) : null}
 
           {paper.relevance && (
             <div className="bg-coral/5 rounded-2xl p-5 mt-4 border border-coral/10">
