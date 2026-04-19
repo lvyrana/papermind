@@ -37,6 +37,19 @@ from src.database import (
 # 加载 .env
 load_dotenv(Path(__file__).parent / ".env")
 
+# Sentry 错误监控（配置 SENTRY_DSN 后生效）
+_sentry_dsn = os.environ.get("SENTRY_DSN", "")
+if _sentry_dsn:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        integrations=[StarletteIntegration(), FastApiIntegration()],
+        traces_sample_rate=0.1,
+        send_default_pii=False,
+    )
+
 app = FastAPI(title="PaperMind API")
 
 # 生产环境在 .env 中设置 ALLOWED_ORIGINS=https://yourdomain.com
