@@ -496,8 +496,8 @@ function OnboardingScreen() {
               <Heart size={15} className="text-coral" />
             </div>
             <div>
-              <p className="text-sm font-medium text-navy">越聊越懂你</p>
-              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">AI 结合你的研究背景讨论论文，不是泛泛而谈</p>
+              <p className="text-sm font-medium text-navy">它记得你的方向</p>
+              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">研究画像不是关键词标签，是它理解你的起点——对话和解读都会围绕你的真实关注</p>
             </div>
           </div>
           <div className="flex items-start gap-3">
