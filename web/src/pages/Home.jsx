@@ -487,7 +487,7 @@ function OnboardingScreen() {
           有记忆的<br />学术文献助手
         </h1>
         <p className="text-navy/55 leading-relaxed mb-10">
-          告诉它你在研究什么，它会记住——随时检索最新文献，笔记和对话永久留存，越用越懂你。
+          它记得你的方向、偏好和每次思考——从检索到讨论，全程为你定制。
         </p>
 
         <div className="space-y-4 mb-10">
@@ -496,8 +496,8 @@ function OnboardingScreen() {
               <Heart size={15} className="text-coral" />
             </div>
             <div>
-              <p className="text-sm font-medium text-navy">记住你是谁</p>
-              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">填写一次研究画像，它永远记得你的方向——推荐越用越准，解读越来越懂你</p>
+              <p className="text-sm font-medium text-navy">越聊越懂你</p>
+              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">AI 结合你的研究背景讨论论文，不是泛泛而谈</p>
             </div>
           </div>
           <div className="flex items-start gap-3">
@@ -505,8 +505,8 @@ function OnboardingScreen() {
               <BookOpen size={15} className="text-coral" />
             </div>
             <div>
-              <p className="text-sm font-medium text-navy">一键检索，AI 替你筛</p>
-              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">根据你的研究画像从 PubMed 检索最新文献，AI 打分筛选出相关论文并生成中文解读</p>
+              <p className="text-sm font-medium text-navy">一键检索，精准推荐</p>
+              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">根据画像生成检索词，AI 逐篇打分并生成个性化解读</p>
             </div>
           </div>
           <div className="flex items-start gap-3">
@@ -514,8 +514,8 @@ function OnboardingScreen() {
               <MessageCircle size={15} className="text-coral" />
             </div>
             <div>
-              <p className="text-sm font-medium text-navy">沉淀你的思考</p>
-              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">对话、笔记、收藏全部保存，随时翻回来——你的研究积累不会消失</p>
+              <p className="text-sm font-medium text-navy">思考越积越厚</p>
+              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">对话、笔记、收藏全部留存，系统还会观察你的偏好——越用越懂你</p>
             </div>
           </div>
         </div>
@@ -524,10 +524,10 @@ function OnboardingScreen() {
           to="/profile"
           className="block w-full py-3.5 rounded-full bg-coral text-warm-white text-center text-sm font-semibold hover:bg-coral-light transition-colors shadow-[0_4px_16px_rgba(232,135,122,0.4)]"
         >
-          开始告诉它你在研究什么 →
+          告诉它你在研究什么 →
         </Link>
         <p className="text-center text-xs text-warm-gray/60 mt-4">
-          大约 2 分钟，设置一次，长期受益
+          大约 2 分钟，随时可以调整
         </p>
       </div>
 
