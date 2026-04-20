@@ -4,6 +4,14 @@ import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import { apiGet, apiPost } from '../api'
 
+const BROAD_EXCLUDE_TERMS = ['研究', '文章', '论文', '综述', '文献', '期刊', '论著', '报告', '资料']
+
+function detectBroadTerms(exclude_areas) {
+  if (!exclude_areas) return []
+  const tags = exclude_areas.split(/[,，、\s]+/).map(t => t.trim()).filter(Boolean)
+  return tags.filter(tag => BROAD_EXCLUDE_TERMS.includes(tag))
+}
+
 const DEFAULT_PROFILE = {
   focus_areas: '',
   exclude_areas: '',
@@ -11,7 +19,7 @@ const DEFAULT_PROFILE = {
   current_goal: '',
   background: '',
   discipline: '',
-  tracking_days: '30',
+  tracking_days: '90',
   interests_summary: '',
   interests_summary_updated_at: '',
   interests_summary_is_manual: '0',
@@ -27,10 +35,11 @@ export default function Profile() {
   const [profile, setProfile] = useState(DEFAULT_PROFILE)
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [broadWarn, setBroadWarn] = useState('')
 
   useEffect(() => {
     apiGet('/profile')
-      .then(data => setProfile(prev => ({ ...prev, ...data, tracking_days: data.tracking_days || '30' })))
+      .then(data => setProfile(prev => ({ ...prev, ...data, tracking_days: data.tracking_days || '90' })))
       .catch(() => {})
   }, [])
 
@@ -41,6 +50,11 @@ export default function Profile() {
   }
 
   const handleSave = async () => {
+    const broad = detectBroadTerms(profile.exclude_areas)
+    if (broad.length > 0) {
+      setBroadWarn(`「${broad.join('、')}」可能过于宽泛，会过滤掉大量文献。建议改为具体类型，如「动物实验」「基础研究」`)
+      setTimeout(() => setBroadWarn(''), 5000)
+    }
     try {
       await apiPost('/profile', profile)
       // 用户手动编辑或手动清空过摘要时，不触发自动生成，避免覆盖
@@ -117,7 +131,7 @@ export default function Profile() {
             label="随手补充"
             value={profile.background}
             onChange={val => patchProfile({ background: val })}
-            placeholder="随便写，比如：最近在准备综述，想多看干预研究，也关注预测模型相关内容"
+            placeholder="不知道怎么描述？用日常的话说就行，AI 会理解你的意思并生成检索词——比如：我想看带状疱疹相关的中医干预类文章"
           />
           <TagInput
             label="不想看的内容"
@@ -172,7 +186,23 @@ export default function Profile() {
         {saveError && (
           <p className="text-sm text-coral text-center -mt-2">{saveError}</p>
         )}
+        {saved && (
+          <Link
+            to="/"
+            className="flex items-center justify-center gap-1.5 w-full py-3 rounded-2xl border border-coral/30 text-coral text-sm font-medium hover:bg-coral/5 transition-colors -mt-2"
+          >
+            去首页看推荐 →
+          </Link>
+        )}
       </main>
+
+      {broadWarn && (
+        <div className="fixed bottom-24 left-4 right-4 z-50 max-w-lg mx-auto">
+          <div className="bg-[#7C5A2A] text-[#FFF8EE] text-xs px-4 py-3 rounded-2xl shadow-lg leading-relaxed">
+            ⚠️ {broadWarn}
+          </div>
+        </div>
+      )}
 
       <Navbar />
     </div>

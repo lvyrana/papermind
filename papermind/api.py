@@ -293,7 +293,7 @@ def api_save_profile(data: ProfileData, request: Request):
     profile_changed = any((previous.get(field) or "") != (next_profile.get(field) or "") for field in watched_fields)
 
     if profile_changed:
-        # 画像方向一变，旧行为摘要很容易把新方向“硬拉回去”，清空并等待重新生成。
+        # 画像方向一变，旧行为摘要很容易把新方向"硬拉回去"，清空并等待重新生成。
         next_profile["interests_summary"] = ""
         next_profile["interests_summary_is_manual"] = "0"
         next_profile["interests_summary_updated_at"] = ""
@@ -667,11 +667,25 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
     if saved_titles:
         history_text = "\n用户近期收藏/阅读过的论文标题（反映真实兴趣）：\n" + "\n".join(f"- {t}" for t in saved_titles[:10])
 
+    # 结构化字段不完整时，提示 LLM 从自然语言深度提取
+    sparse_focus = len((focus or "").strip()) < 10
+    sparse_hint = ""
+    if sparse_focus and background:
+        sparse_hint = (
+            "\n注意：该用户的「研究方向」填写较少，请重点从「补充说明」的自然语言中，"
+            "提取以下要素并转化为检索词：\n"
+            "- 疾病 / 症状 / 临床问题（如：带状疱疹、COPD、术后疼痛）\n"
+            "- 目标人群（如：老年患者、住院患者、护理人员）\n"
+            "- 干预方式 / 研究内容（如：中医干预、康复护理、自我管理）\n"
+            "- 研究设计偏好（如：综述、RCT、质性研究）\n"
+            "将上述要素组合成多组有效的 PubMed 英文检索词。\n"
+        )
+
     prompt = f"""你是一位学术检索专家。根据以下研究者画像，生成用于 PubMed 检索的英文关键词组合。
 
     {profile_text}
     {history_text}
-
+    {sparse_hint}
 要求：
 1. 生成 4-6 组关键词，每组是一个用于 PubMed 搜索的英文查询字符串
 2. 每组关键词控制在 2-4 个词以内，不要堆砌过多词汇
@@ -682,10 +696,10 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
 7. 严格避免生成用户明确排除的领域的关键词
 8. 如果研究者明确写了方法兴趣，请至少生成 1-2 组能体现这些方法兴趣的查询，但不要完全脱离研究主题
 9. 明确输入的研究方向和方法兴趣优先级最高，始终以研究方向为核心组织检索
-10. 每一组查询都必须保留至少一个”研究主题锚点”（疾病、人群、场景、护理问题等），不能只剩方法词，例如不能只写 qualitative research、thematic analysis、patient experience 这类宽泛查询
+10. 每一组查询都必须保留至少一个"研究主题锚点"（疾病、人群、场景、护理问题等），不能只剩方法词，例如不能只写 qualitative research、thematic analysis、patient experience 这类宽泛查询
 11. 如果学科领域是护理，优先使用 nursing、patient、caregiver、self-management、symptom management 等临床/护理语境词，避免跑到代谢组学、影像学（CT、MRI、radiomics）、纯基础研究。特别是：生成预测模型/机器学习相关查询时，必须同时带上临床结局词（如 mortality、readmission、quality of life、prognosis、symptom、functional status），禁止单独生成"疾病+prediction model"这种没有临床/护理锚点的查询
 
-示例输出：[“COPD nursing self-management”, “lung cancer mortality prediction nursing”, “COPD exacerbation readmission risk”, “nursing intervention symptom management”, “machine learning hospital readmission”]
+示例输出：["COPD nursing self-management", "lung cancer mortality prediction nursing", "COPD exacerbation readmission risk", "nursing intervention symptom management", "machine learning hospital readmission"]
 
 只输出 JSON 数组，不要 markdown 代码块，不要其他文字。"""
 
@@ -1099,7 +1113,7 @@ def api_get_papers(
     # 如果前端没传 days，从用户画像读取 tracking_days
     if days <= 0:
         profile_tmp = get_profile(uid)
-        days = int(profile_tmp.get("tracking_days") or 7)
+        days = int(profile_tmp.get("tracking_days") or 90)
 
     # poll=true: 返回当前页最新状态（不切换、不抓取）
     if poll and cache["current_page"]:
@@ -1150,26 +1164,26 @@ def api_get_papers(
     if cache["fetching"]:
         return {"papers": [], "total": 0, "remaining": 0, "loading": True, "search_debug": cache.get("search_debug")}
 
-    # Rate limit（owner 不限量）
-    is_owner = OWNER_UID and uid == OWNER_UID
-    if not is_owner and (force_fetch or (not cache["papers"])):
-        remaining_quota = get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT)
-        if remaining_quota <= 0:
-            return {
-                "papers": [],
-                "total": 0,
-                "remaining": 0,
-                "error": f"今日推荐批次已用完（每天 {DAILY_RECOMMEND_LIMIT} 批），明天再来吧",
-                "rate_limited": True,
-                "search_debug": cache.get("search_debug"),
-            }
-
     # 判断是否需要重新抓取
     need_fetch = force_fetch or not cache["papers"]
     if cache["fetched_at"]:
         age = (datetime.now() - cache["fetched_at"]).total_seconds()
         if age > 3600:
             need_fetch = True
+
+    # Rate limit（owner 不限量）：所有会触发新抓取的路径统一检查
+    is_owner = OWNER_UID and uid == OWNER_UID
+    if not is_owner and need_fetch:
+        remaining_quota = get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT)
+        if remaining_quota <= 0:
+            return {
+                "papers": cache.get("papers") or [],
+                "total": len(cache.get("papers") or []),
+                "remaining": 0,
+                "error": f"今日推荐批次已用完（每天 {DAILY_RECOMMEND_LIMIT} 批），明天再来吧",
+                "rate_limited": True,
+                "search_debug": cache.get("search_debug"),
+            }
 
     if need_fetch:
         # 画像为空时拒绝抓取，不扣配额
@@ -1294,7 +1308,7 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""
 }}
 
     只输出 JSON，不加其他文字。
-    如提供了“用户修正后的偏好”，请综合以上信息，优先考虑研究者明确输入和用户修正后的偏好；但相关性判断仍必须以论文实际内容为依据。"""
+    如提供了"用户修正后的偏好"，请综合以上信息，优先考虑研究者明确输入和用户修正后的偏好；但相关性判断仍必须以论文实际内容为依据。"""
 
             raw, _, _ = _llm_chat_complete(
                 [{"role": "user", "content": prompt}],
