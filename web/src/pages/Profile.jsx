@@ -91,11 +91,23 @@ export default function Profile() {
           </p>
           <div className="grid grid-cols-2 gap-3 mt-5">
             <div className="rounded-2xl border border-cream-dark/60 bg-cream/60 px-4 py-3">
-              <p className="text-xs text-warm-gray/60 mb-2">关注方向</p>
-              <div className="flex flex-wrap gap-1.5">
+              <p className="text-xs text-warm-gray/60 mb-1">研究方向</p>
+              <div className="flex flex-wrap gap-1 mb-2">
                 {splitTags(profile.focus_areas).length > 0 ? (
                   splitTags(profile.focus_areas).map(tag => (
-                    <span key={tag} className="px-2.5 py-1 rounded-full bg-coral/10 text-coral text-xs font-medium">
+                    <span key={tag} className="px-2 py-0.5 rounded-full bg-navy/10 text-navy/70 text-xs font-medium">
+                      {tag}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-xs text-warm-gray/40">未设置</span>
+                )}
+              </div>
+              <p className="text-xs text-warm-gray/60 mb-1">方法兴趣</p>
+              <div className="flex flex-wrap gap-1">
+                {splitTags(profile.method_interests).length > 0 ? (
+                  splitTags(profile.method_interests).map(tag => (
+                    <span key={tag} className="px-2 py-0.5 rounded-full bg-navy/8 text-navy/60 text-xs">
                       {tag}
                     </span>
                   ))
@@ -118,7 +130,7 @@ export default function Profile() {
             label="研究方向"
             value={profile.focus_areas}
             onChange={value => patchProfile({ focus_areas: value })}
-            placeholder="例如：老年护理、慢性病管理、术后康复、患者安全"
+            placeholder="例如：肺癌、中医护理、慢病管理、术后康复"
           />
           <TagInput
             label="方法兴趣"
@@ -128,7 +140,7 @@ export default function Profile() {
             placeholder="例如：系统综述、随机对照试验、质性研究、Meta分析"
           />
           <VoiceTextarea
-            label="随手补充"
+            label="自由描述"
             value={profile.background}
             onChange={val => patchProfile({ background: val })}
             placeholder="不知道怎么描述？用日常的话说就行，AI 会理解你的意思并生成检索词——比如：我想看带状疱疹相关的中医干预类文章"
