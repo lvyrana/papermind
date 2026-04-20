@@ -110,7 +110,7 @@ def _ensure_db():
     for col, default in [
         ("method_interests", "''"),
         ("discipline", "''"),
-        ("tracking_days", "'30'"),
+        ("tracking_days", "'90'"),
         ("interests_summary", "''"),
         ("interests_summary_updated_at", "''"),
         ("interests_summary_is_manual", "'0'"),
@@ -199,7 +199,7 @@ def get_profile(user_id: str) -> dict:
         "current_goal": "",
         "background": "",
         "discipline": "",
-        "tracking_days": "30",
+        "tracking_days": "90",
         "interests_summary": "",
         "interests_summary_updated_at": "",
         "interests_summary_is_manual": "0",
