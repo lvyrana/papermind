@@ -34,12 +34,15 @@ def _build_category_list(focus: str) -> dict:
     return {"topic": topic_tags, "method": method_tags}
 
 
-def score_and_categorize_papers(papers: list[dict], profile: dict, client, model: str) -> list[dict]:
+def score_and_categorize_papers(papers: list[dict], profile: dict, client, model: str, llm_call=None) -> list[dict]:
     """批量为论文打相关性分数（0-10）并生成动态分类标签。
 
     返回按分数降序排列的论文列表，每篇增加:
       - relevance_score: 0-10
       - category: 动态生成的短标签
+
+    llm_call: 可选的 LLM 调用函数，签名为 (messages, max_tokens, temperature) -> str
+              若为 None，则直接使用 client 参数。
     """
     if not papers or not client:
         return papers
@@ -71,14 +74,14 @@ def score_and_categorize_papers(papers: list[dict], profile: dict, client, model
     batch_size = 20
     for start in range(0, len(papers), batch_size):
         batch = papers[start:start + batch_size]
-        _score_batch(batch, profile_text, categories, client, model)
+        _score_batch(batch, profile_text, categories, client, model, llm_call)
 
     # 按分数降序排列
     papers.sort(key=lambda p: p.get("relevance_score", 0), reverse=True)
     return papers
 
 
-def _score_batch(papers: list[dict], profile_text: str, categories: dict, client, model: str):
+def _score_batch(papers: list[dict], profile_text: str, categories: dict, client, model: str, llm_call=None):
     """batch score and categorize papers"""
     titles_block = "\n".join(
         f"{i+1}. {p['title']}" + (f" | {p['abstract'][:150]}" if p.get('abstract') else "")
@@ -109,13 +112,16 @@ def _score_batch(papers: list[dict], profile_text: str, categories: dict, client
 顺序与输入一致，不要其他文字。"""
 
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=1000,
-        )
-        raw = (resp.choices[0].message.content or "").strip()
+        if llm_call:
+            raw = llm_call([{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.2)
+        else:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=1000,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         results = json.loads(raw)

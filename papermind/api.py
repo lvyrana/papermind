@@ -1130,7 +1130,7 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
 
     # LLM 打分 + 动态分类 + 排序（已按分数降序）
     if client:
-        unique_papers = score_and_categorize_papers(unique_papers, profile, client, model)
+        unique_papers = score_and_categorize_papers(unique_papers, profile, client, model, llm_call=_llm_chat_complete)
         scored = [p for p in unique_papers if p.get("relevance_score", 5) >= 3]
         if len(scored) >= 8:
             filtered = len(unique_papers) - len(scored)
@@ -1560,7 +1560,7 @@ def _bg_enrich_saved_paper(row_id: int, paper: dict, profile: dict, uid: str):
             from src.categorize_papers import score_and_categorize_papers as _categorize
             client, model = _get_llm_client()
             if client:
-                _categorize([enriched], profile, client, model)
+                _categorize([enriched], profile, client, model, llm_call=_llm_chat_complete)
                 category = enriched.get("category", "")
         except Exception:
             pass
