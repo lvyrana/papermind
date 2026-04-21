@@ -1175,18 +1175,21 @@ def _bg_fetch_and_enrich(cache, keyword_list, days, source, profile, uid):
         cache["fetched_at"] = datetime.now()
         cache["served_indices"] = set()
         cache["current_page"] = []
-        cache["pages_history"] = []   # 新批次开始，旧翻页历史全部作废
+        cache["pages_history"] = []
         cache["search_debug"] = search_debug
 
-        # 对前 10 篇做 AI 解读
         unenriched = [p for p in papers[:10] if not p.get("summary_zh")]
+        print(f"[api] 准备解读: {len(papers)} 篇论文, 前10中未解读 {len(unenriched)} 篇")
         if unenriched:
             client, model = _get_llm_client()
+            print(f"[api] LLM client 可用: {client is not None}, model={model}")
             if client:
                 _enrich_papers_with_llm(unenriched, profile, uid)
         print(f"[api] 后台抓取完成: {len(papers)} 篇")
     except Exception as e:
+        import traceback
         print(f"[api] 后台抓取失败: {e}")
+        traceback.print_exc()
     finally:
         cache["fetching"] = False
 
@@ -1476,6 +1479,7 @@ JSON 格式：
 
 def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""):
     """为论文添加详细中文解读和个性化相关性分析（并发执行）"""
+    print(f"[api] _enrich_papers_with_llm 入口: {len(papers)} 篇论文")
     focus = profile.get("focus_areas", "")
     method_interests = profile.get("method_interests", "")
     background = profile.get("background", "")
