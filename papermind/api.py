@@ -10,6 +10,7 @@ import httpx
 import threading
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -973,13 +974,15 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
         return [], trace
 
     all_papers = []
-    scholar_query_count = 0
+    _s2_counter = threading.Lock()
+    _s2_used = [0]
 
-    for spec in query_specs:
+    def _fetch_for_spec(spec):
+        papers = []
         query = spec["query"]
         origin = spec.get("origin", "unknown")
         query_keywords = [k.strip() for k in query.split(" OR ") if k.strip()] if " OR " in query else [query]
-        query_trace = {
+        qt = {
             "query": query,
             "origin": origin,
             "query_keywords": query_keywords,
@@ -990,35 +993,47 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
 
         if source in ("pubmed", "all"):
             try:
-                pubmed_papers = pubmed_get_papers(query_keywords, days=days, max_results=30)
-                for p in pubmed_papers:
+                pp = pubmed_get_papers(query_keywords, days=days, max_results=30)
+                for p in pp:
                     p["source"] = "pubmed"
                     p.setdefault("_matched_queries", []).append(query)
-                all_papers.extend(pubmed_papers)
-                query_trace["sources"].append({"source": "pubmed", "status": "ok", "count": len(pubmed_papers)})
+                papers.extend(pp)
+                qt["sources"].append({"source": "pubmed", "status": "ok", "count": len(pp)})
             except Exception as e:
                 print(f"[api] PubMed 获取失败 ({query}): {e}")
-                query_trace["sources"].append({"source": "pubmed", "status": "error", "count": 0, "error": str(e)})
+                qt["sources"].append({"source": "pubmed", "status": "error", "count": 0, "error": str(e)})
 
         if source in ("semantic_scholar", "all"):
-            try:
-                if scholar_query_count >= 4:
-                    print("[api] Semantic Scholar 查询已达本轮上限，跳过剩余查询")
-                    query_trace["sources"].append({"source": "semantic_scholar", "status": "skipped_limit", "count": 0})
-                else:
-                    # 往前多推 1 年，避免最新论文在 S2 尚无摘要导致全部被过滤
+            do_s2 = False
+            with _s2_counter:
+                if _s2_used[0] < 4:
+                    _s2_used[0] += 1
+                    do_s2 = True
+            if not do_s2:
+                qt["sources"].append({"source": "semantic_scholar", "status": "skipped_limit", "count": 0})
+            else:
+                try:
                     year_from = (datetime.now() - timedelta(days=max(days, 30) + 365)).strftime("%Y")
-                    scholar_papers = scholar_get_papers(query_keywords, max_results=15, year_from=year_from)
-                    for p in scholar_papers:
+                    sp = scholar_get_papers(query_keywords, max_results=15, year_from=year_from)
+                    for p in sp:
                         p.setdefault("_matched_queries", []).append(query)
-                    all_papers.extend(scholar_papers)
-                    scholar_query_count += 1
-                    query_trace["sources"].append({"source": "semantic_scholar", "status": "ok", "count": len(scholar_papers)})
-                    time.sleep(0.6)
+                    papers.extend(sp)
+                    qt["sources"].append({"source": "semantic_scholar", "status": "ok", "count": len(sp)})
+                except Exception as e:
+                    print(f"[api] Semantic Scholar 获取失败 ({query}): {e}")
+                    qt["sources"].append({"source": "semantic_scholar", "status": "error", "count": 0, "error": str(e)})
+
+        return papers, qt
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(_fetch_for_spec, spec) for spec in query_specs]
+        for f in as_completed(futures):
+            try:
+                spec_papers, qt = f.result()
+                all_papers.extend(spec_papers)
+                trace["queries"].append(qt)
             except Exception as e:
-                print(f"[api] Semantic Scholar 获取失败 ({query}): {e}")
-                query_trace["sources"].append({"source": "semantic_scholar", "status": "error", "count": 0, "error": str(e)})
-        trace["queries"].append(query_trace)
+                print(f"[api] 并发抓取异常: {e}")
 
     if not all_papers:
         trace["totals"] = {
@@ -1376,33 +1391,12 @@ def _extract_json_object(raw: str) -> dict:
     raise ValueError("json object not found")
 
 
-def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""):
-    """为论文添加详细中文解读和个性化相关性分析"""
-    focus = profile.get("focus_areas", "")
-    method_interests = profile.get("method_interests", "")
-    background = profile.get("background", "")
-    discipline = profile.get("discipline", "")
-    interests_summary = profile.get("interests_summary", "")
-    is_manual = profile.get("interests_summary_is_manual", "0") == "1"
-
-    profile_text = ""
-    if discipline:
-        profile_text += f"学科领域：{discipline}\n"
-    if focus:
-        profile_text += f"追踪主题：{focus}\n"
-    if method_interests:
-        profile_text += f"方法兴趣（仅辅助参考）：{method_interests}\n"
-    if background:
-        profile_text += f"补充说明：{background}\n"
-    # 只有用户手动编辑过的摘要才注入 AI 解读，避免自动生成内容影响相关性判断
-    if is_manual and interests_summary:
-        profile_text += f"---\n用户修正后的偏好（高于系统自动观察，但低于以上明确输入）：{interests_summary}\n"
-
-    for i, paper in enumerate(papers):
-        paper["_enrich_attempts"] = paper.get("_enrich_attempts", 0) + 1
-        paper["summary_status"] = "pending"
-        try:
-            prompt = f"""你是一位专业的学术论文解读助手。请对以下论文进行详细解读。
+def _enrich_single_paper(paper: dict, profile_text: str):
+    """为单篇论文生成 AI 解读（可并发调用）。"""
+    paper["_enrich_attempts"] = paper.get("_enrich_attempts", 0) + 1
+    paper["summary_status"] = "pending"
+    try:
+        prompt = f"""你是一位专业的学术论文解读助手。请对以下论文进行详细解读。
 
 论文标题：{paper['title']}
 论文摘要：{paper['abstract'][:1200]}
@@ -1420,22 +1414,22 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""
     只输出 JSON，不加其他文字。
     如提供了"用户修正后的偏好"，请综合以上信息，优先考虑研究者明确输入和用户修正后的偏好；但相关性判断仍必须以论文实际内容为依据。"""
 
-            raw, _, _ = _llm_chat_complete(
-                [{"role": "user", "content": prompt}],
-                max_tokens=800,
-                temperature=0.3,
-            )
-            if not raw:
-                raise RuntimeError("empty response")
-            result = _extract_json_object(raw)
-            paper["summary_zh"] = result.get("summary_zh", "")
-            paper["relevance"] = result.get("relevance", "")
-            paper["key_findings"] = result.get("key_findings", [])
-            paper["summary_status"] = "done" if paper["summary_zh"] else "pending"
-        except Exception as e:
-            print(f"[api] 论文 {i+1} LLM 处理失败，尝试简化重试: {e}")
-            try:
-                retry_prompt = f"""请只输出 JSON，为这篇论文生成简洁中文解读。
+        raw, _, _ = _llm_chat_complete(
+            [{"role": "user", "content": prompt}],
+            max_tokens=800,
+            temperature=0.3,
+        )
+        if not raw:
+            raise RuntimeError("empty response")
+        result = _extract_json_object(raw)
+        paper["summary_zh"] = result.get("summary_zh", "")
+        paper["relevance"] = result.get("relevance", "")
+        paper["key_findings"] = result.get("key_findings", [])
+        paper["summary_status"] = "done" if paper["summary_zh"] else "pending"
+    except Exception as e:
+        print(f"[api] 论文 LLM 处理失败，尝试简化重试: {e}")
+        try:
+            retry_prompt = f"""请只输出 JSON，为这篇论文生成简洁中文解读。
 
 论文标题：{paper['title']}
 论文摘要：{paper.get('abstract', '')[:900]}
@@ -1446,24 +1440,54 @@ JSON 格式：
   "relevance": "1句话，说明这篇论文对研究者的启发；如果直接关联有限，就明确写直接关联有限"
 }}
 """
-                retry_raw, _, _ = _llm_chat_complete(
-                    [{"role": "user", "content": retry_prompt}],
-                    max_tokens=500,
-                    temperature=0.2,
-                )
-                if not retry_raw:
-                    raise RuntimeError("empty response")
-                retry_result = _extract_json_object(retry_raw)
-                paper["summary_zh"] = retry_result.get("summary_zh", "")
-                paper["relevance"] = retry_result.get("relevance", "")
-                paper["key_findings"] = []
-                paper["summary_status"] = "done" if paper["summary_zh"] else "pending"
-            except Exception as retry_error:
-                print(f"[api] 论文 {i+1} 简化重试仍失败: {retry_error}")
-                paper["summary_zh"] = ""
-                paper["relevance"] = ""
-                paper["key_findings"] = []
-                paper["summary_status"] = "failed" if paper.get("_enrich_attempts", 0) >= MAX_ENRICH_ATTEMPTS else "pending"
+            retry_raw, _, _ = _llm_chat_complete(
+                [{"role": "user", "content": retry_prompt}],
+                max_tokens=500,
+                temperature=0.2,
+            )
+            if not retry_raw:
+                raise RuntimeError("empty response")
+            retry_result = _extract_json_object(retry_raw)
+            paper["summary_zh"] = retry_result.get("summary_zh", "")
+            paper["relevance"] = retry_result.get("relevance", "")
+            paper["key_findings"] = []
+            paper["summary_status"] = "done" if paper["summary_zh"] else "pending"
+        except Exception as retry_error:
+            print(f"[api] 论文简化重试仍失败: {retry_error}")
+            paper["summary_zh"] = ""
+            paper["relevance"] = ""
+            paper["key_findings"] = []
+            paper["summary_status"] = "failed" if paper.get("_enrich_attempts", 0) >= MAX_ENRICH_ATTEMPTS else "pending"
+
+
+def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""):
+    """为论文添加详细中文解读和个性化相关性分析（并发执行）"""
+    focus = profile.get("focus_areas", "")
+    method_interests = profile.get("method_interests", "")
+    background = profile.get("background", "")
+    discipline = profile.get("discipline", "")
+    interests_summary = profile.get("interests_summary", "")
+    is_manual = profile.get("interests_summary_is_manual", "0") == "1"
+
+    profile_text = ""
+    if discipline:
+        profile_text += f"学科领域：{discipline}\n"
+    if focus:
+        profile_text += f"追踪主题：{focus}\n"
+    if method_interests:
+        profile_text += f"方法兴趣（仅辅助参考）：{method_interests}\n"
+    if background:
+        profile_text += f"补充说明：{background}\n"
+    if is_manual and interests_summary:
+        profile_text += f"---\n用户修正后的偏好（高于系统自动观察，但低于以上明确输入）：{interests_summary}\n"
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = [pool.submit(_enrich_single_paper, p, profile_text) for p in papers]
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception:
+                pass
 
 
 # ========== 翻译 ==========
