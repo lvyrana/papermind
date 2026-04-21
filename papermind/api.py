@@ -75,6 +75,7 @@ DAILY_TRANSLATE_LIMIT = int(os.environ.get("DAILY_TRANSLATE_LIMIT", "30"))
 # 全局每日 AI 对话熔断（所有用户之和，超了暂停服务）
 GLOBAL_DAILY_CHAT_LIMIT = int(os.environ.get("GLOBAL_DAILY_CHAT_LIMIT", "500"))
 OWNER_UID = os.environ.get("OWNER_UID", "")
+MAX_ENRICH_ATTEMPTS = 5
 
 
 # ========== Models ==========
@@ -179,11 +180,13 @@ def _get_llm_slots() -> list[dict]:
 def _build_llm_client(provider: dict) -> OpenAI:
     http_client = httpx.Client(
         transport=httpx.HTTPTransport(local_address="0.0.0.0"),
+        timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
     )
     return OpenAI(
         api_key=provider["api_key"],
         base_url=provider["base_url"],
         http_client=http_client,
+        timeout=60.0,
     )
 
 
@@ -203,10 +206,13 @@ def _get_llm_client() -> tuple[Optional[OpenAI], str]:
 
 
 def _llm_chat_complete(messages: list[dict], max_tokens: int = 800, temperature: float = 0.3) -> tuple[str, str, str]:
+    last_error = ""
     for provider in _get_llm_slots():
         api_key = provider["api_key"].strip()
         if not api_key:
+            print(f"[llm] 跳过 {provider['name']} / {provider['model']}（未配置 key）")
             continue
+        name = f"{provider['name']} / {provider['model']}"
         try:
             client = _build_llm_client(provider)
             resp = client.chat.completions.create(
@@ -217,11 +223,17 @@ def _llm_chat_complete(messages: list[dict], max_tokens: int = 800, temperature:
             )
             content = (resp.choices[0].message.content or "").strip()
             if content:
-                print(f"[llm] 使用 {provider['name']} / {provider['model']} 成功")
+                print(f"[llm] ✓ {name}")
                 return content, provider["name"], provider["model"]
+            else:
+                print(f"[llm] {name} 返回空内容，尝试下一个")
+                last_error = "empty content"
+                continue
         except Exception as e:
-            print(f"[llm] {provider['name']} / {provider['model']} 调用失败: {e}")
+            last_error = str(e)
+            print(f"[llm] ✗ {name}: {e}")
             continue
+    print(f"[llm] 所有 provider 失败，最后错误: {last_error}")
     return "", "", ""
 
 
@@ -433,13 +445,19 @@ def _reset_user_cache(user_id: str):
 
 def _start_page_enrich(cache: dict, papers: list[dict], profile: dict, uid: str) -> bool:
     """为当前页启动后台解读，避免尾页遗漏。"""
-    unenriched = [p for p in papers if not p.get("summary_zh") and p.get("_enrich_attempts", 0) < 2]
+    unenriched = [p for p in papers if not p.get("summary_zh") and p.get("_enrich_attempts", 0) < MAX_ENRICH_ATTEMPTS]
     if not unenriched:
         return False
 
     client, model = _get_llm_client()
     if not client:
+        for paper in papers:
+            if not paper.get("summary_zh"):
+                paper["summary_status"] = "failed"
         return False
+
+    for paper in unenriched:
+        paper["summary_status"] = "pending"
 
     cache["enrich_gen"] += 1
     gen = cache["enrich_gen"]
@@ -1147,12 +1165,14 @@ def api_get_papers(
             p["_cache_index"] = idx
             page_papers.append(p)
         remaining = len([i for i in range(len(all_papers)) if i not in cache["served_indices"]])
+        back_profile = get_profile(uid)
+        enriching = _start_page_enrich(cache, page_papers, back_profile, uid)
         return {
             "papers": page_papers,
             "total": len(all_papers),
             "remaining": remaining,
             "all_explored": False,
-            "enriching": False,
+            "enriching": enriching,
             "can_go_back": len(cache["pages_history"]) > 0,
             "search_debug": cache.get("search_debug"),
         }
@@ -1267,6 +1287,28 @@ def api_get_paper_by_index(index: int, request: Request):
     return {"paper": None}
 
 
+def _extract_json_object(raw: str) -> dict:
+    """尽量从模型返回中提取 JSON 对象，容忍前后多余文字。"""
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        fragment = text[start:end + 1]
+        parsed = json.loads(fragment)
+        return parsed if isinstance(parsed, dict) else {}
+
+    raise ValueError("json object not found")
+
+
 def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""):
     """为论文添加详细中文解读和个性化相关性分析"""
     focus = profile.get("focus_areas", "")
@@ -1291,6 +1333,7 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""
 
     for i, paper in enumerate(papers):
         paper["_enrich_attempts"] = paper.get("_enrich_attempts", 0) + 1
+        paper["summary_status"] = "pending"
         try:
             prompt = f"""你是一位专业的学术论文解读助手。请对以下论文进行详细解读。
 
@@ -1317,12 +1360,11 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""
             )
             if not raw:
                 raise RuntimeError("empty response")
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            result = json.loads(raw)
+            result = _extract_json_object(raw)
             paper["summary_zh"] = result.get("summary_zh", "")
             paper["relevance"] = result.get("relevance", "")
             paper["key_findings"] = result.get("key_findings", [])
+            paper["summary_status"] = "done" if paper["summary_zh"] else "pending"
         except Exception as e:
             print(f"[api] 论文 {i+1} LLM 处理失败，尝试简化重试: {e}")
             try:
@@ -1344,17 +1386,17 @@ JSON 格式：
                 )
                 if not retry_raw:
                     raise RuntimeError("empty response")
-                if retry_raw.startswith("```"):
-                    retry_raw = retry_raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                retry_result = json.loads(retry_raw)
+                retry_result = _extract_json_object(retry_raw)
                 paper["summary_zh"] = retry_result.get("summary_zh", "")
                 paper["relevance"] = retry_result.get("relevance", "")
                 paper["key_findings"] = []
+                paper["summary_status"] = "done" if paper["summary_zh"] else "pending"
             except Exception as retry_error:
                 print(f"[api] 论文 {i+1} 简化重试仍失败: {retry_error}")
                 paper["summary_zh"] = ""
                 paper["relevance"] = ""
                 paper["key_findings"] = []
+                paper["summary_status"] = "failed" if paper.get("_enrich_attempts", 0) >= MAX_ENRICH_ATTEMPTS else "pending"
 
 
 # ========== 翻译 ==========
@@ -1612,7 +1654,7 @@ def api_chat(data: ChatRequest, request: Request):
             temperature=0.4,
         )
         if not reply:
-            raise RuntimeError("empty response")
+            return {"reply": "所有 AI 服务当前不可用（可能是配额耗尽），请稍后再试。", "ok": False}
 
         # 计入限速
         increment_rate_limit("__global__", "chat")

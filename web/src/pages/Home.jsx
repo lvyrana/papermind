@@ -13,6 +13,33 @@ function loadCachedJson(key, fallback) {
   }
 }
 
+function loadCachedNumber(key, fallback = 0) {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw == null) return fallback
+    const parsed = parseInt(raw, 10)
+    return Number.isFinite(parsed) ? parsed : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function loadCachedBool(key, fallback = false) {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw == null ? fallback : raw === 'true'
+  } catch {
+    return fallback
+  }
+}
+
+function persistHomeMeta({ total, remaining, allExplored, canGoBack }) {
+  localStorage.setItem('cached-total', String(total ?? 0))
+  localStorage.setItem('cached-remaining', String(remaining ?? 0))
+  localStorage.setItem('cached-all-explored', String(!!allExplored))
+  localStorage.setItem('cached-can-go-back', String(!!canGoBack))
+}
+
 export default function Home() {
   const navigate = useNavigate()
   const [papers, setPapers] = useState(() => loadCachedJson('cached-papers', []))
@@ -21,10 +48,10 @@ export default function Home() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [lastReading] = useState(() => loadCachedJson('last-reading', null))
-  const [total, setTotal] = useState(0)
-  const [remaining, setRemaining] = useState(0)
-  const [allExplored, setAllExplored] = useState(false)
-  const [canGoBack, setCanGoBack] = useState(false)
+  const [total, setTotal] = useState(() => loadCachedNumber('cached-total', 0))
+  const [remaining, setRemaining] = useState(() => loadCachedNumber('cached-remaining', 0))
+  const [allExplored, setAllExplored] = useState(() => loadCachedBool('cached-all-explored', false))
+  const [canGoBack, setCanGoBack] = useState(() => loadCachedBool('cached-can-go-back', false))
   const [profileFilled, setProfileFilled] = useState(true)
   const [profileChecked, setProfileChecked] = useState(false)
   const [needsProfile, setNeedsProfile] = useState(false)
@@ -73,15 +100,28 @@ export default function Home() {
   }
 
   const handlePapersData = (data) => {
-    setPapers(data.papers || [])
-    setSearchDebug(data.search_debug || null)
-    setTotal(data.total || 0)
-    setRemaining(data.remaining ?? 0)
-    setAllExplored(data.all_explored || false)
-    setCanGoBack(data.can_go_back || false)
+    const nextPapers = data.papers || []
+    const nextSearchDebug = data.search_debug || null
+    const nextTotal = data.total ?? 0
+    const nextRemaining = data.remaining ?? 0
+    const nextAllExplored = !!data.all_explored
+    const nextCanGoBack = !!data.can_go_back
+
+    setPapers(nextPapers)
+    setSearchDebug(nextSearchDebug)
+    setTotal(nextTotal)
+    setRemaining(nextRemaining)
+    setAllExplored(nextAllExplored)
+    setCanGoBack(nextCanGoBack)
     localStorage.setItem('cached-papers', JSON.stringify(data.papers || []))
     localStorage.setItem('cached-papers-time', new Date().toISOString())
-    localStorage.setItem('cached-search-debug', JSON.stringify(data.search_debug || null))
+    localStorage.setItem('cached-search-debug', JSON.stringify(nextSearchDebug))
+    persistHomeMeta({
+      total: nextTotal,
+      remaining: nextRemaining,
+      allExplored: nextAllExplored,
+      canGoBack: nextCanGoBack,
+    })
   }
 
   // 轮询：当前页解读补全
@@ -98,6 +138,18 @@ export default function Home() {
           setSearchDebug(poll.search_debug)
           localStorage.setItem('cached-search-debug', JSON.stringify(poll.search_debug))
         }
+        if (poll.total !== undefined) {
+          setTotal(poll.total)
+        }
+        if (poll.remaining !== undefined) setRemaining(poll.remaining)
+        if (poll.all_explored !== undefined) setAllExplored(!!poll.all_explored)
+        if (poll.can_go_back !== undefined) setCanGoBack(!!poll.can_go_back)
+        persistHomeMeta({
+          total: poll.total ?? loadCachedNumber('cached-total', 0),
+          remaining: poll.remaining ?? loadCachedNumber('cached-remaining', 0),
+          allExplored: poll.all_explored ?? loadCachedBool('cached-all-explored', false),
+          canGoBack: poll.can_go_back ?? loadCachedBool('cached-can-go-back', false),
+        })
         if (!poll.enriching) {
           stopPolling()
         }
@@ -155,6 +207,15 @@ export default function Home() {
   // 清理轮询定时器
   useEffect(() => {
     return () => stopPolling()
+  }, [])
+
+  // 返回时恢复滚动位置（从 PaperRead 返回）
+  useEffect(() => {
+    const y = sessionStorage.getItem('home-scroll-y')
+    if (y !== null) {
+      sessionStorage.removeItem('home-scroll-y')
+      requestAnimationFrame(() => window.scrollTo(0, parseInt(y)))
+    }
   }, [])
 
   // 新用户引导页：画像未填且无任何缓存论文
@@ -415,8 +476,16 @@ export default function Home() {
 
 function PaperCard({ paper, index }) {
   const cacheIndex = paper._cache_index ?? index
+  const isPendingSummary = !paper.summary_zh && paper.summary_status === 'pending'
+  const isFailedSummary = !paper.summary_zh && paper.summary_status === 'failed'
   return (
-    <Link to={`/paper/${cacheIndex}`} state={{ paper }} className="block breathe-in" style={{ animationDelay: `${index * 80}ms` }}>
+    <Link
+      to={`/paper/${cacheIndex}`}
+      state={{ paper }}
+      className="block breathe-in"
+      style={{ animationDelay: `${index * 80}ms` }}
+      onClick={() => sessionStorage.setItem('home-scroll-y', String(window.scrollY))}
+    >
       <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs px-2.5 py-1 rounded-full bg-coral/10 text-coral font-medium">
@@ -435,6 +504,17 @@ function PaperCard({ paper, index }) {
         {paper.summary_zh && (
           <p className="text-warm-gray text-sm mt-2 leading-relaxed line-clamp-2">
             {paper.summary_zh}
+          </p>
+        )}
+        {isPendingSummary && (
+          <p className="text-warm-gray text-sm mt-2 leading-relaxed flex items-center gap-1.5">
+            <Loader2 size={13} className="animate-spin text-coral flex-shrink-0" />
+            <span>AI 解读生成中...</span>
+          </p>
+        )}
+        {isFailedSummary && (
+          <p className="text-warm-gray text-sm mt-2 leading-relaxed">
+            AI 解读暂时不可用，稍后刷新可再试。
           </p>
         )}
         {paper.relevance && (

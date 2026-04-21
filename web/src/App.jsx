@@ -9,7 +9,16 @@ import LibraryDetail from './pages/LibraryDetail'
 import { setUserId } from './api'
 
 const CACHE_KEY_PREFIXES = ['paper-notes-', 'paper-chat-', 'paper-bookmark-']
-const CACHE_KEY_EXACT = ['cached-papers', 'cached-papers-time', 'cached-search-debug', 'last-reading']
+const CACHE_KEY_EXACT = [
+  'cached-papers',
+  'cached-papers-time',
+  'cached-search-debug',
+  'cached-total',
+  'cached-remaining',
+  'cached-all-explored',
+  'cached-can-go-back',
+  'last-reading',
+]
 
 function clearLocalAccountCache() {
   try {
