@@ -113,7 +113,7 @@ def _score_batch(papers: list[dict], profile_text: str, categories: dict, client
 
     try:
         if llm_call:
-            raw = llm_call([{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.2)
+            raw, _, _ = llm_call([{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.2)
         else:
             resp = client.chat.completions.create(
                 model=model,
