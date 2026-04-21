@@ -226,7 +226,13 @@ def _llm_chat_complete(messages: list[dict], max_tokens: int = 800, temperature:
                 kwargs["extra_body"] = {"enable_thinking": False}
             resp = client.chat.completions.create(**kwargs)
             content = (resp.choices[0].message.content or "").strip()
-            cached = getattr(resp, "usage", None) and getattr(resp.usage, "prompt_tokens_details", None) and getattr(resp.usage.prompt_tokens_details, "cached_tokens", 0) > 0
+            cached = False
+            try:
+                details = getattr(getattr(resp, "usage", None), "prompt_tokens_details", None)
+                ct = getattr(details, "cached_tokens", 0) if details else 0
+                cached = (ct or 0) > 0
+            except Exception:
+                pass
             if content:
                 print(f"[llm] ✓ {name}" + (" (cache hit)" if cached else ""))
                 return content, provider["name"], provider["model"]
