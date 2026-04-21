@@ -537,18 +537,82 @@ def _dedupe_terms(terms: list[str]) -> list[str]:
     return result
 
 
+def _expand_exclude_terms(raw_terms: list[str]) -> list[str]:
+    """把用户排除词扩展成更容易命中的中英文关键词。"""
+    alias_map = {
+        "药物研究": ["drug", "drugs", "medication", "pharmacologic", "pharmacological", "pharmacotherapy", "pharmaceutical"],
+        "药物治疗": ["drug therapy", "medication", "pharmacologic", "pharmacological", "pharmacotherapy"],
+        "药物合成": ["drug synthesis", "synthesis", "compound synthesis", "pharmaceutical synthesis"],
+        "基础研究": ["basic science", "basic research", "mechanism", "molecular", "cellular", "animal model"],
+        "动物实验": ["animal", "mice", "mouse", "rat", "rats", "murine"],
+        "分子机制": ["molecular mechanism", "mechanism", "signaling pathway", "gene expression"],
+    }
+    expanded: list[str] = []
+    for term in raw_terms:
+        expanded.append(term)
+        expanded.extend(alias_map.get(term, []))
+        expanded.extend(alias_map.get(term.lower(), []))
+    return _dedupe_terms(expanded)
+
+
+def _paper_matches_exclude(paper: dict, exclude_terms: list[str]) -> bool:
+    if not exclude_terms:
+        return False
+    haystack = " ".join([
+        paper.get("title", ""),
+        paper.get("abstract", ""),
+        " ".join(paper.get("publication_types", []) or []),
+    ]).lower()
+    for term in exclude_terms:
+        token = (term or "").strip().lower()
+        if token and token in haystack:
+            return True
+    return False
+
+
+def _is_low_value_publication(paper: dict) -> bool:
+    """过滤 reply/comment/editorial/letter 等低价值条目，以及无摘要条目。"""
+    publication_types = [t.lower() for t in (paper.get("publication_types", []) or [])]
+    low_value_types = {
+        "comment",
+        "editorial",
+        "letter",
+        "news",
+        "published erratum",
+        "retraction of publication",
+    }
+    if any(pt in low_value_types for pt in publication_types):
+        return True
+
+    title = (paper.get("title", "") or "").strip().lower()
+    low_value_prefixes = (
+        "reply",
+        "reply to",
+        "comment on",
+        "editorial",
+        "letter to the editor",
+    )
+    if any(title.startswith(prefix) for prefix in low_value_prefixes):
+        return True
+
+    abstract = (paper.get("abstract", "") or "").strip()
+    if paper.get("has_abstract") is False:
+        return True
+    if abstract in {"", "（无摘要）", "(no abstract)"}:
+        return True
+
+    return False
+
+
 def _build_broader_queries(profile: dict) -> list[str]:
     """当首轮检索过窄时，构造更宽的主题查询作为兜底。"""
     focus_terms = _normalize_focus_terms(profile.get("focus_areas", ""))
-    discipline = (profile.get("discipline", "") or "").lower()
     if not focus_terms:
         return []
 
     broad_queries = []
     for term in focus_terms[:4]:
         broad_queries.append(term)
-        if "nursing" in discipline or "护理" in discipline:
-            broad_queries.append(f"{term} nursing")
     # 去重并保持顺序
     seen = set()
     result = []
@@ -559,11 +623,6 @@ def _build_broader_queries(profile: dict) -> list[str]:
         seen.add(key)
         result.append(query)
     return result[:6]
-
-
-def _is_nursing_profile(profile: dict) -> bool:
-    discipline = (profile.get("discipline", "") or "").lower()
-    return "nursing" in discipline or "护理" in discipline
 
 
 def _normalize_focus_terms(focus: str) -> list[str]:
@@ -622,7 +681,6 @@ def _build_method_aware_queries(profile: dict) -> list[str]:
     if not (focus_terms or method_terms):
         return []
 
-    is_nursing = _is_nursing_profile(profile)
     has_qualitative_family = any(term in method_terms for term in (
         "qualitative research",
         "interpretative phenomenological analysis",
@@ -644,33 +702,25 @@ def _build_method_aware_queries(profile: dict) -> list[str]:
     query_groups: list[str] = []
 
     for focus in focus_terms[:4]:
-        if is_nursing:
-            query_groups.append(f"{focus} nursing")
         query_groups.append(focus)
         if method_templates:
             for method in method_templates[:3]:
-                if is_nursing:
-                    query_groups.append(f"{focus} nursing {method}")
-                else:
-                    query_groups.append(f"{focus} {method}")
+                query_groups.append(f"{focus} {method}")
 
     return _dedupe_terms(query_groups)[:8]
 
 
-def _generate_search_keywords(profile: dict, client, model: str, saved_titles: list[str] = None) -> list[str]:
-    """根据用户画像 + 收藏历史，用 LLM 生成多组搜索关键词"""
+def _generate_search_keywords(profile: dict, client, model: str) -> list[str]:
+    """根据当前用户画像，用 LLM 生成多组搜索关键词。"""
     focus = profile.get("focus_areas", "")
     method_interests = profile.get("method_interests", "")
     background = profile.get("background", "")
-    discipline = profile.get("discipline", "")
 
     if not (focus or method_interests or background):
         return []
 
     exclude = profile.get("exclude_areas", "")
     profile_text = ""
-    if discipline:
-        profile_text += f"学科领域：{discipline}\n"
     if focus:
         profile_text += f"研究方向：{focus}\n"
     if method_interests:
@@ -679,11 +729,6 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
         profile_text += f"补充说明：{background}\n"
     if exclude:
         profile_text += f"明确排除（不要生成相关关键词）：{exclude}\n"
-
-    # 加入收藏历史，帮助 LLM 理解用户真实兴趣
-    history_text = ""
-    if saved_titles:
-        history_text = "\n用户近期收藏/阅读过的论文标题（反映真实兴趣）：\n" + "\n".join(f"- {t}" for t in saved_titles[:10])
 
     # 结构化字段不完整时，提示 LLM 从自然语言深度提取
     sparse_focus = len((focus or "").strip()) < 10
@@ -702,7 +747,6 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
     prompt = f"""你是一位学术检索专家。根据以下研究者画像，生成用于 PubMed 检索的英文关键词组合。
 
     {profile_text}
-    {history_text}
     {sparse_hint}
 要求：
 1. 生成 4-6 组关键词，每组是一个用于 PubMed 搜索的英文查询字符串
@@ -710,14 +754,13 @@ def _generate_search_keywords(profile: dict, client, model: str, saved_titles: l
 3. 覆盖研究者关注方向的不同角度：至少 2 组聚焦疾病/临床场景，1-2 组聚焦方法，不要每组都把所有关键词堆在一起
 4. 必须使用英文专业学术术语（PubMed 只支持英文检索）
 5. 可以使用 AND/OR 组合，但每组词之间不需要全部 AND，允许适度宽泛
-6. 如果有收藏历史，参考用户实际感兴趣的论文主题来调整关键词
-7. 严格避免生成用户明确排除的领域的关键词
-8. 如果研究者明确写了方法兴趣，请至少生成 1-2 组能体现这些方法兴趣的查询，但不要完全脱离研究主题
-9. 明确输入的研究方向和方法兴趣优先级最高，始终以研究方向为核心组织检索
-10. 每一组查询都必须保留至少一个"研究主题锚点"（疾病、人群、场景、护理问题等），不能只剩方法词，例如不能只写 qualitative research、thematic analysis、patient experience 这类宽泛查询
-11. 如果学科领域是护理，优先使用 nursing、patient、caregiver、self-management、symptom management 等临床/护理语境词，避免跑到代谢组学、影像学（CT、MRI、radiomics）、纯基础研究。特别是：生成预测模型/机器学习相关查询时，必须同时带上临床结局词（如 mortality、readmission、quality of life、prognosis、symptom、functional status），禁止单独生成"疾病+prediction model"这种没有临床/护理锚点的查询
+6. 严格避免生成用户明确排除的领域的关键词
+7. 如果研究者明确写了方法兴趣，请至少生成 1-2 组能体现这些方法兴趣的查询，但不要完全脱离研究主题
+8. 明确输入的研究方向和方法兴趣优先级最高，始终以研究方向为核心组织检索
+9. 每一组查询都必须保留至少一个"研究主题锚点"（疾病、人群、场景、护理问题等），不能只剩方法词，例如不能只写 qualitative research、thematic analysis、patient experience 这类宽泛查询
+10. 学科领域仅用于后续解读和排序，不参与本轮检索词生成；请不要因为学科领域自动补入 nursing、patient、caregiver、self-management 等语境词，除非它们来自研究方向、方法兴趣或补充说明本身
 
-示例输出：["COPD nursing self-management", "lung cancer mortality prediction nursing", "COPD exacerbation readmission risk", "nursing intervention symptom management", "machine learning hospital readmission"]
+示例输出：["COPD self-management", "lung cancer mortality prediction", "COPD exacerbation readmission risk", "symptom management quality of life", "machine learning hospital readmission"]
 
 只输出 JSON 数组，不要 markdown 代码块，不要其他文字。"""
 
@@ -881,13 +924,10 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
         "final_source_counts": {},
     }
 
-    # 获取用户收藏标题，用于优化搜索
-    saved_titles = get_saved_titles(user_id) if user_id else []
-
     # 如果有 LLM 且有画像，用 LLM 生成搜索关键词
     smart_queries = []
     if client and (profile.get("focus_areas") or profile.get("method_interests") or profile.get("background")):
-        smart_queries = _generate_search_keywords(profile, client, model, saved_titles)
+        smart_queries = _generate_search_keywords(profile, client, model)
     trace["llm_queries_raw"] = smart_queries
 
     query_specs, dropped_queries = _build_query_specs(profile, keyword_list, smart_queries)
@@ -1034,6 +1074,33 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
         trace["totals"]["final_papers"] = 0
         trace["run_id"] = save_search_run(user_id, source, trace)
         return [], trace
+
+    before_low_value = len(unique_papers)
+    unique_papers = [p for p in unique_papers if not _is_low_value_publication(p)]
+    filtered_low_value = before_low_value - len(unique_papers)
+    trace["totals"]["after_low_value_filter"] = len(unique_papers)
+    if filtered_low_value:
+        print(f"[api] 过滤低价值/无摘要文献 {filtered_low_value} 篇")
+    if not unique_papers:
+        print("[api] 低价值文献过滤后无论文")
+        trace["totals"]["final_papers"] = 0
+        trace["run_id"] = save_search_run(user_id, source, trace)
+        return [], trace
+
+    raw_exclude_terms = _split_profile_terms(profile.get("exclude_areas", ""))
+    exclude_terms = _expand_exclude_terms(raw_exclude_terms)
+    if exclude_terms:
+        before_exclude = len(unique_papers)
+        unique_papers = [p for p in unique_papers if not _paper_matches_exclude(p, exclude_terms)]
+        filtered_exclude = before_exclude - len(unique_papers)
+        trace["totals"]["after_exclude_filter"] = len(unique_papers)
+        if filtered_exclude:
+            print(f"[api] 按排除词硬过滤 {filtered_exclude} 篇")
+        if not unique_papers:
+            print("[api] 排除词过滤后无论文")
+            trace["totals"]["final_papers"] = 0
+            trace["run_id"] = save_search_run(user_id, source, trace)
+            return [], trace
 
     # LLM 打分 + 动态分类 + 排序（已按分数降序）
     if client:

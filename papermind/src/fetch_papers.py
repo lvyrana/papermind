@@ -163,8 +163,17 @@ def _parse_article(article: ET.Element) -> dict | None:
         abstract_parts = art.findall(".//AbstractText")
         if abstract_parts:
             abstract = " ".join("".join(p.itertext()) for p in abstract_parts)
+            has_abstract = True
         else:
             abstract = "（无摘要）"
+            has_abstract = False
+
+        # Publication types
+        publication_types = []
+        for pt in medline.findall(".//PublicationType"):
+            text = "".join(pt.itertext()).strip()
+            if text:
+                publication_types.append(text)
 
         # 作者
         author_list = art.find("AuthorList")
@@ -194,6 +203,8 @@ def _parse_article(article: ET.Element) -> dict | None:
             "pmid": pmid,
             "title": title.strip(),
             "abstract": abstract.strip(),
+            "has_abstract": has_abstract,
+            "publication_types": publication_types,
             "authors": authors_str,
             "journal": journal,
             "pub_date": pub_date,
