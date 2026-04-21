@@ -128,9 +128,14 @@ def _score_batch(papers: list[dict], profile_text: str, categories: dict, client
 
         for p, r in zip(papers, results):
             p["relevance_score"] = int(r.get("score", 5))
-            p["category"] = r.get("category", "其他")
+            cat = r.get("category", "其他")
+            valid = set(categories["topic"] + categories["method"] + ["其他"])
+            if cat not in valid:
+                print(f"[categorize] LLM 返回非法标签 '{cat}'，回退为 '其他'")
+                cat = "其他"
+            p["category"] = cat
 
-        print(f"[categorize] 完成 {len(papers)} 篇论文打分")
+        print(f"[categorize] 完成 {len(papers)} 篇论文打分, 分类分布: { {c: sum(1 for p in papers if p.get('category') == c) for c in set(p.get('category', '') for p in papers)} }")
     except Exception as e:
         print(f"[categorize] 打分失败: {e}")
         for p in papers:
