@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.6 - 2026-04-22
+
+### 检索性能大幅优化（P0 并发改造）
+
+- **LLM enrichment 并发化**：论文 AI 解读从逐篇串行调用改为 `ThreadPoolExecutor(max_workers=5)` 并发，10 篇解读从 30-100s 降至 3-10s
+- **外部 API 抓取并发化**：6 组 PubMed / Semantic Scholar 查询从顺序执行改为 `ThreadPoolExecutor(max_workers=3)` 并发抓取，从 10-25s 降至 3-8s
+- **S2 配额线程安全**：Semantic Scholar 每轮 ≤4 次查询限制改为 `threading.Lock` 保护，并发下不会超限
+
+### Qwen3.5-Flash 适配
+
+- **关闭 thinking 模式**：Qwen 链路自动加 `extra_body={"enable_thinking": False}`，避免 thinking 阶段白白消耗 10-20s
+- **显式 prompt 缓存**：enrichment prompt 拆为 `system`（含 profile + 输出格式，标记 `cache_control: {"type":"ephemeral"}`）+ `user`（只含论文内容），同一批并发调用共享 system 前缀，命中 Qwen 服务端缓存时跳过前缀计算；日志打印 `(cache hit)` 标记
+
+### Bug 修复
+
+- **`saved_titles` 未定义崩溃**：`_fetch_and_cache_papers` 中遗漏了 `saved_titles = get_saved_titles(user_id)`，导致每次抓取完论文后直接抛 `NameError`，enrichment 从未执行，用户始终看不到结果
+
+### 预期效果
+
+| 阶段 | v0.5 | v0.6 |
+|------|------|------|
+| 首屏可见（loading → 看到论文卡片） | 17-45s | 5-12s |
+| 全部 AI 解读完成 | 47-145s | 8-22s |
+
 ## v0.5.24 - 2026-04-20
 
 ### 画像页 UI 优化

@@ -216,15 +216,19 @@ def _llm_chat_complete(messages: list[dict], max_tokens: int = 800, temperature:
         name = f"{provider['name']} / {provider['model']}"
         try:
             client = _build_llm_client(provider)
-            resp = client.chat.completions.create(
+            kwargs = dict(
                 model=provider["model"],
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+            if "qwen" in provider["name"]:
+                kwargs["extra_body"] = {"enable_thinking": False}
+            resp = client.chat.completions.create(**kwargs)
             content = (resp.choices[0].message.content or "").strip()
+            cached = getattr(resp, "usage", None) and getattr(resp.usage, "prompt_tokens_details", None) and getattr(resp.usage.prompt_tokens_details, "cached_tokens", 0) > 0
             if content:
-                print(f"[llm] ✓ {name}")
+                print(f"[llm] ✓ {name}" + (" (cache hit)" if cached else ""))
                 return content, provider["name"], provider["model"]
             else:
                 print(f"[llm] {name} 返回空内容，尝试下一个")
@@ -906,6 +910,7 @@ def _round_robin_sources(papers: list[dict]) -> list[dict]:
 def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = ""):
     """从 PubMed + Semantic Scholar 抓取论文并缓存，同时记录检索轨迹。"""
     client, model = _get_llm_client()
+    saved_titles = get_saved_titles(user_id) if user_id else []
     trace = {
         "created_at": datetime.now().isoformat(),
         "source_requested": source,
@@ -1391,19 +1396,16 @@ def _extract_json_object(raw: str) -> dict:
     raise ValueError("json object not found")
 
 
-def _enrich_single_paper(paper: dict, profile_text: str):
+def _enrich_single_paper(paper: dict, profile_text: str, cache_control: bool = False):
     """为单篇论文生成 AI 解读（可并发调用）。"""
     paper["_enrich_attempts"] = paper.get("_enrich_attempts", 0) + 1
     paper["summary_status"] = "pending"
     try:
-        prompt = f"""你是一位专业的学术论文解读助手。请对以下论文进行详细解读。
+        system_content = f"""你是一位专业的学术论文解读助手。请对用户提供的论文进行详细解读。
 
-论文标题：{paper['title']}
-论文摘要：{paper['abstract'][:1200]}
+{f"研究者背景（仅供参考，不要在输出中罗列这些关键词）：{chr(10)}{profile_text}" if profile_text else ""}
 
-    {f"研究者背景（仅供参考，不要在输出中罗列这些关键词）：{chr(10)}{profile_text}" if profile_text else ""}
-
-    请用 JSON 格式输出以下内容：
+请用 JSON 格式输出以下内容：
 
 {{
   "summary_zh": "详细中文解读（4-6句话，包含：研究背景与目的、研究方法、主要发现、意义。语言专业但易懂）",
@@ -1411,11 +1413,17 @@ def _enrich_single_paper(paper: dict, profile_text: str):
   "key_findings": ["核心发现1", "核心发现2", "核心发现3"]
 }}
 
-    只输出 JSON，不加其他文字。
-    如提供了"用户修正后的偏好"，请综合以上信息，优先考虑研究者明确输入和用户修正后的偏好；但相关性判断仍必须以论文实际内容为依据。"""
+只输出 JSON，不加其他文字。
+如提供了"用户修正后的偏好"，请综合以上信息，优先考虑研究者明确输入和用户修正后的偏好；但相关性判断仍必须以论文实际内容为依据。"""
+
+        system_msg = {"role": "system", "content": system_content}
+        if cache_control:
+            system_msg["cache_control"] = {"type": "ephemeral"}
+
+        user_msg = {"role": "user", "content": f"论文标题：{paper['title']}\n论文摘要：{paper['abstract'][:1200]}"}
 
         raw, _, _ = _llm_chat_complete(
-            [{"role": "user", "content": prompt}],
+            [system_msg, user_msg],
             max_tokens=800,
             temperature=0.3,
         )
@@ -1481,8 +1489,9 @@ def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""
     if is_manual and interests_summary:
         profile_text += f"---\n用户修正后的偏好（高于系统自动观察，但低于以上明确输入）：{interests_summary}\n"
 
+    is_qwen = any("qwen" in p["name"] for p in _get_llm_slots() if p["api_key"].strip())
     with ThreadPoolExecutor(max_workers=5) as pool:
-        futures = [pool.submit(_enrich_single_paper, p, profile_text) for p in papers]
+        futures = [pool.submit(_enrich_single_paper, p, profile_text, is_qwen) for p in papers]
         for f in as_completed(futures):
             try:
                 f.result()
