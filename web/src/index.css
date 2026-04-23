@@ -10,7 +10,7 @@
   --color-mint: #A8D5BA;
   --color-warm-white: #FFFDF9;
   --color-warm-gray: #8E8A85;
-  --font-sans: 'DM Sans', 'Noto Sans SC', system-ui, sans-serif;
+  --font-sans: 'DM Sans', system-ui, 'Noto Sans SC', sans-serif;
   --font-serif: 'Noto Serif SC', Georgia, serif;
 }
 
