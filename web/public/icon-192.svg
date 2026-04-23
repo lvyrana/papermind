@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+  
+  <rect width="192" height="192" rx="42" fill="#1E3A5F"></rect>
+  <rect width="192" height="192" rx="42" fill="url(#glow)" opacity="0.15"></rect>
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="35%" r="55%">
+      <stop offset="0%" stop-color="#A8D5BA"></stop>
+      <stop offset="100%" stop-color="transparent"></stop>
+    </radialGradient>
+  </defs>
+  
+  <line x1="96" y1="146" x2="96" y2="76" stroke="#E8877A" stroke-width="6.5" stroke-linecap="round"></line>
+  
+  <path d="M96 96 C96 74 111 58 130 55 C130 77 115 93 96 96Z" fill="#FFFDF9" opacity="0.93"></path>
+  
+  <path d="M96 84 C96 65 81 50 62 50 C62 69 77 85 96 84Z" fill="#A8D5BA" opacity="0.88"></path>
+  
+  <path d="M78 143 C78 143 84 134 96 131 C108 134 114 143 114 143" stroke="#A8D5BA" stroke-width="4.5" stroke-linecap="round" fill="none" opacity="0.55"></path>
+</svg>
