@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
 import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages, Mic, MicOff } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -33,6 +33,8 @@ export default function PaperRead() {
   const [showTitleZh, setShowTitleZh] = useState(false)
   const [titleTranslating, setTitleTranslating] = useState(false)
   const [summarizeError, setSummarizeError] = useState(null)
+  const readingRecordedRef = useRef(false)
+  const actionRecordedRef = useRef({})
 
   // 如果 location.state 没有 paper（刷新/直链），尝试从后端恢复
   useEffect(() => {
@@ -56,15 +58,39 @@ export default function PaperRead() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
-  // 记录阅读
+  const recordEngagement = (reason) => {
+    if (!paper?.title) return Promise.resolve()
+    return apiPost('/reading-history', {
+      title: paper.title,
+      paper_rowid: savedRowId || 0,
+      reason,
+    }).catch(() => {})
+  }
+
+  const recordActionOnce = (key) => {
+    if (actionRecordedRef.current[key]) return
+    actionRecordedRef.current[key] = true
+    recordEngagement(key)
+  }
+
+  // 记录最近阅读位置；停留超过 20 秒后才算一次有效阅读
   useEffect(() => {
-    if (paper) {
-      localStorage.setItem('last-reading', JSON.stringify({
-        ...paper, index: id, readAt: new Date().toISOString(),
-      }))
-      // 记录到后端
-      apiPost('/reading-history', { title: paper.title, paper_rowid: savedRowId }).catch(() => {})
-    }
+    if (!paper) return
+
+    localStorage.setItem('last-reading', JSON.stringify({
+      ...paper, index: id, readAt: new Date().toISOString(),
+    }))
+
+    readingRecordedRef.current = false
+    actionRecordedRef.current = {}
+
+    const timer = setTimeout(() => {
+      if (readingRecordedRef.current) return
+      readingRecordedRef.current = true
+      recordEngagement('dwell_20s')
+    }, 20000)
+
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paper, id])
 
@@ -222,6 +248,7 @@ export default function PaperRead() {
   }
 
   const handleExport = async (format) => {
+    recordActionOnce(`export_${format}`)
     if (savedRowId) {
       window.open(`${API_BASE}/export/${format}/${savedRowId}`, '_blank')
     } else {
@@ -250,6 +277,7 @@ export default function PaperRead() {
       if (paper.pmid) params.set('pmid', paper.pmid)
       const data = await apiGet(`/pdf-url?${params}`)
       if (data.ok) {
+        recordActionOnce('download_pdf')
         window.open(data.url, '_blank')
       } else {
         alert(data.error || '未找到免费全文')
@@ -346,6 +374,7 @@ export default function PaperRead() {
           <div className="flex flex-wrap items-center gap-2 mt-4">
             {paper.link && (
               <a href={paper.link} target="_blank" rel="noopener noreferrer"
+                onClick={() => recordActionOnce('open_external')}
                 className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all">
                 <ExternalLink size={12} />
                 查看原文
