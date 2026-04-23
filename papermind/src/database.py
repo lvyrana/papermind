@@ -98,6 +98,15 @@ def _ensure_db():
             trace_json TEXT NOT NULL DEFAULT '{}'
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS enrichment_cache (
+            paper_key TEXT PRIMARY KEY,
+            summary_zh TEXT NOT NULL,
+            relevance TEXT NOT NULL DEFAULT '',
+            key_findings TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL
+        )
+    """)
 
     # 迁移：给旧表加 user_id 列（如果不存在）
     for table in ("saved_papers", "reading_history"):
@@ -114,6 +123,7 @@ def _ensure_db():
         ("interests_summary", "''"),
         ("interests_summary_updated_at", "''"),
         ("interests_summary_is_manual", "'0'"),
+        ("behavior_events_since_summary", "'0'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE user_profiles ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -132,6 +142,7 @@ def _ensure_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_notes_paper ON paper_notes(paper_rowid)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_chats_paper ON paper_chats(paper_rowid)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_search_runs_user_created ON search_runs(user_id, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_cache_key ON enrichment_cache(paper_key)")
 
     conn.commit()
     return conn
@@ -203,6 +214,7 @@ def get_profile(user_id: str) -> dict:
         "interests_summary": "",
         "interests_summary_updated_at": "",
         "interests_summary_is_manual": "0",
+        "behavior_events_since_summary": "0",
     }
     conn = _ensure_db()
     row = conn.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
@@ -222,8 +234,8 @@ def save_profile(user_id: str, profile: dict):
     conn.execute("""
         INSERT INTO user_profiles (user_id, focus_areas, exclude_areas, method_interests, current_goal, background,
                                    discipline, tracking_days, interests_summary, interests_summary_updated_at,
-                                   interests_summary_is_manual, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   interests_summary_is_manual, behavior_events_since_summary, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             focus_areas = excluded.focus_areas,
             exclude_areas = excluded.exclude_areas,
@@ -235,6 +247,7 @@ def save_profile(user_id: str, profile: dict):
             interests_summary = excluded.interests_summary,
             interests_summary_updated_at = excluded.interests_summary_updated_at,
             interests_summary_is_manual = excluded.interests_summary_is_manual,
+            behavior_events_since_summary = excluded.behavior_events_since_summary,
             updated_at = excluded.updated_at
     """, (
         user_id,
@@ -244,12 +257,42 @@ def save_profile(user_id: str, profile: dict):
         profile.get("current_goal", ""),
         profile.get("background", ""),
         profile.get("discipline", ""),
-        profile.get("tracking_days", "30"),
+        profile.get("tracking_days", "90"),
         profile.get("interests_summary", ""),
         profile.get("interests_summary_updated_at", ""),
         profile.get("interests_summary_is_manual", "0"),
+        profile.get("behavior_events_since_summary", "0"),
         datetime.now().isoformat(),
     ))
+    conn.commit()
+    conn.close()
+
+
+def increment_behavior_events(user_id: str) -> int:
+    """递增行为计数器，返回新值"""
+    conn = _ensure_db()
+    conn.execute(
+        """
+        INSERT INTO user_profiles (user_id, updated_at)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO NOTHING
+        """,
+        (user_id, datetime.now().isoformat()),
+    )
+    conn.execute(
+        "UPDATE user_profiles SET behavior_events_since_summary = COALESCE(behavior_events_since_summary, 0) + 1 WHERE user_id = ?",
+        (user_id,)
+    )
+    conn.commit()
+    row = conn.execute("SELECT behavior_events_since_summary FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    return int(row[0]) if row else 0
+
+
+def reset_behavior_events(user_id: str):
+    """摘要生成后归零计数器"""
+    conn = _ensure_db()
+    conn.execute("UPDATE user_profiles SET behavior_events_since_summary = '0' WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
@@ -544,3 +587,60 @@ def get_saved_categories(user_id: str) -> dict:
     ).fetchall()
     conn.close()
     return {r["category"]: r["cnt"] for r in rows}
+
+
+# ========== Enrichment Cache ==========
+
+def _paper_cache_key(paper: dict) -> str:
+    """生成论文唯一缓存键：优先 PMID，其次 DOI"""
+    pmid = (paper.get("pmid") or "").strip()
+    doi = (paper.get("doi") or "").strip()
+    if pmid:
+        return f"pmid:{pmid}"
+    if doi:
+        return f"doi:{doi}"
+    return ""
+
+
+def get_enrichment_cache(paper: dict) -> Optional[dict]:
+    """查找论文的 enrichment 缓存，命中返回 dict，否则 None"""
+    key = _paper_cache_key(paper)
+    if not key:
+        return None
+    conn = _ensure_db()
+    row = conn.execute(
+        "SELECT summary_zh, relevance, key_findings FROM enrichment_cache WHERE paper_key = ?",
+        (key,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        findings = json.loads(row["key_findings"])
+    except (json.JSONDecodeError, TypeError):
+        findings = []
+    return {
+        "summary_zh": row["summary_zh"],
+        "relevance": row["relevance"],
+        "key_findings": findings,
+    }
+
+
+def save_enrichment_cache(paper: dict, summary_zh: str, relevance: str, key_findings: list):
+    """保存论文 enrichment 结果到缓存"""
+    key = _paper_cache_key(paper)
+    if not key or not summary_zh:
+        return
+    conn = _ensure_db()
+    conn.execute("""
+        INSERT INTO enrichment_cache (paper_key, summary_zh, relevance, key_findings, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(paper_key) DO UPDATE SET
+            summary_zh = excluded.summary_zh,
+            relevance = excluded.relevance,
+            key_findings = excluded.key_findings,
+            created_at = excluded.created_at
+    """, (key, summary_zh, relevance, json.dumps(key_findings, ensure_ascii=False),
+          datetime.now().isoformat()))
+    conn.commit()
+    conn.close()

@@ -4,7 +4,12 @@
 """
 
 import json
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+MAX_CATEGORIZE_WORKERS = max(1, int(os.environ.get("CATEGORIZE_MAX_WORKERS", "4")))
 
 
 def _extract_focus_tags(focus: str) -> list[str]:
@@ -55,9 +60,14 @@ def score_and_categorize_papers(papers: list[dict], profile: dict, client, model
         profile_text += f"---\n用户修正后的偏好（辅助参考，低于以上明确输入）：\n{interests_summary}\n"
 
     batch_size = 20
-    for start in range(0, len(papers), batch_size):
-        batch = papers[start:start + batch_size]
-        _score_batch(batch, profile_text, focus, client, model, llm_call)
+    batches = [papers[start:start + batch_size] for start in range(0, len(papers), batch_size)]
+    with ThreadPoolExecutor(max_workers=MAX_CATEGORIZE_WORKERS) as pool:
+        futures = [pool.submit(_score_batch, b, profile_text, focus, client, model, llm_call) for b in batches]
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception:
+                pass
 
     papers.sort(key=lambda p: p.get("relevance_score", 0), reverse=True)
     return papers

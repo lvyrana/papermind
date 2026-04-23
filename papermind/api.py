@@ -33,6 +33,8 @@ from src.database import (
     get_chat_history, record_reading, get_reading_history,
     get_profile, save_profile, get_saved_titles, save_search_run, get_latest_search_run,
     check_rate_limit, increment_rate_limit, get_rate_limit_remaining,
+    get_enrichment_cache, save_enrichment_cache,
+    increment_behavior_events, reset_behavior_events,
 )
 
 # 加载 .env
@@ -88,7 +90,7 @@ class ProfileData(BaseModel):
     current_goal: str = ""
     background: str = ""
     discipline: str = ""
-    tracking_days: str = "30"
+    tracking_days: str = "90"
     interests_summary: str = ""
     interests_summary_is_manual: str = "0"
 
@@ -149,12 +151,70 @@ _LLM_PROVIDERS = [
     },
 ]
 
+
+def _parse_model_list(raw: str) -> list[str]:
+    return [m.strip() for m in (raw or "").split(",") if m.strip()]
+
+
+_TASK_MODEL_ENV = {
+    "translate": "LLM_TASK_TRANSLATE_MODELS",
+    "search": "LLM_TASK_SEARCH_MODELS",
+    "categorize": "LLM_TASK_CATEGORIZE_MODELS",
+    "enrich": "LLM_TASK_ENRICH_MODELS",
+    "summary": "LLM_TASK_SUMMARY_MODELS",
+    "chat": "LLM_TASK_CHAT_MODELS",
+}
+
+_COMMON_TEXT_MODELS = [
+    "qwen3.5-flash",
+    "qwen3.6-flash",
+    "qwen-flash-2025-07-28",
+    "qwen3.5-27b",
+    "qwen3.5-35b-a3b",
+    "qwen3-max-preview",
+    "qwen3-max-2025-09-23",
+]
+
+_TASK_MODEL_DEFAULTS = {
+    "translate": [
+        "qwen-mt-flash",
+        "qwen-mt-plus",
+        "qwen-mt-turbo",
+        "qwen-mt-lite",
+    ],
+    "summary": [
+        "qwen-flash-2025-07-28",
+    ],
+    "search": list(_COMMON_TEXT_MODELS),
+    "categorize": list(_COMMON_TEXT_MODELS),
+    "enrich": list(_COMMON_TEXT_MODELS),
+    "chat": list(_COMMON_TEXT_MODELS),
+}
+
+
+def _get_task_preferred_models(task: str) -> list[str]:
+    env_key = _TASK_MODEL_ENV.get(task or "")
+    preferred = _parse_model_list(os.environ.get(env_key, "")) if env_key else []
+    if not preferred:
+        preferred = list(_TASK_MODEL_DEFAULTS.get(task or "", []))
+
+    seen: set[str] = set()
+    result = []
+    for model in preferred:
+        if model and model not in seen:
+            seen.add(model)
+            result.append(model)
+    return result
+
 def _get_qwen_models() -> list[str]:
     primary = os.environ.get("QWEN_MODEL", "qwen-plus").strip()
     fallback_raw = os.environ.get("QWEN_FALLBACK_MODELS", "")
     fallback_models = [m.strip() for m in fallback_raw.split(",") if m.strip()]
     models: list[str] = []
-    for model in [primary, *fallback_models]:
+    task_models: list[str] = []
+    for task in _TASK_MODEL_ENV:
+        task_models.extend(_get_task_preferred_models(task))
+    for model in [primary, *fallback_models, *task_models]:
         if model and model not in models:
             models.append(model)
     return models
@@ -178,6 +238,33 @@ def _get_llm_slots() -> list[dict]:
     return slots
 
 
+# ---- Provider 冷却：401/403/quota 耗尽后跳过 10 分钟 ----
+_provider_cooldown: dict[str, datetime] = {}   # key → cooldown_until
+_COOLDOWN_SECONDS = 600  # 10 分钟
+
+def _provider_key(provider: dict) -> str:
+    return f"{provider['name']}:{provider['model']}"
+
+def _is_provider_cooled(provider: dict) -> bool:
+    until = _provider_cooldown.get(_provider_key(provider))
+    if until and datetime.now() < until:
+        return True
+    return False
+
+def _cooldown_provider(provider: dict, seconds: int = _COOLDOWN_SECONDS):
+    key = _provider_key(provider)
+    _provider_cooldown[key] = datetime.now() + timedelta(seconds=seconds)
+    print(f"[llm] ⏸ {key} 冷却 {seconds}s（配额耗尽或认证失败）")
+
+def _is_quota_error(e: Exception) -> bool:
+    """判断是否为配额耗尽/认证失败（应冷却而非立即重试）"""
+    msg = str(e).lower()
+    for keyword in ("401", "403", "quota", "rate_limit", "rate limit", "insufficient", "billing"):
+        if keyword in msg:
+            return True
+    return False
+
+
 def _build_llm_client(provider: dict) -> OpenAI:
     http_client = httpx.Client(
         transport=httpx.HTTPTransport(local_address="0.0.0.0"),
@@ -191,11 +278,25 @@ def _build_llm_client(provider: dict) -> OpenAI:
     )
 
 
-def _get_llm_client() -> tuple[Optional[OpenAI], str]:
+def _get_llm_client(task: str = "") -> tuple[Optional[OpenAI], str]:
     """返回当前首选内置 LLM client（用于状态展示等轻量场景）"""
-    for provider in _get_llm_slots():
+    slots = _get_llm_slots()
+    preferred_models = _get_task_preferred_models(task)
+    if preferred_models:
+        preferred_slots = []
+        seen_keys: set[str] = set()
+        for model in preferred_models:
+            for provider in slots:
+                if provider["model"] == model:
+                    key = _provider_key(provider)
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        preferred_slots.append(provider)
+        slots = preferred_slots + [provider for provider in slots if _provider_key(provider) not in seen_keys]
+
+    for provider in slots:
         api_key = provider["api_key"].strip()
-        if not api_key:
+        if not api_key or _is_provider_cooled(provider):
             continue
         try:
             client = _build_llm_client(provider)
@@ -206,14 +307,39 @@ def _get_llm_client() -> tuple[Optional[OpenAI], str]:
     return None, ""
 
 
-def _llm_chat_complete(messages: list[dict], max_tokens: int = 800, temperature: float = 0.3) -> tuple[str, str, str]:
+def _llm_chat_complete(
+    messages: list[dict],
+    max_tokens: int = 800,
+    temperature: float = 0.3,
+    prefer_model: str = "",
+    task: str = "",
+) -> tuple[str, str, str]:
     last_error = ""
-    for provider in _get_llm_slots():
+    slots = _get_llm_slots()
+    preferred_models = []
+    if prefer_model:
+        preferred_models.append(prefer_model)
+    preferred_models.extend(_get_task_preferred_models(task))
+    if preferred_models:
+        preferred_slots = []
+        seen_keys: set[str] = set()
+        for model in preferred_models:
+            for provider in slots:
+                if provider["model"] == model:
+                    key = _provider_key(provider)
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        preferred_slots.append(provider)
+        slots = preferred_slots + [provider for provider in slots if _provider_key(provider) not in seen_keys]
+    for provider in slots:
         api_key = provider["api_key"].strip()
         if not api_key:
-            print(f"[llm] 跳过 {provider['name']} / {provider['model']}（未配置 key）")
             continue
         name = f"{provider['name']} / {provider['model']}"
+        # 冷却期内直接跳过
+        if _is_provider_cooled(provider):
+            print(f"[llm] ⏭ {name}（冷却中，跳过）")
+            continue
         try:
             client = _build_llm_client(provider)
             kwargs = dict(
@@ -243,16 +369,19 @@ def _llm_chat_complete(messages: list[dict], max_tokens: int = 800, temperature:
         except Exception as e:
             last_error = str(e)
             print(f"[llm] ✗ {name}: {e}")
+            if _is_quota_error(e):
+                _cooldown_provider(provider)
             continue
     print(f"[llm] 所有 provider 失败，最后错误: {last_error}")
     return "", "", ""
 
 
-def _llm_complete(prompt: str, max_tokens: int = 800) -> str:
+def _llm_complete(prompt: str, max_tokens: int = 800, task: str = "") -> str:
     content, _, _ = _llm_chat_complete(
         [{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
         temperature=0.3,
+        task=task,
     )
     return content
 
@@ -294,7 +423,7 @@ def api_test_settings(request: Request):
     # 仅 owner 可调用，防止任意用户消耗 token 做连通性测试
     if not is_owner:
         return {"ok": False, "error": "无权限，仅限 owner 设备测试 AI 连通性。"}
-    result = _llm_complete("请回复两个字：成功", max_tokens=10)
+    result = _llm_complete("请回复两个字：成功", max_tokens=10, task="chat")
     if result:
         return {"ok": True, "reply": result}
     return {"ok": False, "error": "AI 服务不可用，请检查 API Key 配置"}
@@ -320,10 +449,12 @@ def api_save_profile(data: ProfileData, request: Request):
         next_profile["interests_summary"] = ""
         next_profile["interests_summary_is_manual"] = "0"
         next_profile["interests_summary_updated_at"] = ""
+        next_profile["behavior_events_since_summary"] = "0"
     else:
         # 摘要字段由前端携带：如果内容变了则更新时间戳，否则沿用已有元数据
         prev_summary = previous.get("interests_summary", "")
         new_summary = next_profile.get("interests_summary", "")
+        next_profile["behavior_events_since_summary"] = previous.get("behavior_events_since_summary", "0")
         if new_summary != prev_summary:
             next_profile["interests_summary_updated_at"] = datetime.now().isoformat()
         else:
@@ -337,9 +468,14 @@ def api_save_profile(data: ProfileData, request: Request):
 
     return {"ok": True}
 
+_SUMMARY_EVENT_THRESHOLD = 8    # 累计 8 次行为后才重新生成
+_SUMMARY_TIME_THRESHOLD = 7 * 86400  # 或距上次生成 7 天
+
 @app.post("/api/profile/interests-summary")
 def api_update_interests_summary(request: Request):
-    """根据用户行为生成兴趣摘要，存入 profile.interests_summary"""
+    """根据用户行为生成兴趣摘要，存入 profile.interests_summary
+    触发条件：累计行为 >= 8 次 OR 距上次 >= 7 天（且有行为数据）
+    """
     uid = _get_user_id(request)
     profile = get_profile(uid)
 
@@ -347,18 +483,31 @@ def api_update_interests_summary(request: Request):
     if profile.get("interests_summary_is_manual") == "1":
         return {"ok": True, "skipped": True, "summary": profile.get("interests_summary", "")}
 
-    # 24 小时内不重复生成
+    # 判断是否满足重生成条件
+    events = int(profile.get("behavior_events_since_summary") or 0)
     last_updated = profile.get("interests_summary_updated_at", "")
+    has_summary = bool(profile.get("interests_summary", "").strip())
+
+    time_elapsed = 0
     if last_updated:
         try:
-            from datetime import timezone
             last_dt = datetime.fromisoformat(last_updated)
-            if (datetime.now() - last_dt).total_seconds() < 86400:
-                return {"ok": True, "skipped": True}
+            time_elapsed = (datetime.now() - last_dt).total_seconds()
         except Exception:
             pass
 
-    client, model = _get_llm_client()
+    should_generate = False
+    if not has_summary:
+        should_generate = True  # 从未生成过
+    elif events >= _SUMMARY_EVENT_THRESHOLD:
+        should_generate = True  # 累计行为达标
+    elif time_elapsed >= _SUMMARY_TIME_THRESHOLD and events > 0:
+        should_generate = True  # 7 天 + 至少有新行为
+
+    if not should_generate:
+        return {"ok": True, "skipped": True}
+
+    client, model = _get_llm_client(task="summary")
     if not client:
         return {"ok": False, "error": "AI 不可用"}
 
@@ -409,11 +558,13 @@ def api_update_interests_summary(request: Request):
             [{"role": "user", "content": prompt}],
             max_tokens=400,
             temperature=0.3,
+            task="summary",
         )
         if not summary:
             raise RuntimeError("empty response")
         updated_profile = {**profile, "interests_summary": summary, "interests_summary_updated_at": datetime.now().isoformat(), "interests_summary_is_manual": "0"}
         save_profile(uid, updated_profile)
+        reset_behavior_events(uid)
         return {"ok": True, "summary": summary}
     except Exception as e:
         print(f"[api] interests-summary 生成失败: {e}")
@@ -780,6 +931,7 @@ def _generate_search_keywords(profile: dict, client, model: str) -> list[str]:
             [{"role": "user", "content": prompt}],
             max_tokens=400,
             temperature=0.3,
+            task="search",
         )
         if not raw:
             raise RuntimeError("empty response")
@@ -956,6 +1108,7 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
                     [{"role": "user", "content": f'将以下研究方向和方法兴趣翻译为英文学术术语，用逗号分隔，只输出翻译结果：{fallback_seed}'}],
                     max_tokens=200,
                     temperature=0,
+                    task="translate",
                 )
                 translated_queries = [t.strip() for t in translated.split(",") if t.strip()]
                 trace["translated_queries_raw"] = translated_queries
@@ -1130,7 +1283,18 @@ def _fetch_and_cache_papers(keyword_list, days, source, profile, user_id: str = 
 
     # LLM 打分 + 动态分类 + 排序（已按分数降序）
     if client:
-        unique_papers = score_and_categorize_papers(unique_papers, profile, client, model, llm_call=_llm_chat_complete)
+        unique_papers = score_and_categorize_papers(
+            unique_papers,
+            profile,
+            client,
+            model,
+            llm_call=lambda messages, max_tokens, temperature: _llm_chat_complete(
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                task="categorize",
+            ),
+        )
         scored = [p for p in unique_papers if p.get("relevance_score", 5) >= 3]
         if len(scored) >= 8:
             filtered = len(unique_papers) - len(scored)
@@ -1287,9 +1451,10 @@ def api_get_papers(
         if age > 3600:
             need_fetch = True
 
-    # Rate limit（owner 不限量）：所有会触发新抓取的路径统一检查
+    # Rate limit（owner 不限量）：只对用户主动「重新抓取」计费，
+    # 缓存重建（服务重启 / 缓存过期）不消耗配额
     is_owner = OWNER_UID and uid == OWNER_UID
-    if not is_owner and need_fetch:
+    if not is_owner and force_fetch:
         remaining_quota = get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT)
         if remaining_quota <= 0:
             return {
@@ -1317,7 +1482,8 @@ def api_get_papers(
                 "search_debug": cache.get("search_debug"),
             }
         cache["fetching"] = True
-        increment_rate_limit(uid, "recommend")
+        if force_fetch and not is_owner:
+            increment_rate_limit(uid, "recommend")
         t = threading.Thread(
             target=_bg_fetch_and_enrich,
             args=(cache, keyword_list, days, source, profile, uid),
@@ -1407,6 +1573,15 @@ def _extract_json_object(raw: str) -> dict:
 
 def _enrich_single_paper(paper: dict, profile_text: str, cache_control: bool = False):
     """为单篇论文生成 AI 解读（可并发调用）。"""
+    # ---- enrichment 缓存命中 → 跳过 LLM ----
+    cached = get_enrichment_cache(paper)
+    if cached and cached.get("summary_zh"):
+        paper["summary_zh"] = cached["summary_zh"]
+        paper["relevance"] = cached.get("relevance", "")
+        paper["key_findings"] = cached.get("key_findings", [])
+        paper["summary_status"] = "done"
+        return
+
     paper["_enrich_attempts"] = paper.get("_enrich_attempts", 0) + 1
     paper["summary_status"] = "pending"
     try:
@@ -1435,6 +1610,7 @@ def _enrich_single_paper(paper: dict, profile_text: str, cache_control: bool = F
             [system_msg, user_msg],
             max_tokens=800,
             temperature=0.3,
+            task="enrich",
         )
         if not raw:
             raise RuntimeError("empty response")
@@ -1443,6 +1619,8 @@ def _enrich_single_paper(paper: dict, profile_text: str, cache_control: bool = F
         paper["relevance"] = result.get("relevance", "")
         paper["key_findings"] = result.get("key_findings", [])
         paper["summary_status"] = "done" if paper["summary_zh"] else "pending"
+        if paper["summary_zh"]:
+            save_enrichment_cache(paper, paper["summary_zh"], paper["relevance"], paper["key_findings"])
     except Exception as e:
         print(f"[api] 论文 LLM 处理失败，尝试简化重试: {e}")
         try:
@@ -1461,6 +1639,7 @@ JSON 格式：
                 [{"role": "user", "content": retry_prompt}],
                 max_tokens=500,
                 temperature=0.2,
+                task="enrich",
             )
             if not retry_raw:
                 raise RuntimeError("empty response")
@@ -1469,6 +1648,8 @@ JSON 格式：
             paper["relevance"] = retry_result.get("relevance", "")
             paper["key_findings"] = []
             paper["summary_status"] = "done" if paper["summary_zh"] else "pending"
+            if paper["summary_zh"]:
+                save_enrichment_cache(paper, paper["summary_zh"], paper["relevance"], paper["key_findings"])
         except Exception as retry_error:
             print(f"[api] 论文简化重试仍失败: {retry_error}")
             paper["summary_zh"] = ""
@@ -1523,7 +1704,7 @@ def api_translate(data: TranslateRequest, request: Request):
     if not is_owner and not check_rate_limit(uid, "translate", DAILY_TRANSLATE_LIMIT):
         return {"ok": False, "error": f"今日翻译次数已用完（每天 {DAILY_TRANSLATE_LIMIT} 次），明天再来吧。"}
 
-    client, model = _get_llm_client()
+    client, model = _get_llm_client(task="translate")
     if not client:
         return {"ok": False, "error": "未配置 API"}
     try:
@@ -1531,6 +1712,7 @@ def api_translate(data: TranslateRequest, request: Request):
             [{"role": "user", "content": f"请将以下英文学术文本准确翻译为中文，保持专业术语的准确性，只输出翻译结果：\n\n{data.text[:3000]}"}],
             max_tokens=2000,
             temperature=0.2,
+            task="translate",
         )
         if not translated:
             raise RuntimeError("empty response")
@@ -1580,6 +1762,7 @@ def api_save_to_library(data: SavePaperRequest, request: Request):
     """收藏一篇论文"""
     uid = _get_user_id(request)
     row_id = save_paper(data.paper, uid)
+    increment_behavior_events(uid)  # 收藏 = 关键行为
 
     # 首次收藏时，把未收藏阶段暂存在前端的对话记录迁移到后端
     existing_chats = get_chat_history(row_id)
@@ -1748,7 +1931,7 @@ def api_chat(data: ChatRequest, request: Request):
 - 结合用户研究背景给出具体建议
 - 引用论文数据时给出具体数字"""
 
-    client, model = _get_llm_client()
+    client, model = _get_llm_client(task="chat")
     if not client:
         return {"reply": "AI 服务暂不可用，请稍后重试", "ok": False}
 
@@ -1762,6 +1945,7 @@ def api_chat(data: ChatRequest, request: Request):
             messages,
             max_tokens=600,
             temperature=0.4,
+            task="chat",
         )
         if not reply:
             return {"reply": "所有 AI 服务当前不可用（可能是配额耗尽），请稍后再试。", "ok": False}
@@ -1775,6 +1959,7 @@ def api_chat(data: ChatRequest, request: Request):
         if data.paper_rowid:
             save_chat_message(data.paper_rowid, "user", data.message)
             save_chat_message(data.paper_rowid, "assistant", reply)
+            increment_behavior_events(uid)  # 对话 = 关键行为
 
         return {"reply": reply, "ok": True}
     except Exception as e:
@@ -1818,7 +2003,7 @@ def api_summarize_chat(data: SummarizeChatRequest, request: Request):
     if not check_rate_limit("__global__", "chat", GLOBAL_DAILY_CHAT_LIMIT):
         return {"ok": False, "error": "今日 AI 服务使用量已达上限，明天零点后恢复。"}
 
-    result = _llm_complete(prompt, max_tokens=1200)
+    result = _llm_complete(prompt, max_tokens=1200, task="summary")
     if not result:
         return {"ok": False, "error": "AI 总结失败"}
 
@@ -1837,6 +2022,7 @@ def api_record_reading(data: dict, request: Request):
     """记录阅读行为"""
     uid = _get_user_id(request)
     record_reading(data.get("paper_rowid"), data.get("title", ""), uid)
+    increment_behavior_events(uid)  # 阅读 = 关键行为
     return {"ok": True}
 
 @app.get("/api/reading-history")
