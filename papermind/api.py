@@ -31,10 +31,11 @@ from src.database import (
     delete_saved_paper, update_paper_enrichment, save_note, delete_note, get_note_owner, get_notes, save_chat_message,
     get_saved_categories,
     get_chat_history, record_reading, get_reading_history,
-    get_profile, save_profile, get_saved_titles, save_search_run, get_latest_search_run,
+    get_profile, save_profile, get_saved_titles, get_saved_titles_since, get_all_recent_chats_since,
+    get_reading_history_since, save_search_run, get_latest_search_run,
     check_rate_limit, increment_rate_limit, get_rate_limit_remaining,
     get_enrichment_cache, save_enrichment_cache,
-    increment_behavior_events, reset_behavior_events,
+    increment_recent_events, reset_recent_events,
 )
 
 # 加载 .env
@@ -93,6 +94,13 @@ class ProfileData(BaseModel):
     tracking_days: str = "90"
     interests_summary: str = ""
     interests_summary_is_manual: str = "0"
+    # 三层记忆（前端可能传回来）
+    memory_core: str = ""
+    memory_recent: str = ""
+
+
+class MemoryActionRequest(BaseModel):
+    force: bool = False
 
 class ChatRequest(BaseModel):
     paper_title: str = Field(max_length=500)
@@ -441,17 +449,22 @@ def api_save_profile(data: ProfileData, request: Request):
     uid = _get_user_id(request)
     previous = get_profile(uid)
     next_profile = data.dict()
+
+    # 保留后端管理的记忆字段，不被前端覆盖
+    for key in ("memory_core", "memory_recent", "behavior_events_since_recent",
+                "last_recent_updated_at", "last_core_merged_at", "core_source"):
+        next_profile[key] = previous.get(key, "")
+
     watched_fields = ("focus_areas", "exclude_areas", "method_interests", "current_goal", "background", "discipline", "tracking_days")
     profile_changed = any((previous.get(field) or "") != (next_profile.get(field) or "") for field in watched_fields)
 
     if profile_changed:
-        # 画像方向一变，旧行为摘要很容易把新方向"硬拉回去"，清空并等待重新生成。
+        # 旧字段保留兼容，但不再参与新记忆逻辑
         next_profile["interests_summary"] = ""
         next_profile["interests_summary_is_manual"] = "0"
         next_profile["interests_summary_updated_at"] = ""
         next_profile["behavior_events_since_summary"] = "0"
     else:
-        # 摘要字段由前端携带：如果内容变了则更新时间戳，否则沿用已有元数据
         prev_summary = previous.get("interests_summary", "")
         new_summary = next_profile.get("interests_summary", "")
         next_profile["behavior_events_since_summary"] = previous.get("behavior_events_since_summary", "0")
@@ -466,109 +479,325 @@ def api_save_profile(data: ProfileData, request: Request):
     if profile_changed:
         _reset_user_cache(uid)
 
+    # 首次生成长期骨架：放后台线程，不阻塞保存响应
+    if not previous.get("memory_core", "").strip():
+        def _bg_init_core():
+            try:
+                _ensure_memory_core(uid, get_profile(uid))
+            except Exception as e:
+                print(f"[memory] 初始 memory_core 生成失败: {e}")
+        threading.Thread(target=_bg_init_core, daemon=True).start()
+
     return {"ok": True}
 
-_SUMMARY_EVENT_THRESHOLD = 8    # 累计 8 次行为后才重新生成
-_SUMMARY_TIME_THRESHOLD = 7 * 86400  # 或距上次生成 7 天
+_RECENT_EVENT_THRESHOLD = 8
+_RECENT_TIME_THRESHOLD = 7 * 86400
+_RECENT_WINDOW_DAYS = 7
+_AUTO_CORE_REFRESH_DAYS = 14
 
-@app.post("/api/profile/interests-summary")
-def api_update_interests_summary(request: Request):
-    """根据用户行为生成兴趣摘要，存入 profile.interests_summary
-    触发条件：累计行为 >= 8 次 OR 距上次 >= 7 天（且有行为数据）
-    """
-    uid = _get_user_id(request)
-    profile = get_profile(uid)
 
-    # 用户手动编辑过摘要，不自动覆盖
-    if profile.get("interests_summary_is_manual") == "1":
-        return {"ok": True, "skipped": True, "summary": profile.get("interests_summary", "")}
+def _has_profile_seed(profile: dict) -> bool:
+    return any(
+        (profile.get(key) or "").strip()
+        for key in ("focus_areas", "method_interests", "background", "current_goal", "exclude_areas", "discipline")
+    )
 
-    # 判断是否满足重生成条件
-    events = int(profile.get("behavior_events_since_summary") or 0)
-    last_updated = profile.get("interests_summary_updated_at", "")
-    has_summary = bool(profile.get("interests_summary", "").strip())
 
-    time_elapsed = 0
-    if last_updated:
-        try:
-            last_dt = datetime.fromisoformat(last_updated)
-            time_elapsed = (datetime.now() - last_dt).total_seconds()
-        except Exception:
-            pass
+def _build_memory_context(profile: dict) -> str:
+    parts = []
+    core = (profile.get("memory_core") or "").strip()
+    recent = (profile.get("memory_recent") or "").strip()
+    if core:
+        parts.append(f"---\n系统观察（辅助参考，低于以上明确输入）：\n长期研究画像：{core}")
+    if recent:
+        parts.append(f"近期关注变化：{recent}")
+    return "\n".join(parts)
 
-    should_generate = False
-    if not has_summary:
-        should_generate = True  # 从未生成过
-    elif events >= _SUMMARY_EVENT_THRESHOLD:
-        should_generate = True  # 累计行为达标
-    elif time_elapsed >= _SUMMARY_TIME_THRESHOLD and events > 0:
-        should_generate = True  # 7 天 + 至少有新行为
 
-    if not should_generate:
-        return {"ok": True, "skipped": True}
+def _collect_recent_memory_signals(uid: str, days: int = _RECENT_WINDOW_DAYS) -> dict:
+    recent_titles = get_saved_titles_since(uid, days=days, limit=40)
+    recent_chats = get_all_recent_chats_since(uid, days=days, limit=40)
+    recent_questions = [m["content"] for m in recent_chats if m.get("role") == "user"][:20]
+    reading_history = get_reading_history_since(uid, days=days, limit=20)
+    recent_reads = [item.get("title", "") for item in reading_history if item.get("title")][:15]
+    return {
+        "recent_titles": recent_titles,
+        "recent_questions": recent_questions,
+        "recent_reads": recent_reads,
+    }
 
-    client, model = _get_llm_client(task="summary")
-    if not client:
-        return {"ok": False, "error": "AI 不可用"}
 
-    saved_titles = get_saved_titles(uid)
-    if not saved_titles:
-        return {"ok": True, "skipped": True}
+def _has_recent_signals(signals: dict) -> bool:
+    return any(signals.get(key) for key in ("recent_titles", "recent_questions", "recent_reads"))
 
-    # 获取分类分布
-    category_dist = get_saved_categories(uid)
-    category_text = "、".join(f"{k}({v}篇)" for k, v in list(category_dist.items())[:8]) if category_dist else "（暂无）"
 
-    # 获取最近对话中用户的提问
-    recent_questions = []
-    try:
-        from src.database import get_all_recent_chats
-        recent_chats = get_all_recent_chats(uid, limit=30)
-        recent_questions = [m["content"] for m in recent_chats if m.get("role") == "user"][:15]
-    except Exception:
-        pass
+def _ensure_memory_core(uid: str, profile: dict) -> tuple[str, bool]:
+    existing = (profile.get("memory_core") or "").strip()
+    if existing:
+        return existing, False
+    if not _has_profile_seed(profile):
+        return "", False
 
     focus = profile.get("focus_areas", "")
     method_interests = profile.get("method_interests", "")
     background = profile.get("background", "")
+    exclude = profile.get("exclude_areas", "")
+    discipline = profile.get("discipline", "")
+    current_goal = profile.get("current_goal", "")
 
-    prompt = f"""根据以下用户行为数据，生成一段 150-200 字的用户兴趣画像摘要。
+    prompt = f"""请根据以下用户的明确画像，生成一段稳定的长期研究画像（memory_core）。
 
-用户研究背景：
-研究方向：{focus}
-方法兴趣：{method_interests}
-研究经历：{background}
-
-近期收藏的论文（反映真实兴趣）：
-{chr(10).join(f'- {t}' for t in saved_titles[:15])}
-
-收藏论文的分类分布：{category_text}
-
-近期对话中的提问（反映关注点）：
-{chr(10).join(f'- {q}' for q in recent_questions) if recent_questions else '（暂无）'}
+明确输入：
+- 研究方向：{focus or '（未填）'}
+- 方法兴趣：{method_interests or '（未填）'}
+- 当前目标：{current_goal or '（未填）'}
+- 补充说明：{background or '（未填）'}
+- 不想看的内容：{exclude or '（未填）'}
+- 学科领域：{discipline or '（未填）'}
 
 要求：
-- 总结用户真正关注的细分方向（从收藏、分类和提问行为推断，而非只看填写的画像）
-- 指出用户常问的问题类型（方法学？临床意义？可复制性？）
-- 语言简洁，像一段内部备忘录
-- 只输出摘要正文，不加标题"""
+- 这是一段长期骨架，不要写“最近”“近期”等短期词
+- 总结稳定的研究主线、方法偏好、不偏好内容、阅读时常关注的角度
+- 语言像内部研究备忘录，简洁、稳、可长期复用
+- 控制在 180-260 字
+- 只输出正文，不要标题"""
 
-    try:
-        summary, _, _ = _llm_chat_complete(
-            [{"role": "user", "content": prompt}],
-            max_tokens=400,
-            temperature=0.3,
-            task="summary",
-        )
-        if not summary:
-            raise RuntimeError("empty response")
-        updated_profile = {**profile, "interests_summary": summary, "interests_summary_updated_at": datetime.now().isoformat(), "interests_summary_is_manual": "0"}
-        save_profile(uid, updated_profile)
-        reset_behavior_events(uid)
-        return {"ok": True, "summary": summary}
-    except Exception as e:
-        print(f"[api] interests-summary 生成失败: {e}")
-        return {"ok": False, "error": "摘要生成失败，请稍后重试"}
+    core, _, _ = _llm_chat_complete(
+        [{"role": "user", "content": prompt}],
+        max_tokens=450,
+        temperature=0.3,
+        task="summary",
+    )
+    core = (core or "").strip()
+    if not core:
+        return "", False
+
+    updated_profile = {
+        **profile,
+        "memory_core": core,
+        "core_source": "auto_initial",
+        "last_core_merged_at": datetime.now().isoformat(),
+    }
+    save_profile(uid, updated_profile)
+    return core, True
+
+
+def _maybe_auto_refresh_memory_core(uid: str, profile: dict) -> bool:
+    if not (profile.get("memory_core") or "").strip():
+        return False
+    if not (profile.get("memory_recent") or "").strip():
+        return False
+
+    core_source = profile.get("core_source", "")
+    # auto_initial：第一次有了真实行为数据（recent）就立刻刷新，不等 14 天
+    if core_source != "auto_initial":
+        last_merged = profile.get("last_core_merged_at", "")
+        if last_merged:
+            try:
+                if (datetime.now() - datetime.fromisoformat(last_merged)).total_seconds() < _AUTO_CORE_REFRESH_DAYS * 86400:
+                    return False
+            except Exception:
+                pass
+
+    prompt = f"""请根据用户当前的长期研究画像和近期关注变化，温和更新一版长期研究画像（memory_core）。
+
+当前长期研究画像：
+{profile.get("memory_core", "")}
+
+近期关注变化：
+{profile.get("memory_recent", "")}
+
+用户明确画像（优先级最高）：
+- 研究方向：{profile.get("focus_areas", "") or '（未填）'}
+- 方法兴趣：{profile.get("method_interests", "") or '（未填）'}
+- 当前目标：{profile.get("current_goal", "") or '（未填）'}
+- 补充说明：{profile.get("background", "") or '（未填）'}
+- 不想看的内容：{profile.get("exclude_areas", "") or '（未填）'}
+
+要求：
+- 保持长期骨架稳定，不要被短期噪音带偏
+- 只有当近期变化已经明显稳定，才吸收进长期画像
+- 输出 180-260 字
+- 只输出正文，不要标题"""
+
+    core, _, _ = _llm_chat_complete(
+        [{"role": "user", "content": prompt}],
+        max_tokens=450,
+        temperature=0.25,
+        task="summary",
+    )
+    core = (core or "").strip()
+    if not core:
+        return False
+
+    updated_profile = {
+        **profile,
+        "memory_core": core,
+        "core_source": "auto_refresh",
+        "last_core_merged_at": datetime.now().isoformat(),
+    }
+    save_profile(uid, updated_profile)
+    return True
+
+
+@app.post("/api/profile/memory-recent")
+def api_update_memory_recent(data: MemoryActionRequest, request: Request):
+    """更新近期关注变化：保留已有 recent，并在近 14 天行为基础上增量修正。"""
+    uid = _get_user_id(request)
+    profile = get_profile(uid)
+
+    _, core_generated = _ensure_memory_core(uid, profile)
+    if core_generated:
+        profile = get_profile(uid)
+
+    signals = _collect_recent_memory_signals(uid, days=_RECENT_WINDOW_DAYS)
+    if not _has_recent_signals(signals):
+        return {"ok": True, "skipped": True, "reason": "no_recent_signals", "core_generated": core_generated}
+
+    events = int(profile.get("behavior_events_since_recent") or 0)
+    has_recent = bool((profile.get("memory_recent") or "").strip())
+    last_updated = profile.get("last_recent_updated_at", "")
+    time_elapsed = 0
+    if last_updated:
+        try:
+            time_elapsed = (datetime.now() - datetime.fromisoformat(last_updated)).total_seconds()
+        except Exception:
+            pass
+
+    should_generate = bool(data.force)
+    if not should_generate:
+        if not has_recent:
+            should_generate = True
+        elif events >= _RECENT_EVENT_THRESHOLD:
+            should_generate = True
+        elif time_elapsed >= _RECENT_TIME_THRESHOLD and events > 0:
+            should_generate = True
+
+    if not should_generate:
+        return {"ok": True, "skipped": True, "core_generated": core_generated}
+
+    prompt = f"""请基于已有的近期关注变化和最近 { _RECENT_WINDOW_DAYS } 天的新行为，更新一版 memory_recent。
+
+长期研究画像（稳定骨架）：
+{profile.get("memory_core", "") or '（暂无）'}
+
+已有近期关注变化：
+{profile.get("memory_recent", "") or '（暂无）'}
+
+最近 { _RECENT_WINDOW_DAYS } 天收藏的论文标题：
+{chr(10).join(f'- {t}' for t in signals["recent_titles"][:20]) if signals["recent_titles"] else '（暂无）'}
+
+最近 { _RECENT_WINDOW_DAYS } 天跨论文提问：
+{chr(10).join(f'- {q}' for q in signals["recent_questions"][:15]) if signals["recent_questions"] else '（暂无）'}
+
+最近 { _RECENT_WINDOW_DAYS } 天阅读轨迹：
+{chr(10).join(f'- {t}' for t in signals["recent_reads"][:12]) if signals["recent_reads"] else '（暂无）'}
+
+用户当前明确画像（优先级最高）：
+- 研究方向：{profile.get("focus_areas", "") or '（未填）'}
+- 方法兴趣：{profile.get("method_interests", "") or '（未填）'}
+- 当前目标：{profile.get("current_goal", "") or '（未填）'}
+- 补充说明：{profile.get("background", "") or '（未填）'}
+
+要求：
+- 这是近期增量，不要重复长期骨架里已经稳定存在的内容
+- 尽量保留仍然成立的近期变化，再吸收新增观察
+- 允许压缩重写，但不要无故丢失仍然有效的近期关注
+- 控制在 180-320 字
+- 只输出正文，不要标题"""
+
+    recent, _, _ = _llm_chat_complete(
+        [{"role": "user", "content": prompt}],
+        max_tokens=500,
+        temperature=0.3,
+        task="summary",
+    )
+    recent = (recent or "").strip()
+    if not recent:
+        return {"ok": False, "error": "近期关注变化生成失败"}
+
+    updated_profile = {
+        **profile,
+        "memory_recent": recent,
+        "last_recent_updated_at": datetime.now().isoformat(),
+    }
+    save_profile(uid, updated_profile)
+    reset_recent_events(uid)
+    refreshed_profile = get_profile(uid)
+    auto_merged = _maybe_auto_refresh_memory_core(uid, refreshed_profile)
+    latest = get_profile(uid)
+    return {
+        "ok": True,
+        "recent": latest.get("memory_recent", ""),
+        "core": latest.get("memory_core", ""),
+        "core_generated": core_generated,
+        "core_auto_updated": auto_merged,
+    }
+
+
+@app.post("/api/profile/merge-to-core")
+def api_merge_recent_to_core(data: MemoryActionRequest, request: Request):
+    """用户手动确认：把近期关注变化吸收到长期研究画像。"""
+    uid = _get_user_id(request)
+    profile = get_profile(uid)
+
+    _, core_generated = _ensure_memory_core(uid, profile)
+    if core_generated:
+        profile = get_profile(uid)
+
+    if not (profile.get("memory_recent") or "").strip():
+        return {"ok": True, "skipped": True, "reason": "no_recent"}
+
+    prompt = f"""请把用户的近期关注变化吸收到长期研究画像中，生成一版新的 memory_core。
+
+当前长期研究画像：
+{profile.get("memory_core", "") or '（暂无）'}
+
+近期关注变化：
+{profile.get("memory_recent", "")}
+
+用户明确画像（优先级最高）：
+- 研究方向：{profile.get("focus_areas", "") or '（未填）'}
+- 方法兴趣：{profile.get("method_interests", "") or '（未填）'}
+- 当前目标：{profile.get("current_goal", "") or '（未填）'}
+- 补充说明：{profile.get("background", "") or '（未填）'}
+- 不想看的内容：{profile.get("exclude_areas", "") or '（未填）'}
+
+要求：
+- 产出稳定、长期可复用的研究骨架
+- 吸收近期中已经相对稳定的变化
+- 语言专业、简洁，像内部研究画像
+- 控制在 180-260 字
+- 只输出正文，不要标题"""
+
+    core, _, _ = _llm_chat_complete(
+        [{"role": "user", "content": prompt}],
+        max_tokens=450,
+        temperature=0.25,
+        task="summary",
+    )
+    core = (core or "").strip()
+    if not core:
+        return {"ok": False, "error": "长期研究画像更新失败"}
+
+    updated_profile = {
+        **profile,
+        "memory_core": core,
+        "memory_recent": "",  # 已吸收进 core，清空 recent
+        "core_source": "manual_confirmed",
+        "last_core_merged_at": datetime.now().isoformat(),
+        "last_recent_updated_at": "",
+    }
+    save_profile(uid, updated_profile)
+    reset_recent_events(uid)
+    latest = get_profile(uid)
+    return {"ok": True, "core": latest.get("memory_core", ""), "recent": ""}
+
+
+@app.post("/api/profile/interests-summary")
+def api_update_interests_summary_compat(data: MemoryActionRequest, request: Request):
+    """兼容旧前端调用，内部转到 memory_recent 逻辑。"""
+    return api_update_memory_recent(data, request)
 
 
 # ========== Papers Cache（按用户隔离） ==========
@@ -1571,6 +1800,22 @@ def _extract_json_object(raw: str) -> dict:
     raise ValueError("json object not found")
 
 
+def _build_understanding_profile_text(profile: dict) -> str:
+    parts = []
+    if profile.get("discipline"):
+        parts.append(f"学科领域：{profile['discipline']}")
+    if profile.get("focus_areas"):
+        parts.append(f"追踪主题：{profile['focus_areas']}")
+    if profile.get("method_interests"):
+        parts.append(f"方法兴趣：{profile['method_interests']}")
+    if profile.get("background"):
+        parts.append(f"补充说明：{profile['background']}")
+    memory_context = _build_memory_context(profile)
+    if memory_context:
+        parts.append(memory_context)
+    return "\n".join(parts)
+
+
 def _enrich_single_paper(paper: dict, profile_text: str, cache_control: bool = False):
     """为单篇论文生成 AI 解读（可并发调用）。"""
     # ---- enrichment 缓存命中 → 跳过 LLM ----
@@ -1661,24 +1906,7 @@ JSON 格式：
 def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""):
     """为论文添加详细中文解读和个性化相关性分析（并发执行）"""
     print(f"[api] _enrich_papers_with_llm 入口: {len(papers)} 篇论文")
-    focus = profile.get("focus_areas", "")
-    method_interests = profile.get("method_interests", "")
-    background = profile.get("background", "")
-    discipline = profile.get("discipline", "")
-    interests_summary = profile.get("interests_summary", "")
-    is_manual = profile.get("interests_summary_is_manual", "0") == "1"
-
-    profile_text = ""
-    if discipline:
-        profile_text += f"学科领域：{discipline}\n"
-    if focus:
-        profile_text += f"追踪主题：{focus}\n"
-    if method_interests:
-        profile_text += f"方法兴趣（仅辅助参考）：{method_interests}\n"
-    if background:
-        profile_text += f"补充说明：{background}\n"
-    if is_manual and interests_summary:
-        profile_text += f"---\n用户修正后的偏好（高于系统自动观察，但低于以上明确输入）：{interests_summary}\n"
+    profile_text = _build_understanding_profile_text(profile)
 
     is_qwen = any("qwen" in p["name"] for p in _get_llm_slots() if p["api_key"].strip())
     with ThreadPoolExecutor(max_workers=5) as pool:
@@ -1762,7 +1990,7 @@ def api_save_to_library(data: SavePaperRequest, request: Request):
     """收藏一篇论文"""
     uid = _get_user_id(request)
     row_id = save_paper(data.paper, uid)
-    increment_behavior_events(uid)  # 收藏 = 关键行为
+    increment_recent_events(uid)  # 收藏 = 关键行为
 
     # 首次收藏时，把未收藏阶段暂存在前端的对话记录迁移到后端
     existing_chats = get_chat_history(row_id)
@@ -1898,15 +2126,7 @@ def api_chat(data: ChatRequest, request: Request):
         return {"reply": f"你今天的 AI 对话次数已用完（每天 {DAILY_CHAT_LIMIT} 次），明天再来吧。", "ok": False, "rate_limited": True}
 
     profile = get_profile(uid)
-    profile_text = ""
-    if profile.get("discipline"):
-        profile_text += f"学科领域：{profile['discipline']}\n"
-    if profile.get("focus_areas"):
-        profile_text += f"追踪主题：{profile['focus_areas']}\n"
-    if profile.get("method_interests"):
-        profile_text += f"方法兴趣：{profile['method_interests']}\n"
-    if profile.get("background"):
-        profile_text += f"补充说明：{profile['background']}\n"
+    profile_text = _build_understanding_profile_text(profile)
 
     # 获取该论文的历史笔记
     notes_context = ""
@@ -1959,7 +2179,7 @@ def api_chat(data: ChatRequest, request: Request):
         if data.paper_rowid:
             save_chat_message(data.paper_rowid, "user", data.message)
             save_chat_message(data.paper_rowid, "assistant", reply)
-            increment_behavior_events(uid)  # 对话 = 关键行为
+            increment_recent_events(uid)  # 对话 = 关键行为
 
         return {"reply": reply, "ok": True}
     except Exception as e:
@@ -2022,7 +2242,7 @@ def api_record_reading(data: dict, request: Request):
     """记录阅读行为"""
     uid = _get_user_id(request)
     record_reading(data.get("paper_rowid"), data.get("title", ""), uid)
-    increment_behavior_events(uid)  # 阅读 = 关键行为
+    increment_recent_events(uid)  # 阅读 = 关键行为
     return {"ok": True}
 
 @app.get("/api/reading-history")

@@ -44,9 +44,6 @@ def score_and_categorize_papers(papers: list[dict], profile: dict, client, model
     method_interests = profile.get("method_interests", "")
     background = profile.get("background", "")
     exclude = profile.get("exclude_areas", "")
-    interests_summary = profile.get("interests_summary", "")
-    is_manual_summary = profile.get("interests_summary_is_manual", "0") == "1"
-
     profile_text = ""
     if focus:
         profile_text += f"研究方向：{focus}\n"
@@ -56,8 +53,6 @@ def score_and_categorize_papers(papers: list[dict], profile: dict, client, model
         profile_text += f"补充说明：{background}\n"
     if exclude:
         profile_text += f"不想看的内容：{exclude}\n"
-    if is_manual_summary and interests_summary:
-        profile_text += f"---\n用户修正后的偏好（辅助参考，低于以上明确输入）：\n{interests_summary}\n"
 
     batch_size = 20
     batches = [papers[start:start + batch_size] for start in range(0, len(papers), batch_size)]
