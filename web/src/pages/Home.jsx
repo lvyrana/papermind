@@ -77,8 +77,8 @@ export default function Home() {
   const resumeLabel = resumeLabels[now.getDate() % resumeLabels.length]
 
   useEffect(() => {
-    // 触发兴趣摘要更新（后端有 24h 防重复）
-    apiPost('/profile/interests-summary', {}).catch(() => {})
+    // 尝试补一版近期关注变化（后端会按事件数/时间阈值自己决定是否跳过）
+    apiPost('/profile/memory-recent', {}).catch(() => {})
 
     // 检查画像是否已填写
     apiGet('/profile')

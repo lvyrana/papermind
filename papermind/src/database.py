@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 import json
 from pathlib import Path
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 DB_PATH = Path(__file__).parent.parent / "data" / "paperdiary.db"
@@ -124,11 +124,31 @@ def _ensure_db():
         ("interests_summary_updated_at", "''"),
         ("interests_summary_is_manual", "'0'"),
         ("behavior_events_since_summary", "'0'"),
+        # 三层记忆系统
+        ("memory_core", "''"),
+        ("memory_recent", "''"),
+        ("behavior_events_since_recent", "'0'"),
+        ("last_recent_updated_at", "''"),
+        ("last_core_merged_at", "''"),
+        ("core_source", "''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE user_profiles ADD COLUMN {col} TEXT DEFAULT {default}")
         except sqlite3.OperationalError:
             pass  # 列已存在
+
+    # 迁移：把旧 interests_summary 数据迁移到 memory_core（一次性）
+    try:
+        conn.execute("""
+            UPDATE user_profiles
+            SET memory_core = interests_summary,
+                core_source = CASE WHEN interests_summary_is_manual = '1' THEN 'manual' ELSE 'auto' END,
+                last_core_merged_at = interests_summary_updated_at
+            WHERE interests_summary != '' AND (memory_core IS NULL OR memory_core = '')
+        """)
+        conn.commit()
+    except Exception:
+        pass
 
     # 迁移：给 paper_notes 加 source 列（如果不存在）
     try:
@@ -215,6 +235,13 @@ def get_profile(user_id: str) -> dict:
         "interests_summary_updated_at": "",
         "interests_summary_is_manual": "0",
         "behavior_events_since_summary": "0",
+        # 三层记忆
+        "memory_core": "",
+        "memory_recent": "",
+        "behavior_events_since_recent": "0",
+        "last_recent_updated_at": "",
+        "last_core_merged_at": "",
+        "core_source": "",
     }
     conn = _ensure_db()
     row = conn.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
@@ -234,8 +261,11 @@ def save_profile(user_id: str, profile: dict):
     conn.execute("""
         INSERT INTO user_profiles (user_id, focus_areas, exclude_areas, method_interests, current_goal, background,
                                    discipline, tracking_days, interests_summary, interests_summary_updated_at,
-                                   interests_summary_is_manual, behavior_events_since_summary, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   interests_summary_is_manual, behavior_events_since_summary,
+                                   memory_core, memory_recent, behavior_events_since_recent,
+                                   last_recent_updated_at, last_core_merged_at, core_source,
+                                   updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             focus_areas = excluded.focus_areas,
             exclude_areas = excluded.exclude_areas,
@@ -248,6 +278,12 @@ def save_profile(user_id: str, profile: dict):
             interests_summary_updated_at = excluded.interests_summary_updated_at,
             interests_summary_is_manual = excluded.interests_summary_is_manual,
             behavior_events_since_summary = excluded.behavior_events_since_summary,
+            memory_core = excluded.memory_core,
+            memory_recent = excluded.memory_recent,
+            behavior_events_since_recent = excluded.behavior_events_since_recent,
+            last_recent_updated_at = excluded.last_recent_updated_at,
+            last_core_merged_at = excluded.last_core_merged_at,
+            core_source = excluded.core_source,
             updated_at = excluded.updated_at
     """, (
         user_id,
@@ -262,37 +298,39 @@ def save_profile(user_id: str, profile: dict):
         profile.get("interests_summary_updated_at", ""),
         profile.get("interests_summary_is_manual", "0"),
         profile.get("behavior_events_since_summary", "0"),
+        profile.get("memory_core", ""),
+        profile.get("memory_recent", ""),
+        profile.get("behavior_events_since_recent", "0"),
+        profile.get("last_recent_updated_at", ""),
+        profile.get("last_core_merged_at", ""),
+        profile.get("core_source", ""),
         datetime.now().isoformat(),
     ))
     conn.commit()
     conn.close()
 
 
-def increment_behavior_events(user_id: str) -> int:
-    """递增行为计数器，返回新值"""
+def increment_recent_events(user_id: str) -> int:
+    """递增 memory_recent 的行为计数器，返回新值"""
     conn = _ensure_db()
     conn.execute(
-        """
-        INSERT INTO user_profiles (user_id, updated_at)
-        VALUES (?, ?)
-        ON CONFLICT(user_id) DO NOTHING
-        """,
+        "INSERT INTO user_profiles (user_id, updated_at) VALUES (?, ?) ON CONFLICT(user_id) DO NOTHING",
         (user_id, datetime.now().isoformat()),
     )
     conn.execute(
-        "UPDATE user_profiles SET behavior_events_since_summary = COALESCE(behavior_events_since_summary, 0) + 1 WHERE user_id = ?",
-        (user_id,)
+        "UPDATE user_profiles SET behavior_events_since_recent = COALESCE(behavior_events_since_recent, 0) + 1 WHERE user_id = ?",
+        (user_id,),
     )
     conn.commit()
-    row = conn.execute("SELECT behavior_events_since_summary FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
+    row = conn.execute("SELECT behavior_events_since_recent FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
     return int(row[0]) if row else 0
 
 
-def reset_behavior_events(user_id: str):
-    """摘要生成后归零计数器"""
+def reset_recent_events(user_id: str):
+    """recent 更新后归零计数器"""
     conn = _ensure_db()
-    conn.execute("UPDATE user_profiles SET behavior_events_since_summary = '0' WHERE user_id = ?", (user_id,))
+    conn.execute("UPDATE user_profiles SET behavior_events_since_recent = '0' WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
@@ -543,6 +581,23 @@ def get_all_recent_chats(user_id: str, limit: int = 30) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_all_recent_chats_since(user_id: str, days: int = 14, limit: int = 40) -> list[dict]:
+    """获取近 N 天跨论文对话，按时间倒序。"""
+    conn = _ensure_db()
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        """SELECT pc.role, pc.content, pc.created_at
+           FROM paper_chats pc
+           JOIN saved_papers sp ON pc.paper_rowid = sp.id
+           WHERE sp.user_id = ? AND pc.created_at >= ?
+           ORDER BY pc.created_at DESC
+           LIMIT ?""",
+        (user_id, since, limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 # ========== Reading History ==========
 
 def record_reading(paper_rowid: int | None, title: str, user_id: str = ""):
@@ -565,6 +620,17 @@ def get_reading_history(user_id: str = "", limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_reading_history_since(user_id: str = "", days: int = 14, limit: int = 20) -> list[dict]:
+    conn = _ensure_db()
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        "SELECT * FROM reading_history WHERE user_id = ? AND read_at >= ? ORDER BY read_at DESC LIMIT ?",
+        (user_id, since, limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 # ========== 收藏关键词提取（用于优化推荐） ==========
 
 def get_saved_titles(user_id: str, limit: int = 30) -> list[str]:
@@ -573,6 +639,18 @@ def get_saved_titles(user_id: str, limit: int = 30) -> list[str]:
     rows = conn.execute(
         "SELECT title FROM saved_papers WHERE user_id = ? ORDER BY saved_at DESC LIMIT ?",
         (user_id, limit)
+    ).fetchall()
+    conn.close()
+    return [r["title"] for r in rows]
+
+
+def get_saved_titles_since(user_id: str, days: int = 14, limit: int = 40) -> list[str]:
+    """获取近 N 天收藏论文标题，用于近期变化观察。"""
+    conn = _ensure_db()
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        "SELECT title FROM saved_papers WHERE user_id = ? AND saved_at >= ? ORDER BY saved_at DESC LIMIT ?",
+        (user_id, since, limit)
     ).fetchall()
     conn.close()
     return [r["title"] for r in rows]

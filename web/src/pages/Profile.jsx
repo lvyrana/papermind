@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Check, Mic, Pencil, Save, Sparkles, X } from 'lucide-react'
+import { ArrowLeft, Mic, RefreshCw, Save, Sparkles, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import { apiGet, apiPost } from '../api'
@@ -20,9 +20,11 @@ const DEFAULT_PROFILE = {
   background: '',
   discipline: '',
   tracking_days: '90',
-  interests_summary: '',
-  interests_summary_updated_at: '',
-  interests_summary_is_manual: '0',
+  memory_core: '',
+  memory_recent: '',
+  last_recent_updated_at: '',
+  last_core_merged_at: '',
+  core_source: '',
 }
 
 const RANGE_OPTIONS = [
@@ -36,6 +38,7 @@ export default function Profile() {
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [broadWarn, setBroadWarn] = useState('')
+  const [mergeLoading, setMergeLoading] = useState(false)
 
   useEffect(() => {
     apiGet('/profile')
@@ -57,16 +60,6 @@ export default function Profile() {
     }
     try {
       await apiPost('/profile', profile)
-      // 用户手动编辑或手动清空过摘要时，不触发自动生成，避免覆盖
-      if (profile.interests_summary_is_manual !== '1') {
-        const refreshed = await apiPost('/profile/interests-summary', {})
-        if (refreshed?.summary) {
-          setProfile(prev => ({ ...prev, interests_summary: refreshed.summary, interests_summary_is_manual: '0' }))
-        } else if (refreshed?.skipped) {
-          const latest = await apiGet('/profile')
-          setProfile(prev => ({ ...prev, ...latest }))
-        }
-      }
       setSaveError('')
     } catch {
       setSaved(false)
@@ -75,6 +68,30 @@ export default function Profile() {
     }
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
+
+    // 后台触发记忆更新，不阻塞保存反馈
+    apiPost('/profile/memory-recent', {})
+      .then(() => apiGet('/profile'))
+      .then(latest => setProfile(prev => ({ ...prev, ...latest })))
+      .catch(() => {})
+  }
+
+  const handleMergeToCore = async () => {
+    setMergeLoading(true)
+    setSaveError('')
+    try {
+      const result = await apiPost('/profile/merge-to-core', {})
+      if (result?.core !== undefined) {
+        setProfile(prev => ({ ...prev, memory_core: result.core, memory_recent: '', last_recent_updated_at: '' }))
+      } else {
+        const latest = await apiGet('/profile')
+        setProfile(prev => ({ ...prev, ...latest }))
+      }
+    } catch {
+      setSaveError('更新长期画像失败，请稍后再试')
+    } finally {
+      setMergeLoading(false)
+    }
   }
 
   return (
@@ -163,16 +180,34 @@ export default function Profile() {
           title="系统观察摘要"
           description="由系统根据你的收藏与对话行为自动归纳，作为上下文背景让 AI 更贴近你的研究脉络。"
         >
-          <SummaryEditor
-            summary={profile.interests_summary}
-            updatedAt={profile.interests_summary_updated_at}
-            isManual={profile.interests_summary_is_manual === '1'}
-            onChange={value => patchProfile({
-              interests_summary: value,
-              interests_summary_is_manual: '1',
-              interests_summary_updated_at: new Date().toISOString(),
-            })}
+          <MemoryBlock
+            title="长期画像"
+            content={profile.memory_core}
+            updatedAt={profile.last_core_merged_at}
+            emptyText="保存画像后自动生成。"
+            badge={formatCoreSource(profile.core_source)}
           />
+          <MemoryBlock
+            title="近期变化"
+            content={profile.memory_recent}
+            updatedAt={profile.last_recent_updated_at}
+            emptyText="使用一段时间后自动补充。"
+          />
+          {profile.memory_recent ? (
+            <button
+              type="button"
+              onClick={handleMergeToCore}
+              disabled={mergeLoading}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs transition-all duration-200 ${
+                mergeLoading
+                  ? 'bg-cream-dark/50 text-warm-gray/60 cursor-not-allowed'
+                  : 'text-warm-gray/70 border border-cream-dark hover:border-navy/20 hover:text-navy'
+              }`}
+            >
+              <RefreshCw size={12} className={mergeLoading ? 'animate-spin' : ''} />
+              吸收到长期画像
+            </button>
+          ) : null}
         </SectionCard>
 
         <button
@@ -524,81 +559,34 @@ function formatUpdatedAt(iso) {
   return `${months} 个月前`
 }
 
-function SummaryEditor({ summary, updatedAt, isManual, onChange }) {
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState('')
+function formatCoreSource(source) {
+  if (!source) return ''
+  if (source === 'manual_confirmed') return '已确认'
+  if (source.startsWith('auto')) return '自动生成'
+  if (source === 'manual') return '手动'
+  return ''
+}
+
+function MemoryBlock({ title, content, updatedAt, emptyText, badge = '' }) {
   const timeLabel = formatUpdatedAt(updatedAt)
-
-  const startEdit = () => {
-    setDraft(summary)
-    setEditing(true)
-  }
-
-  const confirmEdit = () => {
-    onChange(draft)
-    setEditing(false)
-  }
-
-  const cancelEdit = () => {
-    setEditing(false)
-  }
 
   return (
     <div className="rounded-2xl border border-cream-dark/60 bg-cream/70 px-5 py-4">
-      {editing ? (
-        <div className="space-y-3">
-          <textarea
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            rows={5}
-            className="w-full bg-warm-white rounded-xl px-4 py-3 text-sm text-navy border border-cream-dark/60 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200 resize-none leading-7"
-          />
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={confirmEdit}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-navy/90 text-warm-white text-xs"
-            >
-              <Check size={11} />
-              确认
-            </button>
-            <button
-              type="button"
-              onClick={cancelEdit}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray text-xs hover:text-navy transition-colors"
-            >
-              取消
-            </button>
-          </div>
-        </div>
-      ) : summary ? (
-        <div>
-          <div className="flex items-start justify-between gap-3 mb-1">
-            <p className="text-sm leading-7 text-navy/80 flex-1">{summary}</p>
-            <button
-              type="button"
-              onClick={startEdit}
-              className="flex-shrink-0 mt-1 text-warm-gray/50 hover:text-warm-gray transition-colors"
-            >
-              <Pencil size={13} />
-            </button>
-          </div>
-          {timeLabel && (
-            <p className="text-xs text-warm-gray/50 mt-2">
-              {isManual ? '已手动编辑' : '系统生成'}·{timeLabel}
-            </p>
-          )}
-        </div>
+      <div className="flex items-center gap-2 mb-2">
+        <h3 className="text-sm font-medium text-navy/75">{title}</h3>
+        {badge ? (
+          <span className="px-2 py-0.5 rounded-full bg-navy/6 text-warm-gray/60 text-[10px]">
+            {badge}
+          </span>
+        ) : null}
+        {timeLabel ? (
+          <span className="text-[10px] text-warm-gray/40 ml-auto">{timeLabel}</span>
+        ) : null}
+      </div>
+      {content ? (
+        <p className="text-sm leading-7 text-navy/80">{content}</p>
       ) : (
-        isManual ? (
-          <p className="text-sm leading-7 text-warm-gray">
-            你已手动清空系统观察摘要，系统不会自动重新生成，直到你再次编辑或调整画像方向。
-          </p>
-        ) : (
-          <p className="text-sm leading-7 text-warm-gray">
-            填写并保存上方的研究画像后，系统会结合你的收藏与对话记录，自动在这里生成一份观察摘要。
-          </p>
-        )
+        <p className="text-sm leading-7 text-warm-gray/50">{emptyText}</p>
       )}
     </div>
   )

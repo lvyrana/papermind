@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.6.2 - 2026-04-23
+
+### 双层记忆系统（Memory Core + Recent）
+
+- **新增 `memory_core`**：长期研究骨架，首次保存画像后后台异步生成，给对话和论文解读提供稳定背景
+- **新增 `memory_recent`**：近期 7 天行为观察（收藏、提问、阅读），累计 8 次行为或 7 天触发更新
+- **auto_initial 快速升级**：初版 core 仅基于填写内容，第一次 recent 生成后立刻刷新 core（有真实行为数据），无需等 14 天
+- **core 自动吸收周期**：14 天自动把最新 recent 整合进 core（旧版 30 天）
+- **用户手动 merge**：画像页"吸收到长期画像"按钮，merge 成功后清空 recent，重新开始下一轮 7 天观察
+- **记忆不参与检索**：memory_core 和 memory_recent 只用于 AI 对话和论文解读，不影响检索关键词生成和分类打分
+- **数据库迁移**：user_profiles 新增 memory_core、memory_recent、behavior_events_since_recent、last_recent_updated_at、last_core_merged_at、core_source；旧 interests_summary 数据自动迁移到 memory_core
+
+### Profile 页改版
+
+- "系统观察摘要" section 改为展示长期画像 + 近期变化两块，各自有独立更新时间
+- 保存画像时 memory-recent 在后台异步触发，不阻塞保存反馈
+- "吸收到长期画像"按钮仅在有 recent 内容时显示
+
+---
+
 ## v0.6.1 - 2026-04-23
 
 ### LLM 路由稳定性加固
