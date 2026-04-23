@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.6.3 - 2026-04-24
+
+### 记忆系统调优（Codex patch）
+
+- **recent 长度控制**：prompt 改为 100-180 字，新增 `_enforce_recent_length` 硬截断兜底（180 字），防止模型输出失控过长
+- **core 长度收紧**：所有生成/merge 场景统一改为 140-220 字（原 180-260 字）
+- **修复 merge 后立刻重新生成 recent 的 bug**：merge 后 events 重置为 0，此时 `has_recent=False` + `events=0` + `core 已存在` → 跳过生成，避免和刚合并的 core 高度重复
+- **recent 增量提示加强**："只写最近新增或最近明显变强的关注点，不要把长期画像换句话再写一遍"
+- **relevance 字段长度限制**：添加 "80字以内" 约束，减少论文解读"为什么和你相关"过长
+
+### PaperRead 阅读行为追踪改进（Codex patch）
+
+- 停留 20 秒后才计为有效阅读（原来进页面即记录），减少误计
+- 额外追踪 export、下载 PDF、点击原文链接等行为，丰富 recent 行为信号
+
+### 后端性能：workers 2 + SQLite WAL
+
+- uvicorn `--workers 1` 改为 `--workers 2`：双进程分担 LLM 阻塞调用，翻译不再被后台 memory 任务卡住
+- SQLite 开启 WAL 模式（`journal_mode=WAL`）+ `busy_timeout=5000`：多进程并发写不互相锁死
+
+### 前端字体修复
+
+- 加载 `Noto Sans SC` 作为中文无衬线兜底字体，解决部分 Android 设备 CJK 字形不一致问题
+- 字体优先级：`DM Sans → system-ui（苹方/系统字体）→ Noto Sans SC`，桌面端维持原有苹方显示
+
+### LibraryDetail 布局修复
+
+- 收藏页论文详情的"译"按钮从标题右侧移到标题下方，与 PaperRead 一致，手机端不再错位
+
+---
+
 ## v0.6.2 - 2026-04-23
 
 ### 双层记忆系统（Memory Core + Recent）
