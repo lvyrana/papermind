@@ -207,8 +207,8 @@ export default function LibraryDetail() {
           <span className="text-xs px-2.5 py-1 rounded-full bg-coral/10 text-coral font-medium">
             {paper.category || '未分类'}
           </span>
-          <div className="mt-3 flex items-start gap-2">
-            <h1 className="text-xl font-bold text-navy font-serif leading-relaxed flex-1">
+          <div className="mt-3">
+            <h1 className="text-xl font-bold text-navy font-serif leading-relaxed">
               {showTitleZh && titleZh ? titleZh : paper.title}
             </h1>
             <button
@@ -224,7 +224,7 @@ export default function LibraryDetail() {
                 }
               }}
               disabled={titleTranslating}
-              className="mt-1 shrink-0 inline-flex items-center gap-1 text-xs text-warm-gray hover:text-navy transition-colors disabled:opacity-50"
+              className="mt-1 inline-flex items-center gap-1 text-xs text-warm-gray hover:text-navy transition-colors disabled:opacity-50"
             >
               {titleTranslating ? <Loader2 size={12} className="animate-spin" /> : <Languages size={12} />}
               <span>{showTitleZh ? '原文' : '译'}</span>
