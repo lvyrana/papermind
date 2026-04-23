@@ -531,6 +531,25 @@ def _has_recent_signals(signals: dict) -> bool:
     return any(signals.get(key) for key in ("recent_titles", "recent_questions", "recent_reads"))
 
 
+def _enforce_recent_length(text: str, max_chars: int = 180) -> str:
+    """对 recent 做硬长度限制，避免模型输出失控过长。"""
+    cleaned = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+
+    cut = max(
+        cleaned.rfind(mark, 0, max_chars + 1)
+        for mark in ("。", "；", "！", "？")
+    )
+    if cut >= max_chars // 2:
+        return cleaned[:cut + 1].strip()
+
+    shortened = cleaned[:max_chars].rstrip("，,；;、 ")
+    if not shortened.endswith(("。", "！", "？")):
+        shortened += "。"
+    return shortened
+
+
 def _ensure_memory_core(uid: str, profile: dict) -> tuple[str, bool]:
     existing = (profile.get("memory_core") or "").strip()
     if existing:
@@ -559,7 +578,7 @@ def _ensure_memory_core(uid: str, profile: dict) -> tuple[str, bool]:
 - 这是一段长期骨架，不要写“最近”“近期”等短期词
 - 总结稳定的研究主线、方法偏好、不偏好内容、阅读时常关注的角度
 - 语言像内部研究备忘录，简洁、稳、可长期复用
-- 控制在 180-260 字
+- 控制在 140-220 字
 - 只输出正文，不要标题"""
 
     core, _, _ = _llm_chat_complete(
@@ -617,7 +636,7 @@ def _maybe_auto_refresh_memory_core(uid: str, profile: dict) -> bool:
 要求：
 - 保持长期骨架稳定，不要被短期噪音带偏
 - 只有当近期变化已经明显稳定，才吸收进长期画像
-- 输出 180-260 字
+- 输出 140-220 字
 - 只输出正文，不要标题"""
 
     core, _, _ = _llm_chat_complete(
@@ -642,7 +661,7 @@ def _maybe_auto_refresh_memory_core(uid: str, profile: dict) -> bool:
 
 @app.post("/api/profile/memory-recent")
 def api_update_memory_recent(data: MemoryActionRequest, request: Request):
-    """更新近期关注变化：保留已有 recent，并在近 14 天行为基础上增量修正。"""
+    """更新近期关注变化：保留已有 recent，并在近 7 天行为基础上增量修正。"""
     uid = _get_user_id(request)
     profile = get_profile(uid)
 
@@ -667,7 +686,8 @@ def api_update_memory_recent(data: MemoryActionRequest, request: Request):
     should_generate = bool(data.force)
     if not should_generate:
         if not has_recent:
-            should_generate = True
+            if events > 0 or not (profile.get("memory_core") or "").strip():
+                should_generate = True
         elif events >= _RECENT_EVENT_THRESHOLD:
             should_generate = True
         elif time_elapsed >= _RECENT_TIME_THRESHOLD and events > 0:
@@ -701,9 +721,11 @@ def api_update_memory_recent(data: MemoryActionRequest, request: Request):
 
 要求：
 - 这是近期增量，不要重复长期骨架里已经稳定存在的内容
+- 只写最近新增或最近明显变强的关注点，不要把长期画像换句话再写一遍
 - 尽量保留仍然成立的近期变化，再吸收新增观察
 - 允许压缩重写，但不要无故丢失仍然有效的近期关注
-- 控制在 180-320 字
+- 控制在 100-180 字
+- 最多写 2-4 个增量点，整体保持短、轻、像提醒
 - 只输出正文，不要标题"""
 
     recent, _, _ = _llm_chat_complete(
@@ -712,7 +734,7 @@ def api_update_memory_recent(data: MemoryActionRequest, request: Request):
         temperature=0.3,
         task="summary",
     )
-    recent = (recent or "").strip()
+    recent = _enforce_recent_length(recent or "", max_chars=180)
     if not recent:
         return {"ok": False, "error": "近期关注变化生成失败"}
 
@@ -767,7 +789,7 @@ def api_merge_recent_to_core(data: MemoryActionRequest, request: Request):
 - 产出稳定、长期可复用的研究骨架
 - 吸收近期中已经相对稳定的变化
 - 语言专业、简洁，像内部研究画像
-- 控制在 180-260 字
+- 控制在 140-220 字
 - 只输出正文，不要标题"""
 
     core, _, _ = _llm_chat_complete(
@@ -1838,7 +1860,7 @@ def _enrich_single_paper(paper: dict, profile_text: str, cache_control: bool = F
 
 {{
   "summary_zh": "详细中文解读（4-6句话，包含：研究背景与目的、研究方法、主要发现、意义。语言专业但易懂）",
-  "relevance": "这篇论文对研究者的启发（1-2句话。只基于论文实际内容来写，不要罗列研究者画像中的关键词，也不要因为用户之前读过类似方向就硬说相关。如果论文没有直接涉及某个方向就不要提它。重点说：论文的什么发现或方法能给研究者带来什么具体启发）",
+  "relevance": "这篇论文对研究者的启发（1-2句话，80字以内，尽量简洁。只基于论文实际内容来写，不要罗列研究者画像中的关键词，也不要因为用户之前读过类似方向就硬说相关。如果论文没有直接涉及某个方向就不要提它。重点说：论文的什么发现或方法能给研究者带来什么具体启发）",
   "key_findings": ["核心发现1", "核心发现2", "核心发现3"]
 }}
 
@@ -1877,7 +1899,7 @@ def _enrich_single_paper(paper: dict, profile_text: str, cache_control: bool = F
 JSON 格式：
 {{
   "summary_zh": "3-4句话，概括研究对象、方法、主要发现和意义",
-  "relevance": "1句话，说明这篇论文对研究者的启发；如果直接关联有限，就明确写直接关联有限"
+  "relevance": "1-2句话，80字以内，说明这篇论文对研究者的启发；如果直接关联有限，就明确写直接关联有限"
 }}
 """
             retry_raw, _, _ = _llm_chat_complete(
