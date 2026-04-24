@@ -4,6 +4,7 @@ PaperMind 后端 API
 """
 
 from __future__ import annotations
+import asyncio
 import os
 import json
 import httpx
@@ -21,7 +22,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, Field
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from src.fetch_papers import get_papers as pubmed_get_papers, build_query as build_pubmed_query
 from src.fetch_semantic_scholar import get_papers as scholar_get_papers
@@ -286,22 +287,43 @@ def _build_llm_client(provider: dict) -> OpenAI:
     )
 
 
+def _build_async_llm_client(provider: dict) -> AsyncOpenAI:
+    http_client = httpx.AsyncClient(
+        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+        timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
+    )
+    return AsyncOpenAI(
+        api_key=provider["api_key"],
+        base_url=provider["base_url"],
+        http_client=http_client,
+        timeout=60.0,
+    )
+
+
+def _ordered_llm_slots(task: str = "", prefer_model: str = "") -> list[dict]:
+    slots = _get_llm_slots()
+    preferred_models = []
+    if prefer_model:
+        preferred_models.append(prefer_model)
+    preferred_models.extend(_get_task_preferred_models(task))
+    if not preferred_models:
+        return slots
+
+    preferred_slots = []
+    seen_keys: set[str] = set()
+    for model in preferred_models:
+        for provider in slots:
+            if provider["model"] == model:
+                key = _provider_key(provider)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    preferred_slots.append(provider)
+    return preferred_slots + [provider for provider in slots if _provider_key(provider) not in seen_keys]
+
+
 def _get_llm_client(task: str = "") -> tuple[Optional[OpenAI], str]:
     """返回当前首选内置 LLM client（用于状态展示等轻量场景）"""
-    slots = _get_llm_slots()
-    preferred_models = _get_task_preferred_models(task)
-    if preferred_models:
-        preferred_slots = []
-        seen_keys: set[str] = set()
-        for model in preferred_models:
-            for provider in slots:
-                if provider["model"] == model:
-                    key = _provider_key(provider)
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        preferred_slots.append(provider)
-        slots = preferred_slots + [provider for provider in slots if _provider_key(provider) not in seen_keys]
-
+    slots = _ordered_llm_slots(task=task)
     for provider in slots:
         api_key = provider["api_key"].strip()
         if not api_key or _is_provider_cooled(provider):
@@ -315,6 +337,80 @@ def _get_llm_client(task: str = "") -> tuple[Optional[OpenAI], str]:
     return None, ""
 
 
+def _has_llm_config(task: str = "") -> bool:
+    for provider in _ordered_llm_slots(task=task):
+        if provider["api_key"].strip() and not _is_provider_cooled(provider):
+            return True
+    return False
+
+
+async def _llm_chat_complete_async(
+    messages: list[dict],
+    max_tokens: int = 800,
+    temperature: float = 0.3,
+    prefer_model: str = "",
+    task: str = "",
+) -> tuple[str, str, str]:
+    last_error = ""
+    slots = _ordered_llm_slots(task=task, prefer_model=prefer_model)
+    for provider in slots:
+        api_key = provider["api_key"].strip()
+        if not api_key:
+            continue
+        name = f"{provider['name']} / {provider['model']}"
+        if _is_provider_cooled(provider):
+            print(f"[llm] ⏭ {name}（冷却中，跳过）")
+            continue
+        client = None
+        try:
+            client = _build_async_llm_client(provider)
+            kwargs = dict(
+                model=provider["model"],
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            if "qwen" in provider["name"]:
+                kwargs["extra_body"] = {"enable_thinking": False}
+            resp = await client.chat.completions.create(**kwargs)
+            content = (resp.choices[0].message.content or "").strip()
+            cached = False
+            try:
+                details = getattr(getattr(resp, "usage", None), "prompt_tokens_details", None)
+                ct = getattr(details, "cached_tokens", 0) if details else 0
+                cached = (ct or 0) > 0
+            except Exception:
+                pass
+            if content:
+                print(f"[llm] ✓ {name}" + (" (cache hit)" if cached else ""))
+                return content, provider["name"], provider["model"]
+            print(f"[llm] {name} 返回空内容，尝试下一个")
+            last_error = "empty content"
+        except Exception as e:
+            last_error = str(e)
+            print(f"[llm] ✗ {name}: {e}")
+            if _is_quota_error(e):
+                _cooldown_provider(provider)
+        finally:
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+    print(f"[llm] 所有 provider 失败，最后错误: {last_error}")
+    return "", "", ""
+
+
+async def _llm_complete_async(prompt: str, max_tokens: int = 800, task: str = "") -> str:
+    content, _, _ = await _llm_chat_complete_async(
+        [{"role": "user", "content": prompt}],
+        max_tokens=max_tokens,
+        temperature=0.3,
+        task=task,
+    )
+    return content
+
+
 def _llm_chat_complete(
     messages: list[dict],
     max_tokens: int = 800,
@@ -323,22 +419,7 @@ def _llm_chat_complete(
     task: str = "",
 ) -> tuple[str, str, str]:
     last_error = ""
-    slots = _get_llm_slots()
-    preferred_models = []
-    if prefer_model:
-        preferred_models.append(prefer_model)
-    preferred_models.extend(_get_task_preferred_models(task))
-    if preferred_models:
-        preferred_slots = []
-        seen_keys: set[str] = set()
-        for model in preferred_models:
-            for provider in slots:
-                if provider["model"] == model:
-                    key = _provider_key(provider)
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        preferred_slots.append(provider)
-        slots = preferred_slots + [provider for provider in slots if _provider_key(provider) not in seen_keys]
+    slots = _ordered_llm_slots(task=task, prefer_model=prefer_model)
     for provider in slots:
         api_key = provider["api_key"].strip()
         if not api_key:
@@ -419,7 +500,7 @@ def api_save_settings():
     return {"ok": True, "builtin": True}
 
 @app.post("/api/settings/test")
-def api_test_settings(request: Request):
+async def api_test_settings(request: Request):
     uid = _get_user_id(request)
     if not OWNER_UID:
         return {
@@ -431,7 +512,7 @@ def api_test_settings(request: Request):
     # 仅 owner 可调用，防止任意用户消耗 token 做连通性测试
     if not is_owner:
         return {"ok": False, "error": "无权限，仅限 owner 设备测试 AI 连通性。"}
-    result = _llm_complete("请回复两个字：成功", max_tokens=10, task="chat")
+    result = await _llm_complete_async("请回复两个字：成功", max_tokens=10, task="chat")
     if result:
         return {"ok": True, "reply": result}
     return {"ok": False, "error": "AI 服务不可用，请检查 API Key 配置"}
@@ -483,7 +564,7 @@ def api_save_profile(data: ProfileData, request: Request):
     if not previous.get("memory_core", "").strip():
         def _bg_init_core():
             try:
-                _ensure_memory_core(uid, get_profile(uid))
+                asyncio.run(_ensure_memory_core(uid, get_profile(uid)))
             except Exception as e:
                 print(f"[memory] 初始 memory_core 生成失败: {e}")
         threading.Thread(target=_bg_init_core, daemon=True).start()
@@ -550,7 +631,7 @@ def _enforce_recent_length(text: str, max_chars: int = 180) -> str:
     return shortened
 
 
-def _ensure_memory_core(uid: str, profile: dict) -> tuple[str, bool]:
+async def _ensure_memory_core(uid: str, profile: dict) -> tuple[str, bool]:
     existing = (profile.get("memory_core") or "").strip()
     if existing:
         return existing, False
@@ -581,7 +662,7 @@ def _ensure_memory_core(uid: str, profile: dict) -> tuple[str, bool]:
 - 控制在 140-220 字
 - 只输出正文，不要标题"""
 
-    core, _, _ = _llm_chat_complete(
+    core, _, _ = await _llm_chat_complete_async(
         [{"role": "user", "content": prompt}],
         max_tokens=450,
         temperature=0.3,
@@ -601,7 +682,7 @@ def _ensure_memory_core(uid: str, profile: dict) -> tuple[str, bool]:
     return core, True
 
 
-def _maybe_auto_refresh_memory_core(uid: str, profile: dict) -> bool:
+async def _maybe_auto_refresh_memory_core(uid: str, profile: dict) -> bool:
     if not (profile.get("memory_core") or "").strip():
         return False
     if not (profile.get("memory_recent") or "").strip():
@@ -639,7 +720,7 @@ def _maybe_auto_refresh_memory_core(uid: str, profile: dict) -> bool:
 - 输出 140-220 字
 - 只输出正文，不要标题"""
 
-    core, _, _ = _llm_chat_complete(
+    core, _, _ = await _llm_chat_complete_async(
         [{"role": "user", "content": prompt}],
         max_tokens=450,
         temperature=0.25,
@@ -660,12 +741,12 @@ def _maybe_auto_refresh_memory_core(uid: str, profile: dict) -> bool:
 
 
 @app.post("/api/profile/memory-recent")
-def api_update_memory_recent(data: MemoryActionRequest, request: Request):
+async def api_update_memory_recent(data: MemoryActionRequest, request: Request):
     """更新近期关注变化：保留已有 recent，并在近 7 天行为基础上增量修正。"""
     uid = _get_user_id(request)
     profile = get_profile(uid)
 
-    _, core_generated = _ensure_memory_core(uid, profile)
+    _, core_generated = await _ensure_memory_core(uid, profile)
     if core_generated:
         profile = get_profile(uid)
 
@@ -728,7 +809,7 @@ def api_update_memory_recent(data: MemoryActionRequest, request: Request):
 - 最多写 2-4 个增量点，整体保持短、轻、像提醒
 - 只输出正文，不要标题"""
 
-    recent, _, _ = _llm_chat_complete(
+    recent, _, _ = await _llm_chat_complete_async(
         [{"role": "user", "content": prompt}],
         max_tokens=500,
         temperature=0.3,
@@ -746,7 +827,7 @@ def api_update_memory_recent(data: MemoryActionRequest, request: Request):
     save_profile(uid, updated_profile)
     reset_recent_events(uid)
     refreshed_profile = get_profile(uid)
-    auto_merged = _maybe_auto_refresh_memory_core(uid, refreshed_profile)
+    auto_merged = await _maybe_auto_refresh_memory_core(uid, refreshed_profile)
     latest = get_profile(uid)
     return {
         "ok": True,
@@ -758,12 +839,12 @@ def api_update_memory_recent(data: MemoryActionRequest, request: Request):
 
 
 @app.post("/api/profile/merge-to-core")
-def api_merge_recent_to_core(data: MemoryActionRequest, request: Request):
+async def api_merge_recent_to_core(data: MemoryActionRequest, request: Request):
     """用户手动确认：把近期关注变化吸收到长期研究画像。"""
     uid = _get_user_id(request)
     profile = get_profile(uid)
 
-    _, core_generated = _ensure_memory_core(uid, profile)
+    _, core_generated = await _ensure_memory_core(uid, profile)
     if core_generated:
         profile = get_profile(uid)
 
@@ -792,7 +873,7 @@ def api_merge_recent_to_core(data: MemoryActionRequest, request: Request):
 - 控制在 140-220 字
 - 只输出正文，不要标题"""
 
-    core, _, _ = _llm_chat_complete(
+    core, _, _ = await _llm_chat_complete_async(
         [{"role": "user", "content": prompt}],
         max_tokens=450,
         temperature=0.25,
@@ -817,9 +898,9 @@ def api_merge_recent_to_core(data: MemoryActionRequest, request: Request):
 
 
 @app.post("/api/profile/interests-summary")
-def api_update_interests_summary_compat(data: MemoryActionRequest, request: Request):
+async def api_update_interests_summary_compat(data: MemoryActionRequest, request: Request):
     """兼容旧前端调用，内部转到 memory_recent 逻辑。"""
-    return api_update_memory_recent(data, request)
+    return await api_update_memory_recent(data, request)
 
 
 # ========== Papers Cache（按用户隔离） ==========
@@ -1946,7 +2027,7 @@ class TranslateRequest(BaseModel):
     text: str
 
 @app.post("/api/translate")
-def api_translate(data: TranslateRequest, request: Request):
+async def api_translate(data: TranslateRequest, request: Request):
     """将英文文本翻译为中文"""
     uid = _get_user_id(request)
     is_owner = OWNER_UID and uid == OWNER_UID
@@ -1954,11 +2035,10 @@ def api_translate(data: TranslateRequest, request: Request):
     if not is_owner and not check_rate_limit(uid, "translate", DAILY_TRANSLATE_LIMIT):
         return {"ok": False, "error": f"今日翻译次数已用完（每天 {DAILY_TRANSLATE_LIMIT} 次），明天再来吧。"}
 
-    client, model = _get_llm_client(task="translate")
-    if not client:
+    if not _has_llm_config(task="translate"):
         return {"ok": False, "error": "未配置 API"}
     try:
-        translated, _, _ = _llm_chat_complete(
+        translated, _, _ = await _llm_chat_complete_async(
             [{"role": "user", "content": f"请将以下英文学术文本准确翻译为中文，保持专业术语的准确性，只输出翻译结果：\n\n{data.text[:3000]}"}],
             max_tokens=2000,
             temperature=0.2,
@@ -2131,7 +2211,7 @@ def api_delete_note(note_id: int, request: Request):
 # ========== Chat Route ==========
 
 @app.post("/api/chat")
-def api_chat(data: ChatRequest, request: Request):
+async def api_chat(data: ChatRequest, request: Request):
     """和 AI 讨论一篇论文"""
     uid = _get_user_id(request)
     if data.paper_rowid and not _get_owned_paper_or_none(data.paper_rowid, uid):
@@ -2173,8 +2253,7 @@ def api_chat(data: ChatRequest, request: Request):
 - 结合用户研究背景给出具体建议
 - 引用论文数据时给出具体数字"""
 
-    client, model = _get_llm_client(task="chat")
-    if not client:
+    if not _has_llm_config(task="chat"):
         return {"reply": "AI 服务暂不可用，请稍后重试", "ok": False}
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -2183,7 +2262,7 @@ def api_chat(data: ChatRequest, request: Request):
     messages.append({"role": "user", "content": data.message})
 
     try:
-        reply, _, _ = _llm_chat_complete(
+        reply, _, _ = await _llm_chat_complete_async(
             messages,
             max_tokens=600,
             temperature=0.4,
@@ -2212,7 +2291,7 @@ def api_chat(data: ChatRequest, request: Request):
 # ========== Chat Summary → Notes ==========
 
 @app.post("/api/chat/summarize")
-def api_summarize_chat(data: SummarizeChatRequest, request: Request):
+async def api_summarize_chat(data: SummarizeChatRequest, request: Request):
     """将对话总结为笔记并保存（需验证归属）"""
     if not data.messages or not data.paper_rowid:
         return {"ok": False, "error": "缺少对话内容或论文ID"}
@@ -2245,7 +2324,7 @@ def api_summarize_chat(data: SummarizeChatRequest, request: Request):
     if not check_rate_limit("__global__", "chat", GLOBAL_DAILY_CHAT_LIMIT):
         return {"ok": False, "error": "今日 AI 服务使用量已达上限，明天零点后恢复。"}
 
-    result = _llm_complete(prompt, max_tokens=1200, task="summary")
+    result = await _llm_complete_async(prompt, max_tokens=1200, task="summary")
     if not result:
         return {"ok": False, "error": "AI 总结失败"}
 
