@@ -418,51 +418,24 @@ def _llm_chat_complete(
     prefer_model: str = "",
     task: str = "",
 ) -> tuple[str, str, str]:
-    last_error = ""
-    slots = _ordered_llm_slots(task=task, prefer_model=prefer_model)
-    for provider in slots:
-        api_key = provider["api_key"].strip()
-        if not api_key:
-            continue
-        name = f"{provider['name']} / {provider['model']}"
-        # 冷却期内直接跳过
-        if _is_provider_cooled(provider):
-            print(f"[llm] ⏭ {name}（冷却中，跳过）")
-            continue
-        try:
-            client = _build_llm_client(provider)
-            kwargs = dict(
-                model=provider["model"],
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            if "qwen" in provider["name"]:
-                kwargs["extra_body"] = {"enable_thinking": False}
-            resp = client.chat.completions.create(**kwargs)
-            content = (resp.choices[0].message.content or "").strip()
-            cached = False
-            try:
-                details = getattr(getattr(resp, "usage", None), "prompt_tokens_details", None)
-                ct = getattr(details, "cached_tokens", 0) if details else 0
-                cached = (ct or 0) > 0
-            except Exception:
-                pass
-            if content:
-                print(f"[llm] ✓ {name}" + (" (cache hit)" if cached else ""))
-                return content, provider["name"], provider["model"]
-            else:
-                print(f"[llm] {name} 返回空内容，尝试下一个")
-                last_error = "empty content"
-                continue
-        except Exception as e:
-            last_error = str(e)
-            print(f"[llm] ✗ {name}: {e}")
-            if _is_quota_error(e):
-                _cooldown_provider(provider)
-            continue
-    print(f"[llm] 所有 provider 失败，最后错误: {last_error}")
-    return "", "", ""
+    """Sync bridge for legacy/background code paths.
+
+    Direct request handlers should call _llm_chat_complete_async. Background threads
+    can keep using this wrapper while sharing the same async provider routing.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_llm_chat_complete_async(
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            prefer_model=prefer_model,
+            task=task,
+        ))
+
+    # This should be rare; keep a clear failure instead of deadlocking an event loop.
+    raise RuntimeError("_llm_chat_complete called from an async context; use _llm_chat_complete_async instead")
 
 
 def _llm_complete(prompt: str, max_tokens: int = 800, task: str = "") -> str:
