@@ -23,6 +23,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.pm-page-title {
+  font-family: "Songti SC", "Noto Serif SC", "Source Han Serif SC", STSong, Georgia, serif;
+  font-weight: 400;
+  letter-spacing: -0.035em;
+}
+
 /* ======== Flowing gradient background — 清晨湖面 ======== */
 .bg-flowing {
   position: relative;

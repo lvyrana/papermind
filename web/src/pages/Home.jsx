@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Sprout, Heart, Lightbulb, ChevronLeft, BookOpen, MessageCircle, Bookmark } from 'lucide-react'
 import Navbar from '../components/Navbar'
@@ -55,6 +55,11 @@ export default function Home() {
   const [profileFilled, setProfileFilled] = useState(true)
   const [profileChecked, setProfileChecked] = useState(false)
   const [needsProfile, setNeedsProfile] = useState(false)
+  const [memoryCore, setMemoryCore] = useState('')
+  const [memoryRecent, setMemoryRecent] = useState('')
+  const [focusAreas, setFocusAreas] = useState('')
+  const [methodInterests, setMethodInterests] = useState('')
+  const [trackingDays, setTrackingDays] = useState('90')
 
   const now = new Date()
   const hour = now.getHours()
@@ -86,6 +91,11 @@ export default function Home() {
         const filled = !!(data.focus_areas || data.method_interests || data.background || data.current_goal)
         setProfileFilled(filled)
         setProfileChecked(true)
+        setMemoryCore(data.memory_core || '')
+        setMemoryRecent(data.memory_recent || '')
+        setFocusAreas(data.focus_areas || '')
+        setMethodInterests(data.method_interests || '')
+        setTrackingDays(data.tracking_days || '90')
       })
       .catch(() => { setProfileChecked(true) })
   }, [])
@@ -218,13 +228,248 @@ export default function Home() {
     }
   }, [])
 
+  // 派生数据（桌面侧边栏用）
+  const focusTags = useMemo(() => {
+    const raw = [focusAreas, methodInterests].filter(Boolean).join('，')
+    return raw.split(/[,，、\n]+/).map(s => s.trim()).filter(s => s && s.length <= 10).slice(0, 6)
+  }, [focusAreas, methodInterests])
+
+  const memoryObservation = useMemo(() => {
+    if (!memoryRecent) return ''
+    const match = memoryRecent.match(/^[^。！？\n]+[。！？]/)
+    return match ? match[0].trim() : memoryRecent.slice(0, 70)
+  }, [memoryRecent])
+
+  const searchRange = useMemo(() => {
+    const days = parseInt(trackingDays) || 90
+    if (days <= 7) return `近${days}天`
+    if (days <= 14) return '近两周'
+    if (days <= 31) return '近1个月'
+    if (days <= 62) return '近2个月'
+    if (days <= 93) return '近3个月'
+    return `近${Math.round(days / 30)}个月`
+  }, [trackingDays])
+
   // 新用户引导页：画像未填且无任何缓存论文
   if (profileChecked && !profileFilled && papers.length === 0) {
     return <OnboardingScreen />
   }
 
   return (
-    <div className="min-h-screen pb-24">
+    <div className="min-h-screen pb-24 lg:pb-0">
+
+      {/* ── Desktop layout (lg+) ── */}
+      <div className="hidden lg:grid lg:grid-cols-[280px_1fr] lg:gap-10 max-w-[1280px] mx-auto px-10 pt-16 min-h-screen pb-12">
+
+        {/* Sidebar */}
+        <aside className="sticky top-6 self-start space-y-6 pb-10">
+          {/* 问候 */}
+          <div>
+            <p className="text-warm-gray/85 text-xs mb-2">
+              {now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}
+            </p>
+            <h1 className="text-[38px] font-serif text-navy leading-tight">
+              <span className="wavy-underline">{greeting}</span>
+            </h1>
+            <p className="text-navy/50 text-sm mt-4 leading-relaxed">{subtitle}</p>
+          </div>
+
+          {/* 系统观察 */}
+          {memoryObservation && (
+            <div className="border border-cream-dark/40 rounded-2xl p-4">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-2.5">系统观察</p>
+              <p className="text-[13px] text-navy/88 leading-7">{memoryObservation}</p>
+              <p className="text-[11px] text-warm-gray/75 mt-2">系统生成 · 今天</p>
+            </div>
+          )}
+
+          {/* 关注方向 + 检索范围（同一卡片） */}
+          {(focusTags.length > 0 || searchRange) && (
+            <div className="border border-cream-dark/40 rounded-2xl p-4 space-y-4">
+              {focusTags.length > 0 && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-2">关注方向</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {focusTags.map(tag => (
+                      <span key={tag} className="px-2.5 py-1 rounded-full bg-coral/10 text-coral text-[12px] font-medium">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {searchRange && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-1.5">检索范围</p>
+                  <p className="text-[13px] text-navy/70">{searchRange}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 上次停在这里 */}
+          {lastReading && (
+            <div className="border border-cream-dark/40 rounded-2xl p-4">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-2.5">上次停在这里</p>
+              <Link to={`/paper/${lastReading._cache_index ?? lastReading.index ?? 0}`} state={{ paper: lastReading }} className="group block">
+                <p className="text-[13px] text-navy/90 leading-relaxed line-clamp-3 group-hover:text-navy transition">{lastReading.title}</p>
+                {lastReading.summary_zh && (
+                  <p className="text-[12px] text-warm-gray/85 mt-2 line-clamp-2 leading-relaxed">{lastReading.summary_zh.split(/[。！？]/)[0]}</p>
+                )}
+                <span className="text-coral text-[12px] mt-2.5 flex items-center gap-1 group-hover:gap-2 transition-all">
+                  接着读 <ArrowRight size={12} />
+                </span>
+              </Link>
+            </div>
+          )}
+
+          {/* 画像为空时的引导 */}
+          {!memoryObservation && !focusTags.length && profileChecked && (
+            <Link to="/profile"
+              className="block text-[12px] text-warm-gray/50 hover:text-coral transition py-2">
+              完善研究画像，系统会在这里记录你的关注方向 →
+            </Link>
+          )}
+        </aside>
+
+        {/* Main */}
+        <main className="min-h-[80vh] pb-12">
+
+          {/* 为你探索 — 标题 + 按钮在同一行 */}
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <Sprout size={15} className="text-coral" />
+                <h2 className="text-lg font-medium text-navy">为你探索</h2>
+              </div>
+              {total > 0 && (
+                <p className="text-xs text-warm-gray/60">
+                  {memoryObservation ? '基于以上画像·' : ''}
+                  共 {total} 篇{allExplored ? '，已全部探索完' : remaining > 0 ? `·还有 ${remaining} 篇未看` : ''}
+                </p>
+              )}
+            </div>
+            {papers.length > 0 && (
+              <div className="flex items-center gap-2 shrink-0">
+                {canGoBack && (
+                  <button onClick={() => { fetchPapers({ back: true }); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+                    disabled={loading}
+                    className="px-4 py-2 rounded-full text-sm text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/20 transition disabled:opacity-50 flex items-center gap-1">
+                    <ChevronLeft size={13} />上一批
+                  </button>
+                )}
+                {profileFilled && (
+                  <button onClick={() => { fetchPapers({ forceFetch: true }); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+                    disabled={loading}
+                    className="px-4 py-2 rounded-full text-sm text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/20 transition disabled:opacity-50">
+                    重新抓取
+                  </button>
+                )}
+                <button onClick={() => { fetchPapers({ refresh: true }); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+                  disabled={loading || allExplored}
+                  className={`px-5 py-2 rounded-full text-sm font-medium transition disabled:opacity-50 flex items-center gap-1.5 ${allExplored ? 'bg-cream-dark/60 text-warm-gray cursor-not-allowed' : 'bg-coral text-warm-white hover:bg-coral-light shadow-[0_3px_12px_rgba(232,135,122,0.35)]'}`}>
+                  {loading ? <><Loader2 size={13} className="animate-spin" />加载中</> : allExplored ? '已全部探索' : <><RefreshCw size={13} />换一批</>}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 错误 / 需要画像 */}
+          {needsProfile && (
+            <div className="bg-coral/5 border border-coral/20 rounded-xl p-4 mb-5">
+              <p className="text-sm text-navy/70 mb-2">还没有填写研究方向，推荐无法生成。</p>
+              <Link to="/profile" className="inline-flex items-center gap-1 text-coral text-sm font-medium hover:underline">
+                去填写研究画像 <ArrowRight size={13} />
+              </Link>
+            </div>
+          )}
+          {error && !needsProfile && (
+            <div className="bg-coral/5 border border-coral/20 rounded-xl p-4 mb-5 flex items-start gap-2">
+              <AlertCircle size={16} className="text-coral flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-navy/70">{error}</p>
+            </div>
+          )}
+
+          {/* 加载中 */}
+          {loading && papers.length === 0 && (
+            <div className="text-center py-24">
+              <Loader2 size={24} className="text-coral animate-spin mx-auto mb-3" />
+              <p className="text-warm-gray text-sm">正在获取文献并生成个性化解读...</p>
+              <p className="text-warm-gray/60 text-xs mt-1">首次加载需要 1-2 分钟，之后换批秒出</p>
+            </div>
+          )}
+
+          {/* 论文网格 */}
+          <div className={`grid grid-cols-2 gap-4 transition-opacity ${loading && papers.length > 0 ? 'opacity-40 pointer-events-none' : ''}`}>
+            {papers.map((paper, index) => (
+              <PaperCard key={paper.pmid || paper.paper_id || index} paper={paper} index={index} />
+            ))}
+          </div>
+
+          {/* 检索轨迹 */}
+          {searchDebug && (
+            <div className="mt-6 rounded-2xl border border-cream-dark/40">
+              <button type="button" onClick={() => setShowSearchDebug(prev => !prev)}
+                className="w-full flex items-center justify-between px-4 py-3 text-left">
+                <p className="text-sm font-medium text-warm-gray/85">
+                  本次检索：{formatTraceSummary(searchDebug)}
+                </p>
+                <span className="text-xs text-coral">{showSearchDebug ? '收起' : '查看检索轨迹'}</span>
+              </button>
+              {showSearchDebug && (
+                <div className="px-4 pb-4 pt-1 space-y-3 border-t border-cream-dark/50">
+                  {searchDebug.dropped_queries?.length > 0 && (
+                    <div className="rounded-xl bg-cream/70 px-3 py-3">
+                      <p className="text-xs font-medium text-navy/65 mb-2">被丢弃的宽泛查询</p>
+                      <div className="space-y-2">
+                        {searchDebug.dropped_queries.slice(0, 4).map((item, index) => (
+                          <div key={`${item.query}-${index}`} className="text-xs text-warm-gray">
+                            <span className="font-mono text-navy/75">{item.query}</span>
+                            <span className="ml-2 text-warm-gray/70">{formatDropReason(item.reason)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="space-y-3">
+                    {(searchDebug.queries || []).map((item, index) => (
+                      <div key={`${item.query}-${index}`} className="rounded-xl bg-cream/60 px-3 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm text-navy leading-relaxed">{item.query}</p>
+                          <span className="text-[11px] text-warm-gray whitespace-nowrap">{formatOrigin(item.origin)}</span>
+                        </div>
+                        <p className="text-[11px] text-warm-gray mt-2 font-mono break-all">PubMed: {item.pubmed_query || '未调用'}</p>
+                        <p className="text-[11px] text-warm-gray mt-1 font-mono break-all">S2: {item.semantic_query || '未调用'}</p>
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          {(item.sources || []).map((sourceItem, sourceIndex) => (
+                            <span key={`${sourceItem.source}-${sourceIndex}`}
+                              className="text-[11px] px-2 py-1 rounded-full bg-warm-white text-warm-gray">
+                              {formatSourceBadge(sourceItem)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {!loading && papers.length === 0 && !error && (
+            <div className="flex flex-col items-center gap-3 py-24">
+              <p className="text-warm-gray text-sm">还没有推荐结果。</p>
+              <button onClick={() => profileFilled ? fetchPapers() : navigate('/profile')}
+                className="px-4 py-2 bg-navy text-warm-white rounded-full text-sm hover:bg-navy-light transition-colors">
+                {profileFilled ? '获取推荐论文' : '先填写研究方向'}
+              </button>
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* ── Mobile layout (lg:hidden) ── */}
+      <div className="lg:hidden">
       <header className="px-6 pt-14 pb-10 max-w-2xl mx-auto">
         <p className="text-warm-gray text-sm mb-3">
           {now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}
@@ -380,13 +625,10 @@ export default function Home() {
                 onClick={() => setShowSearchDebug(prev => !prev)}
                 className="w-full flex items-center justify-between px-4 py-3 text-left"
               >
-                <div>
-                  <p className="text-sm font-medium text-navy/75">本次检索轨迹</p>
-                  <p className="text-xs text-warm-gray mt-1">
-                    {formatTraceSummary(searchDebug)}
-                  </p>
-                </div>
-                <span className="text-xs text-coral">{showSearchDebug ? '收起' : '查看'}</span>
+                <p className="text-sm font-medium text-warm-gray/85">
+                  本次检索：{formatTraceSummary(searchDebug)}
+                </p>
+                <span className="text-xs text-coral">{showSearchDebug ? '收起' : '查看检索轨迹'}</span>
               </button>
 
               {showSearchDebug && (
@@ -468,6 +710,7 @@ export default function Home() {
           </section>
         )}
       </main>
+      </div>{/* end lg:hidden */}
 
       <Navbar />
     </div>
@@ -482,11 +725,11 @@ function PaperCard({ paper, index }) {
     <Link
       to={`/paper/${cacheIndex}`}
       state={{ paper }}
-      className="block breathe-in"
+      className="block breathe-in h-full"
       style={{ animationDelay: `${index * 80}ms` }}
       onClick={() => sessionStorage.setItem('home-scroll-y', String(window.scrollY))}
     >
-      <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50">
+      <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50 h-full flex flex-col">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs px-2.5 py-1 rounded-full bg-coral/10 text-coral font-medium">
             {paper.category || '未分类'}
@@ -501,27 +744,34 @@ function PaperCard({ paper, index }) {
         <h3 className="text-navy font-medium leading-relaxed text-[15px]">
           {paper.title}
         </h3>
-        {paper.summary_zh && (
-          <p className="text-warm-gray text-sm mt-2 leading-relaxed line-clamp-2">
-            {paper.summary_zh}
-          </p>
+        {paper.title_zh && (
+          <p className="text-navy font-medium leading-relaxed text-[14px] mt-1">{paper.title_zh}</p>
         )}
-        {isPendingSummary && (
-          <p className="text-warm-gray text-sm mt-2 leading-relaxed flex items-center gap-1.5">
-            <Loader2 size={13} className="animate-spin text-coral flex-shrink-0" />
-            <span>AI 解读生成中...</span>
-          </p>
-        )}
-        {isFailedSummary && (
-          <p className="text-warm-gray text-sm mt-2 leading-relaxed">
-            AI 解读暂时不可用，稍后刷新可再试。
-          </p>
-        )}
+        <div className="flex-1">
+          {paper.summary_zh && (
+            <p className="text-warm-gray text-sm mt-3 leading-relaxed line-clamp-3">
+              {paper.summary_zh}
+            </p>
+          )}
+          {isPendingSummary && (
+            <p className="text-warm-gray text-sm mt-3 leading-relaxed flex items-center gap-1.5">
+              <Loader2 size={13} className="animate-spin text-coral flex-shrink-0" />
+              <span>AI 解读生成中...</span>
+            </p>
+          )}
+          {isFailedSummary && (
+            <p className="text-warm-gray text-sm mt-3 leading-relaxed">
+              AI 解读暂时不可用，稍后刷新可再试。
+            </p>
+          )}
+        </div>
         {paper.relevance && (
-          <p className="text-navy-light text-sm mt-2 flex items-start gap-1.5">
-            <Lightbulb size={13} className="text-coral flex-shrink-0 mt-0.5" />
-            <span className="line-clamp-1 italic">{paper.relevance}</span>
-          </p>
+          <div className="mt-4 pt-3 border-t border-cream-dark/50">
+            <p className="text-navy-light text-sm flex items-start gap-1.5">
+              <Lightbulb size={13} className="text-coral flex-shrink-0 mt-0.5" />
+              <span className="line-clamp-2 italic">{paper.relevance}</span>
+            </p>
+          </div>
         )}
       </div>
     </Link>
@@ -534,7 +784,7 @@ function formatTraceSummary(trace) {
   const sourceParts = Object.entries(sourceCounts).map(([source, count]) => `${source === 'pubmed' ? 'PubMed' : 'S2'} ${count}`)
   const queryCount = totals.query_count || trace?.queries?.length || 0
   const finalPapers = totals.final_papers ?? 0
-  return `${queryCount} 组查询，最终保留 ${finalPapers} 篇${sourceParts.length ? `，${sourceParts.join(' / ')}` : ''}`
+  return `${queryCount} 组查询 · 保留 ${finalPapers} 篇${sourceParts.length ? ` · ${sourceParts.join(' · ')}` : ''}`
 }
 
 function formatDropReason(reason) {
