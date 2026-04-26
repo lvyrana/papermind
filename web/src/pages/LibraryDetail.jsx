@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useLocation } from 'react-router-dom'
 import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle, Download, ExternalLink, Languages, BookmarkPlus, Trash2, Plus, Mic, MicOff } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, API_BASE } from '../api'
@@ -7,7 +7,8 @@ import { useSpeechInput } from '../hooks/useSpeechInput'
 
 export default function LibraryDetail() {
   const { id } = useParams()
-  const [paper, setPaper] = useState(null)
+  const location = useLocation()
+  const [paper, setPaper] = useState(location.state?.paper || null)
   const [notes, setNotes] = useState([])
   const [chats, setChats] = useState([])
   const [chatInput, setChatInput] = useState('')
@@ -16,7 +17,7 @@ export default function LibraryDetail() {
     (text) => setChatInput(prev => prev ? prev + ' ' + text : text)
   )
   const [activeTab, setActiveTab] = useState('notes')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!location.state?.paper)
   const [showExport, setShowExport] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
   const [abstractZh, setAbstractZh] = useState(null)
@@ -208,7 +209,7 @@ export default function LibraryDetail() {
             {paper.category || '未分类'}
           </span>
           <div className="mt-3">
-            <h1 className="text-xl font-bold text-navy font-serif leading-relaxed">
+            <h1 className="text-[22px] font-semibold text-navy leading-relaxed tracking-[-0.02em]">
               {showTitleZh && titleZh ? titleZh : paper.title}
             </h1>
             <button

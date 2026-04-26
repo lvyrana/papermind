@@ -20,8 +20,12 @@ function timeAgo(dateStr) {
 
 export default function Library() {
   const navigate = useNavigate()
-  const [papers, setPapers] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [papers, setPapers] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('cached-library-papers') || '[]') } catch { return [] }
+  })
+  const [loading, setLoading] = useState(() => {
+    try { return !localStorage.getItem('cached-library-papers') } catch { return true }
+  })
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState('全部')
   const [notesOnly, setNotesOnly] = useState(false)
@@ -29,7 +33,11 @@ export default function Library() {
 
   useEffect(() => {
     apiGet('/library')
-      .then(data => setPapers(data.papers || []))
+      .then(data => {
+        const nextPapers = data.papers || []
+        setPapers(nextPapers)
+        localStorage.setItem('cached-library-papers', JSON.stringify(nextPapers))
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [])
@@ -39,7 +47,11 @@ export default function Library() {
     e.stopPropagation()
     if (!confirm('确定要取消收藏吗？笔记和对话也会删除。')) return
     await apiDelete(`/library/${id}`)
-    setPapers(prev => prev.filter(p => p.id !== id))
+    setPapers(prev => {
+      const nextPapers = prev.filter(p => p.id !== id)
+      localStorage.setItem('cached-library-papers', JSON.stringify(nextPapers))
+      return nextPapers
+    })
   }
 
   const categories = useMemo(() => {
@@ -290,6 +302,7 @@ function PaperRow({ paper, onDelete, index = 0 }) {
   return (
     <Link
       to={`/library/${paper.id}`}
+      state={{ paper }}
       className="block bg-warm-white border border-cream-dark/50 rounded-2xl px-4 py-3.5 group hover:border-coral/30 hover:shadow-sm transition-all duration-150 breathe-in"
       style={{ animationDelay: `${index * 40}ms` }}
     >
@@ -324,6 +337,7 @@ function PaperCard({ paper, onDelete, index = 0 }) {
   return (
     <Link
       to={`/library/${paper.id}`}
+      state={{ paper }}
       className="block bg-warm-white rounded-2xl p-5 border border-cream-dark/50 hover:-translate-y-0.5 hover:shadow-md transition cursor-pointer group"
       style={{ animationDelay: `${index * 40}ms` }}
     >

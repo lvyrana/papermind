@@ -34,7 +34,14 @@ const RANGE_OPTIONS = [
 ]
 
 export default function Profile() {
-  const [profile, setProfile] = useState(DEFAULT_PROFILE)
+  const [profile, setProfile] = useState(() => {
+    try {
+      const cached = JSON.parse(localStorage.getItem('cached-profile') || 'null')
+      return cached ? { ...DEFAULT_PROFILE, ...cached, tracking_days: cached.tracking_days || '90' } : DEFAULT_PROFILE
+    } catch {
+      return DEFAULT_PROFILE
+    }
+  })
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [broadWarn, setBroadWarn] = useState('')
@@ -45,12 +52,22 @@ export default function Profile() {
 
   useEffect(() => {
     apiGet('/profile')
-      .then(data => setProfile(prev => ({ ...prev, ...data, tracking_days: data.tracking_days || '90' })))
+      .then(data => {
+        setProfile(prev => {
+          const nextProfile = { ...prev, ...data, tracking_days: data.tracking_days || '90' }
+          localStorage.setItem('cached-profile', JSON.stringify(nextProfile))
+          return nextProfile
+        })
+      })
       .catch(() => {})
   }, [])
 
   const patchProfile = (partial) => {
-    setProfile(prev => ({ ...prev, ...partial }))
+    setProfile(prev => {
+      const nextProfile = { ...prev, ...partial }
+      localStorage.setItem('cached-profile', JSON.stringify(nextProfile))
+      return nextProfile
+    })
     setSaved(false)
     setSaveError('')
     if (partial.memory_recent !== undefined) setMergeAbsorbed(false)
@@ -76,7 +93,11 @@ export default function Profile() {
     // 后台触发记忆更新，不阻塞保存反馈
     apiPost('/profile/memory-recent', {})
       .then(() => apiGet('/profile'))
-      .then(latest => setProfile(prev => ({ ...prev, ...latest })))
+      .then(latest => setProfile(prev => {
+        const nextProfile = { ...prev, ...latest, tracking_days: latest.tracking_days || prev.tracking_days || '90' }
+        localStorage.setItem('cached-profile', JSON.stringify(nextProfile))
+        return nextProfile
+      }))
       .catch(() => {})
   }
 
@@ -86,10 +107,18 @@ export default function Profile() {
     try {
       const result = await apiPost('/profile/merge-to-core', {})
       if (result?.core !== undefined) {
-        setProfile(prev => ({ ...prev, memory_core: result.core, memory_recent: '', last_recent_updated_at: '' }))
+        setProfile(prev => {
+          const nextProfile = { ...prev, memory_core: result.core, memory_recent: '', last_recent_updated_at: '' }
+          localStorage.setItem('cached-profile', JSON.stringify(nextProfile))
+          return nextProfile
+        })
       } else {
         const latest = await apiGet('/profile')
-        setProfile(prev => ({ ...prev, ...latest }))
+        setProfile(prev => {
+          const nextProfile = { ...prev, ...latest, tracking_days: latest.tracking_days || prev.tracking_days || '90' }
+          localStorage.setItem('cached-profile', JSON.stringify(nextProfile))
+          return nextProfile
+        })
       }
       setMergeAbsorbed(true)
     } catch {
