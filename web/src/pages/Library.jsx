@@ -86,7 +86,7 @@ export default function Library() {
             <span>返回</span>
           </Link>
           <div className="flex items-center justify-between mb-5">
-            <h1 className="text-3xl font-bold text-navy font-serif leading-snug">我的收藏</h1>
+            <h1 className="pm-page-title text-[30px] text-navy leading-snug">我的收藏</h1>
             <div className="flex items-center gap-3">
               {papers.length > 0 && (
                 <span className="text-xs text-warm-gray/70">{filtered.length} / {papers.length} 篇</span>
@@ -160,12 +160,12 @@ export default function Library() {
       </div>
 
       {/* ── Desktop layout (lg+) ── */}
-      <div className="hidden lg:grid lg:grid-cols-[260px_1fr] lg:gap-10 max-w-[1280px] mx-auto px-10 pt-10">
+      <div className="hidden lg:grid lg:grid-cols-[260px_1fr] lg:gap-10 max-w-[1280px] mx-auto px-10 pt-16">
 
         {/* Sidebar */}
         <aside className="sticky top-6 self-start space-y-5">
           <div>
-            <h1 className="text-[26px] font-serif text-navy leading-tight">我的收藏</h1>
+            <h1 className="pm-page-title text-[34px] text-navy leading-tight">我的收藏</h1>
             <p className="text-warm-gray text-xs mt-2">
               共 {papers.length} 篇
               {papers.filter(p => p.note_count > 0).length > 0 && ` · ${papers.filter(p => p.note_count > 0).length} 有笔记`}
