@@ -259,15 +259,12 @@ export default function Home() {
     <div className="min-h-screen pb-24 lg:pb-0">
 
       {/* ── Desktop layout (lg+) ── */}
-      <div className="hidden lg:grid lg:grid-cols-[280px_1fr] lg:gap-10 max-w-[1280px] mx-auto px-10 pt-16 min-h-screen pb-12">
+      <div className="hidden lg:grid lg:grid-cols-[280px_1fr] lg:gap-10 max-w-[1280px] mx-auto px-10 pt-24 min-h-screen pb-12">
 
         {/* Sidebar */}
         <aside className="sticky top-6 self-start space-y-6 pb-10">
           {/* 问候 */}
           <div>
-            <p className="text-warm-gray/85 text-xs mb-2">
-              {now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}
-            </p>
             <h1 className="text-[38px] font-serif text-navy leading-tight">
               <span className="wavy-underline">{greeting}</span>
             </h1>
@@ -276,7 +273,7 @@ export default function Home() {
 
           {/* 系统观察 */}
           {memoryObservation && (
-            <div className="border border-cream-dark/40 rounded-2xl p-4">
+            <div className="liquid-glass p-4">
               <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-2.5">系统观察</p>
               <p className="text-[13px] text-navy/88 leading-7">{memoryObservation}</p>
               <p className="text-[11px] text-warm-gray/75 mt-2">系统生成 · 今天</p>
@@ -285,7 +282,7 @@ export default function Home() {
 
           {/* 关注方向 + 检索范围（同一卡片） */}
           {(focusTags.length > 0 || searchRange) && (
-            <div className="border border-cream-dark/40 rounded-2xl p-4 space-y-4">
+            <div className="liquid-glass p-4 space-y-4">
               {focusTags.length > 0 && (
                 <div>
                   <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-2">关注方向</p>
@@ -309,7 +306,7 @@ export default function Home() {
 
           {/* 上次停在这里 */}
           {lastReading && (
-            <div className="border border-cream-dark/40 rounded-2xl p-4">
+            <div className="liquid-glass p-4">
               <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-2.5">上次停在这里</p>
               <Link to={`/paper/${lastReading._cache_index ?? lastReading.index ?? 0}`} state={{ paper: lastReading }} className="group block">
                 <p className="text-[13px] text-navy/90 leading-relaxed line-clamp-3 group-hover:text-navy transition">{lastReading.title}</p>
@@ -355,7 +352,7 @@ export default function Home() {
                   <button onClick={() => { fetchPapers({ back: true }); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
                     disabled={loading}
                     className="px-4 py-2 rounded-full text-sm text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/20 transition disabled:opacity-50 flex items-center gap-1">
-                    <ChevronLeft size={13} />上一批
+                    <ChevronLeft size={13} />上一页
                   </button>
                 )}
                 {profileFilled && (
@@ -368,7 +365,7 @@ export default function Home() {
                 <button onClick={() => { fetchPapers({ refresh: true }); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
                   disabled={loading || allExplored}
                   className={`px-5 py-2 rounded-full text-sm font-medium transition disabled:opacity-50 flex items-center gap-1.5 ${allExplored ? 'bg-cream-dark/60 text-warm-gray cursor-not-allowed' : 'bg-coral text-warm-white hover:bg-coral-light shadow-[0_3px_12px_rgba(232,135,122,0.35)]'}`}>
-                  {loading ? <><Loader2 size={13} className="animate-spin" />加载中</> : allExplored ? '已全部探索' : <><RefreshCw size={13} />换一批</>}
+                  {loading ? <><Loader2 size={13} className="animate-spin" />加载中</> : allExplored ? '已全部探索' : <><RefreshCw size={13} />下一页</>}
                 </button>
               </div>
             )}
@@ -470,10 +467,7 @@ export default function Home() {
 
       {/* ── Mobile layout (lg:hidden) ── */}
       <div className="lg:hidden">
-      <header className="px-6 pt-14 pb-10 max-w-2xl mx-auto">
-        <p className="text-warm-gray text-sm mb-3">
-          {now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}
-        </p>
+      <header className="px-6 pt-20 pb-10 max-w-2xl mx-auto">
         <h1 className="text-3xl font-bold text-navy-light font-serif leading-snug tracking-wide">
           <span className="wavy-underline">{greeting}</span>
         </h1>
@@ -492,7 +486,7 @@ export default function Home() {
                 <h2 className="text-sm text-warm-gray">{resumeLabel}</h2>
               </div>
               <Link to={`/paper/${lastReading._cache_index ?? lastReading.index ?? 0}`} state={{ paper: lastReading }} className="block group">
-                <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50 relative">
+                <div className="bg-warm-white/[0.82] backdrop-blur-sm rounded-2xl p-5 card-hover border border-cream-dark/[0.7] relative">
                   <p className="text-navy font-medium leading-relaxed text-[15px]">
                     {lastReading.title}
                   </p>
@@ -579,7 +573,7 @@ export default function Home() {
                   className="py-3 px-4 rounded-full text-sm text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/20 transition-all disabled:opacity-50 flex items-center gap-1.5"
                 >
                   <ChevronLeft size={14} />
-                  上一批
+                  上一页
                 </button>
               )}
               <button
@@ -599,7 +593,7 @@ export default function Home() {
                 ) : allExplored ? (
                   '已全部探索完'
                 ) : (
-                  <><RefreshCw size={14} /> 换一批{remaining > 0 ? <span className="opacity-60 text-xs ml-1">剩 {remaining} 篇</span> : null}</>
+                  <><RefreshCw size={14} /> 下一页{remaining > 0 ? <span className="opacity-60 text-xs ml-1">剩 {remaining} 篇</span> : null}</>
                 )}
               </button>
               {profileFilled && (
@@ -729,7 +723,7 @@ function PaperCard({ paper, index }) {
       style={{ animationDelay: `${index * 80}ms` }}
       onClick={() => sessionStorage.setItem('home-scroll-y', String(window.scrollY))}
     >
-      <div className="bg-warm-white rounded-2xl p-5 shadow-sm card-hover border border-cream-dark/50 h-full flex flex-col">
+      <div className="bg-warm-white/[0.82] backdrop-blur-sm rounded-2xl p-5 card-hover border border-cream-dark/[0.7] h-full flex flex-col">
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs px-2.5 py-1 rounded-full bg-coral/10 text-coral font-medium">
             {paper.category || '未分类'}

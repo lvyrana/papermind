@@ -213,6 +213,29 @@ body {
   }
 }
 
+/* ======== Polished glass card — 光滑毛玻璃 ======== */
+.pm-glass-card {
+  background: rgba(255, 253, 249, 0.55);
+  backdrop-filter: blur(14px) saturate(1.25);
+  -webkit-backdrop-filter: blur(14px) saturate(1.25);
+  border: 1px solid rgba(237, 228, 216, 0.65);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 4px 16px rgba(30, 58, 95, 0.03);
+  transition:
+    transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.2s ease,
+    background 0.2s ease;
+}
+.pm-glass-card:active {
+  transform: scale(0.975);
+  background: rgba(255, 253, 249, 0.75);
+  box-shadow:
+    inset 0 2px 6px rgba(30, 58, 95, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  transition-duration: 0.08s;
+}
+
 /* ======== Frosted glass — 毛玻璃 ======== */
 .glass {
   background: rgba(255, 253, 249, 0.72);
@@ -234,6 +257,78 @@ body {
   box-shadow:
     0 2px 12px rgba(30, 58, 95, 0.04),
     inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* ======== Liquid glass — 液态透明玻璃 ======== */
+.liquid-glass {
+  position: relative;
+  background: rgba(255, 255, 255, 0.05);
+  border: none;
+  border-radius: 24px;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.5), 0 0 0 1px rgba(0,0,0,0.04);
+  overflow: hidden;
+  transition:
+    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+    box-shadow 0.3s ease,
+    background 0.3s ease;
+}
+
+.liquid-glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    125deg,
+    rgba(255, 255, 255, 0.0) 30%,
+    rgba(255, 255, 255, 0.12) 48%,
+    rgba(255, 255, 255, 0.0) 66%
+  );
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.liquid-glass:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 -1px 0 rgba(237, 228, 216, 0.25),
+    0 6px 28px rgba(30, 58, 95, 0.06),
+    0 2px 6px rgba(30, 58, 95, 0.03);
+}
+
+.liquid-glass:hover::before {
+  opacity: 0.7;
+}
+
+.liquid-glass:active {
+  animation: liquid-wobble 0.4s cubic-bezier(0.36, 0.07, 0.19, 0.97) forwards;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 253, 249, 0.58) 0%,
+    rgba(255, 253, 249, 0.38) 45%,
+    rgba(237, 228, 216, 0.28) 100%
+  );
+  box-shadow:
+    inset 0 2px 8px rgba(30, 58, 95, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 2px 10px rgba(30, 58, 95, 0.03);
+}
+
+@keyframes liquid-wobble {
+  0% {
+    transform: scale(1) rotate(0deg);
+  }
+  20% {
+    transform: scale(0.985) rotate(-0.4deg);
+  }
+  50% {
+    transform: scale(0.98) rotate(0.3deg);
+  }
+  75% {
+    transform: scale(0.985) rotate(-0.15deg);
+  }
+  100% {
+    transform: scale(0.98) rotate(0deg);
+  }
 }
 
 /* ======== Wavy underline decoration ======== */

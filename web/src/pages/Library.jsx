@@ -80,7 +80,7 @@ export default function Library() {
 
       {/* ── Mobile layout ── */}
       <div className="lg:hidden">
-        <header className="px-6 pt-14 pb-6 max-w-2xl mx-auto">
+        <header className="px-6 pt-20 pb-6 max-w-2xl mx-auto">
           <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors">
             <ArrowLeft size={16} />
             <span>返回</span>
@@ -160,7 +160,7 @@ export default function Library() {
       </div>
 
       {/* ── Desktop layout (lg+) ── */}
-      <div className="hidden lg:grid lg:grid-cols-[260px_1fr] lg:gap-10 max-w-[1280px] mx-auto px-10 pt-16">
+      <div className="hidden lg:grid lg:grid-cols-[260px_1fr] lg:gap-10 max-w-[1280px] mx-auto px-10 pt-24">
 
         {/* Sidebar */}
         <aside className="sticky top-6 self-start space-y-5">
@@ -175,7 +175,7 @@ export default function Library() {
 
           {/* Category stats */}
           {categoryCounts.length > 0 && (
-            <div className="bg-warm-white/82 border border-cream-dark/60 rounded-3xl p-5">
+            <div className="liquid-glass p-5">
               <p className="text-[10px] uppercase tracking-[0.22em] text-warm-gray/65 mb-3">收藏概况</p>
               <div className="space-y-2.5">
                 {categoryCounts.map(([cat, count]) => (
@@ -199,7 +199,7 @@ export default function Library() {
           )}
 
           {/* Filters */}
-          <div className="bg-warm-white/82 border border-cream-dark/60 rounded-3xl p-5 space-y-3">
+          <div className="liquid-glass p-5 space-y-3">
             <p className="text-[10px] uppercase tracking-[0.22em] text-warm-gray/65">筛选</p>
             {hasNotes && (
               <button onClick={() => setNotesOnly(v => !v)}
@@ -290,7 +290,7 @@ function PaperRow({ paper, onDelete, index = 0 }) {
   return (
     <Link
       to={`/library/${paper.id}`}
-      className="block bg-warm-white border border-cream-dark/50 rounded-2xl px-4 py-3.5 group hover:border-coral/30 hover:shadow-sm transition-all duration-150 breathe-in"
+      className="block bg-warm-white/[0.82] backdrop-blur-sm rounded-2xl px-4 py-3.5 border border-cream-dark/[0.7] group hover:border-coral/30 hover:shadow-sm transition-all duration-150 breathe-in"
       style={{ animationDelay: `${index * 40}ms` }}
     >
       <div className="flex items-center justify-between mb-2">
@@ -324,7 +324,7 @@ function PaperCard({ paper, onDelete, index = 0 }) {
   return (
     <Link
       to={`/library/${paper.id}`}
-      className="block bg-warm-white rounded-2xl p-5 border border-cream-dark/50 hover:-translate-y-0.5 hover:shadow-md transition cursor-pointer group"
+      className="block bg-warm-white/[0.82] backdrop-blur-sm rounded-2xl p-5 border border-cream-dark/[0.7] hover:-translate-y-0.5 hover:shadow-md transition cursor-pointer group"
       style={{ animationDelay: `${index * 40}ms` }}
     >
       <div className="flex items-center justify-between mb-3">
