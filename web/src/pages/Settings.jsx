@@ -70,8 +70,8 @@ export default function Settings() {
 
   return (
     <div className="min-h-screen pb-24">
-      <header className="px-6 pt-12 pb-6 max-w-2xl mx-auto">
-        <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors">
+      <header className="px-6 pt-12 lg:pt-16 pb-6 max-w-2xl mx-auto">
+        <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors lg:hidden">
           <ArrowLeft size={16} />
           <span>返回</span>
         </Link>
