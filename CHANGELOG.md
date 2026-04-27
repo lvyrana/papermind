@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.6.5 - 2026-04-27
+
+### 全局统一导航栏
+
+- 所有屏幕尺寸统一使用固定顶部导航栏，移除旧的移动端浮动底栏
+- 顶栏结构：左侧 Logo（芽图标 + "papermind" 衬线字）、居中导航项（首页 / 收藏 / 画像 / 设置 + 图标）、右侧日期 + 搜索占位按钮（⌘K 样式）
+- 当前页导航项高亮：`bg-warm-white/70` 背景 + 微阴影，未激活项 hover 效果
+- Profile / Settings 页返回箭头加 `lg:hidden`，桌面端依赖顶栏导航
+
+### Profile 桌面端 v2
+
+重新设计画像页桌面布局，与 Home / Library 工作台风格统一：
+
+- **左侧边栏（300px 固定）**
+  - 画像快照卡片：关注方向（coral 标签）、方法兴趣（灰色标签）、检索范围快捷按钮（近1月 / 近3月 / 近6月）
+  - 系统观察摘要卡片：长期画像（来源角标 + 时间戳 + 铅笔图标内联编辑）、近期变化（mint 底色区块）、吸收按钮、吸收成功 ✓ 反馈
+  - 保存画像按钮迁移至边栏底部（原在主区底部）
+- **右侧主区**
+  - 标题"我的研究画像"34px serif
+  - 长期关注卡片：2 列 TagInput 网格（研究方向 / 方法兴趣 / 不想看的内容 / 学科领域）
+  - 随手补充卡片：语音输入 + 文本域
+  - 检索时间范围独立成卡片：近1个月 / 近3个月 / 近6个月 / 自定义
+- `RANGE_OPTIONS` 增加 `shortLabel`，边栏用短标签（近1月），主区用完整标签（近1个月）
+- `TagInput` 新增 `variant` 属性，`"coral"` 用于研究方向标签，默认灰底
+
+### 全局 CSS 工具类
+
+- `.pm-page-title`：统一页面标题字体（Songti SC / Noto Serif SC，正常字重，紧排），Library / Profile / Mobile-Profile 均已切换
+- `.pm-glass-card`：毛玻璃效果卡片（多层渐变背景 + 内侧高光 + backdrop-blur 18px），用于首页桌面侧边栏三张卡片
+
+### 平滑页面过渡
+
+- Profile 页进入时先从 `localStorage` 还原 `cached-profile`，消除导航到画像页时的内容闪白
+- Library / LibraryDetail / PaperRead 过渡平滑优化
+
+### 异步调用第一阶段（Codex）
+
+将用户等待 AI 返回的核心接口改为 `async def`，解除 FastAPI 同步阻塞：
+
+- `/api/chat`、`/api/translate`：对话与翻译
+- `/api/profile/memory-recent`、`/api/profile/merge-to-core`：记忆生成与合并
+- `/api/settings/test`：LLM 连接测试
+- 新增 `_llm_chat_complete_async`（基于 `AsyncOpenAI`），所有请求处理路径共享同一套 provider 路由与冷却逻辑
+- 后台线程保留同步桥接：`_llm_chat_complete` 内部改为 `asyncio.run(_llm_chat_complete_async(...))`，不再维护两套 provider 代码
+
+> 未完成：后台抓取 / 批量解读完全 async 化——当前仍为后台线程 + 同步桥接，不阻塞请求，留待第二阶段
+
+---
+
 ## v0.6.4 - 2026-04-25
 
 ### 桌面端工作台布局（Library + Home）
