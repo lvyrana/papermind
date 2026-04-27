@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { User, Home, Settings, BookOpen, Search } from 'lucide-react'
+import { User, Home, Settings, BookOpen } from 'lucide-react'
 
 export default function Navbar() {
   const location = useLocation()
@@ -49,11 +49,6 @@ export default function Navbar() {
         </div>
         <div className="hidden lg:flex items-center gap-5 shrink-0">
           <span className="text-xs text-warm-gray/70 tracking-[0.12em]">{dateStr} · {weekday}</span>
-          <div className="flex items-center gap-2 rounded-xl bg-warm-white/55 border border-cream-dark/45 px-3 py-1.5 text-xs text-warm-gray/60">
-            <Search size={13} />
-            <span>搜索</span>
-            <span className="rounded-md bg-cream-dark/55 px-1.5 py-0.5 text-[10px] text-warm-gray/55">⌘K</span>
-          </div>
         </div>
       </nav>
 

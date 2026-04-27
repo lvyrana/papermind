@@ -265,9 +265,6 @@ export default function Home() {
         <aside className="sticky top-6 self-start space-y-6 pb-10">
           {/* 问候 */}
           <div>
-            <p className="text-warm-gray/85 text-xs mb-2">
-              {now.toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}
-            </p>
             <h1 className="text-[38px] font-serif text-navy leading-tight">
               <span className="wavy-underline">{greeting}</span>
             </h1>
@@ -276,7 +273,7 @@ export default function Home() {
 
           {/* 系统观察 */}
           {memoryObservation && (
-            <div className="border border-cream-dark/40 rounded-2xl p-4">
+            <div className="pm-glass-card rounded-2xl p-4">
               <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-2.5">系统观察</p>
               <p className="text-[13px] text-navy/88 leading-7">{memoryObservation}</p>
               <p className="text-[11px] text-warm-gray/75 mt-2">系统生成 · 今天</p>
@@ -285,7 +282,7 @@ export default function Home() {
 
           {/* 关注方向 + 检索范围（同一卡片） */}
           {(focusTags.length > 0 || searchRange) && (
-            <div className="border border-cream-dark/40 rounded-2xl p-4 space-y-4">
+            <div className="pm-glass-card rounded-2xl p-4 space-y-4">
               {focusTags.length > 0 && (
                 <div>
                   <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-2">关注方向</p>
@@ -309,7 +306,7 @@ export default function Home() {
 
           {/* 上次停在这里 */}
           {lastReading && (
-            <div className="border border-cream-dark/40 rounded-2xl p-4">
+            <div className="pm-glass-card rounded-2xl p-4">
               <p className="text-[10px] uppercase tracking-[0.2em] text-warm-gray/85 mb-2.5">上次停在这里</p>
               <Link to={`/paper/${lastReading._cache_index ?? lastReading.index ?? 0}`} state={{ paper: lastReading }} className="group block">
                 <p className="text-[13px] text-navy/90 leading-relaxed line-clamp-3 group-hover:text-navy transition">{lastReading.title}</p>
