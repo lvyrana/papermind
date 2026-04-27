@@ -36,6 +36,7 @@ from src.database import (
     check_rate_limit, increment_rate_limit, get_rate_limit_remaining,
     get_enrichment_cache, save_enrichment_cache,
     increment_recent_events, reset_recent_events,
+    save_feedback, get_user_stats,
 )
 
 # 加载 .env
@@ -73,7 +74,7 @@ app.add_middleware(
 init_db()
 
 # 每日限速配置（可在 .env 中覆盖）
-DAILY_RECOMMEND_LIMIT = int(os.environ.get("DAILY_RECOMMEND_LIMIT", "8"))
+DAILY_RECOMMEND_LIMIT = int(os.environ.get("DAILY_RECOMMEND_LIMIT", "5"))
 DAILY_CHAT_LIMIT = int(os.environ.get("DAILY_CHAT_LIMIT", "20"))
 DAILY_TRANSLATE_LIMIT = int(os.environ.get("DAILY_TRANSLATE_LIMIT", "30"))
 # 全局每日 AI 对话熔断（所有用户之和，超了暂停服务）
@@ -123,6 +124,10 @@ class SaveNoteRequest(BaseModel):
     content: str
     source: str = "manual"
     note_id: int = None
+
+class FeedbackRequest(BaseModel):
+    type: str = "general"
+    content: str = Field(max_length=2000)
 
 
 # ========== User ID ==========
@@ -2475,6 +2480,37 @@ def api_get_pdf_url(doi: str = Query(default=""), pmid: str = Query(default=""))
     if pdf_url:
         return {"ok": True, "url": pdf_url}
     return {"ok": False, "error": "未找到免费全文，可尝试通过原文链接访问"}
+
+
+# ========== 用量 & 用户反馈 ==========
+
+@app.get("/api/usage")
+async def api_get_usage(request: Request):
+    """返回当日各功能使用量"""
+    uid = _get_user_id(request)
+    recommend_remaining = get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT)
+    chat_remaining = get_rate_limit_remaining(uid, "chat", DAILY_CHAT_LIMIT)
+    translate_remaining = get_rate_limit_remaining(uid, "translate", DAILY_TRANSLATE_LIMIT)
+    return {
+        "recommend": {"used": DAILY_RECOMMEND_LIMIT - recommend_remaining, "limit": DAILY_RECOMMEND_LIMIT},
+        "chat":      {"used": DAILY_CHAT_LIMIT - chat_remaining,           "limit": DAILY_CHAT_LIMIT},
+        "translate": {"used": DAILY_TRANSLATE_LIMIT - translate_remaining, "limit": DAILY_TRANSLATE_LIMIT},
+    }
+
+@app.get("/api/stats")
+async def api_get_stats(request: Request):
+    """返回用户收藏/笔记/对话统计"""
+    uid = _get_user_id(request)
+    return get_user_stats(uid)
+
+@app.post("/api/feedback")
+async def api_post_feedback(data: FeedbackRequest, request: Request):
+    """存储用户反馈"""
+    uid = _get_user_id(request)
+    if not data.content.strip():
+        return {"ok": False, "error": "内容不能为空"}
+    save_feedback(uid, data.type, data.content.strip())
+    return {"ok": True}
 
 
 # ========== 静态文件服务（生产模式） ==========

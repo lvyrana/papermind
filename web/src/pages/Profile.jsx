@@ -132,13 +132,13 @@ export default function Profile() {
     <div className="min-h-screen pb-12 lg:pb-0 bg-flowing">
 
       {/* ── Desktop layout (lg+) ── */}
-      <div className="hidden lg:grid lg:grid-cols-[300px_minmax(0,1fr)] lg:gap-10 xl:gap-12 max-w-[1380px] mx-auto px-8 xl:px-12 pt-20 pb-12">
+      <div className="hidden lg:grid lg:grid-cols-[300px_minmax(0,1fr)] lg:gap-10 xl:gap-12 max-w-[1380px] mx-auto px-8 xl:px-12 pt-24 pb-12">
 
         {/* Left sidebar */}
         <aside className="sticky top-16 self-start flex flex-col gap-4 pb-10">
 
           {/* 画像快照 */}
-          <div className="bg-warm-white/90 backdrop-blur-sm border border-cream-dark/45 rounded-[26px] p-6 space-y-5 shadow-[0_18px_55px_rgba(30,58,95,0.045)]">
+          <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[26px] p-6 space-y-5 shadow-[0_18px_55px_rgba(30,58,95,0.045)]">
             <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium">画像快照</p>
             <div>
               <p className="text-xs text-warm-gray/85 mb-2">关注方向</p>
@@ -179,7 +179,7 @@ export default function Profile() {
           </div>
 
           {/* 系统观察摘要 */}
-            <div className="bg-warm-white/90 backdrop-blur-sm border border-cream-dark/45 rounded-[26px] p-6 space-y-4 shadow-[0_18px_55px_rgba(30,58,95,0.04)]">
+            <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[26px] p-6 space-y-4 shadow-[0_18px_55px_rgba(30,58,95,0.04)]">
             <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium">系统观察摘要</p>
             <p className="text-[12px] text-warm-gray/85 leading-relaxed">由系统根据收藏与对话自动归纳，让 AI 更贴近你的研究脉络。</p>
             {profile.memory_core ? (
@@ -258,7 +258,7 @@ export default function Profile() {
           </div>
 
           {/* 长期关注 */}
-          <div className="bg-warm-white/92 backdrop-blur-sm border border-cream-dark/45 rounded-[30px] p-8 shadow-[0_22px_70px_rgba(30,58,95,0.045)]">
+          <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[30px] p-8 shadow-[0_22px_70px_rgba(30,58,95,0.045)]">
             <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium mb-5">长期关注</p>
             <div className="grid grid-cols-2 gap-x-8 gap-y-6">
               <TagInput label="研究方向" value={profile.focus_areas} onChange={v => patchProfile({ focus_areas: v })} placeholder="例如：肺癌、中医护理、慢病管理、术后康复" />
@@ -269,13 +269,13 @@ export default function Profile() {
           </div>
 
           {/* 自由描述 */}
-          <div className="bg-warm-white/92 backdrop-blur-sm border border-cream-dark/45 rounded-[30px] p-6 shadow-[0_22px_70px_rgba(30,58,95,0.04)]">
+          <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[30px] p-6 shadow-[0_22px_70px_rgba(30,58,95,0.04)]">
             <VoiceTextarea label="自由描述" hint="随便写，AI 会理解你的意思并生成检索词" value={profile.background} onChange={v => patchProfile({ background: v })}
               placeholder="不知道怎么描述？用日常的话说就行，AI 会理解你的意思并生成检索词——比如：我想看带状疱疹相关的中医干预类文章" rows={2} />
           </div>
 
           {/* 检索时间范围 */}
-          <div className="bg-warm-white/92 backdrop-blur-sm border border-cream-dark/45 rounded-[30px] p-8 shadow-[0_22px_70px_rgba(30,58,95,0.04)]">
+          <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[30px] p-8 shadow-[0_22px_70px_rgba(30,58,95,0.04)]">
             <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium mb-4">检索时间范围</p>
             <RangePicker value={profile.tracking_days} onChange={v => patchProfile({ tracking_days: v })} showLabel={false} />
           </div>
@@ -284,7 +284,7 @@ export default function Profile() {
 
       {/* ── Mobile layout ── */}
       <div className="lg:hidden">
-        <header className="px-6 pt-20 pb-10 max-w-3xl mx-auto">
+        <header className="px-6 pt-[72px] pb-10 max-w-3xl mx-auto">
           <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors">
             <ArrowLeft size={16} /><span>返回</span>
           </Link>

@@ -109,6 +109,15 @@ def _ensure_db():
             created_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL DEFAULT '',
+            type TEXT NOT NULL DEFAULT 'general',
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
 
     # 迁移：给旧表加 user_id 列（如果不存在）
     for table in ("saved_papers", "reading_history"):
@@ -165,6 +174,7 @@ def _ensure_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_chats_paper ON paper_chats(paper_rowid)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_search_runs_user_created ON search_runs(user_id, created_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_cache_key ON enrichment_cache(paper_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_feedback_user ON user_feedback(user_id)")
 
     conn.commit()
     return conn
@@ -669,6 +679,40 @@ def get_saved_categories(user_id: str) -> dict:
     ).fetchall()
     conn.close()
     return {r["category"]: r["cnt"] for r in rows}
+
+
+# ========== User Feedback ==========
+
+def save_feedback(user_id: str, feedback_type: str, content: str) -> int:
+    conn = _ensure_db()
+    cursor = conn.execute(
+        "INSERT INTO user_feedback (user_id, type, content, created_at) VALUES (?, ?, ?, ?)",
+        (user_id, feedback_type, content, datetime.now().isoformat())
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    conn.close()
+    return row_id
+
+
+def get_user_stats(user_id: str) -> dict:
+    """返回用户收藏论文数、笔记数、AI 对话次数（用于设置页展示）"""
+    conn = _ensure_db()
+    paper_count = conn.execute(
+        "SELECT COUNT(*) as cnt FROM saved_papers WHERE user_id = ?", (user_id,)
+    ).fetchone()["cnt"]
+    note_count = conn.execute(
+        """SELECT COUNT(*) as cnt FROM paper_notes pn
+           JOIN saved_papers sp ON pn.paper_rowid = sp.id
+           WHERE sp.user_id = ?""", (user_id,)
+    ).fetchone()["cnt"]
+    chat_count = conn.execute(
+        """SELECT COUNT(*) as cnt FROM paper_chats pc
+           JOIN saved_papers sp ON pc.paper_rowid = sp.id
+           WHERE sp.user_id = ? AND pc.role = 'user'""", (user_id,)
+    ).fetchone()["cnt"]
+    conn.close()
+    return {"papers": paper_count, "notes": note_count, "chats": chat_count}
 
 
 # ========== Enrichment Cache ==========
