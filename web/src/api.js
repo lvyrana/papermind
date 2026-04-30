@@ -26,8 +26,12 @@ function setCookie(name, value) {
 
 function getUserId() {
   // 优先读 localStorage，其次 cookie，两者都写入保证跨设备恢复
-  let uid = null
-  try { uid = localStorage.getItem('papermind-uid') } catch {}
+  let uid = memoryUid || null
+  try {
+    uid = uid || localStorage.getItem('papermind-uid')
+  } catch {
+    // localStorage may be unavailable in privacy-restricted browsers.
+  }
   if (!uid) uid = getCookie('papermind-uid')
 
   if (!uid) {
@@ -36,7 +40,12 @@ function getUserId() {
       : fallbackUuid()
   }
 
-  try { localStorage.setItem('papermind-uid', uid) } catch {}
+  memoryUid = uid
+  try {
+    localStorage.setItem('papermind-uid', uid)
+  } catch {
+    // Cookie and memory fallbacks keep the app usable.
+  }
   setCookie('papermind-uid', uid)
 
   return uid
@@ -83,7 +92,12 @@ export async function apiGetRaw(path) {
 }
 
 function setUserId(uid) {
-  try { localStorage.setItem('papermind-uid', uid) } catch {}
+  memoryUid = uid
+  try {
+    localStorage.setItem('papermind-uid', uid)
+  } catch {
+    // Cookie and memory fallbacks keep the app usable.
+  }
   setCookie('papermind-uid', uid)
 }
 

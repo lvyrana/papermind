@@ -5,7 +5,8 @@ import Navbar from '../components/Navbar'
 import { getUserId, API_BASE, apiGet, apiPost } from '../api'
 
 // ── 圆角方形图标块 ─────────────────────────────────
-function IconBlock({ icon: Icon, color = 'coral' }) {
+function IconBlock({ icon, color = 'coral' }) {
+  const IconComponent = icon
   const styles = {
     coral: 'bg-coral/12 text-coral',
     navy:  'bg-navy/8 text-navy/70',
@@ -14,7 +15,7 @@ function IconBlock({ icon: Icon, color = 'coral' }) {
   }
   return (
     <div className={`w-11 h-11 rounded-2xl flex items-center justify-center flex-shrink-0 ${styles[color]}`}>
-      <Icon size={20} strokeWidth={1.6} />
+      <IconComponent size={20} strokeWidth={1.6} />
     </div>
   )
 }
@@ -95,12 +96,20 @@ export default function Settings() {
   const [stats, setStats] = useState(null)
 
   const [anonymousData, setAnonymousData] = useState(() => {
-    try { return localStorage.getItem('pm-anonymous-data') !== 'false' } catch { return true }
+    try {
+      return localStorage.getItem('pm-anonymous-data') !== 'false'
+    } catch {
+      return true
+    }
   })
 
   const handleToggleAnonymous = (val) => {
     setAnonymousData(val)
-    try { localStorage.setItem('pm-anonymous-data', val ? 'true' : 'false') } catch {}
+    try {
+      localStorage.setItem('pm-anonymous-data', val ? 'true' : 'false')
+    } catch {
+      // localStorage may be unavailable in privacy-restricted browsers.
+    }
   }
 
   const [feedbackType, setFeedbackType] = useState('')
@@ -120,8 +129,12 @@ export default function Settings() {
   }, [])
 
   useEffect(() => {
-    apiGet('/usage').then(setUsage).catch(() => {})
-    apiGet('/stats').then(setStats).catch(() => {})
+    apiGet('/usage').then(setUsage).catch(() => {
+      // Usage stats are optional on this page.
+    })
+    apiGet('/stats').then(setStats).catch(() => {
+      // Data stats are optional on this page.
+    })
   }, [])
 
   const handleCopyLink = () => {

@@ -31,7 +31,9 @@ function clearLocalAccountCache() {
       if (k && CACHE_KEY_PREFIXES.some(p => k.startsWith(p))) toRemove.push(k)
     }
     toRemove.forEach(k => localStorage.removeItem(k))
-  } catch {}
+  } catch {
+    // localStorage may be unavailable in privacy-restricted browsers.
+  }
 }
 
 function UidHandler() {
@@ -45,7 +47,7 @@ function UidHandler() {
       setUserId(uid)
       navigate('/', { replace: true })
     }
-  }, [])
+  }, [location.search, navigate])
   return null
 }
 
