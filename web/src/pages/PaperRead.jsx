@@ -339,7 +339,7 @@ export default function PaperRead() {
             )}
           </div>
           <div className="mt-3">
-            <h1 className="pm-paper-title text-[22px] text-navy">
+            <h1 className="text-xl font-bold text-navy font-serif leading-relaxed">
               {showTitleZh && titleZh ? titleZh : paper.title}
             </h1>
             <button
