@@ -208,7 +208,7 @@ export default function LibraryDetail() {
             {paper.category || '未分类'}
           </span>
           <div className="mt-3">
-            <h1 className="text-xl font-bold text-navy font-serif leading-relaxed">
+            <h1 className="pm-paper-title text-[22px] text-navy">
               {showTitleZh && titleZh ? titleZh : paper.title}
             </h1>
             <button

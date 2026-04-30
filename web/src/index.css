@@ -29,6 +29,16 @@ body {
   letter-spacing: -0.035em;
 }
 
+.pm-paper-title {
+  font-family: "Songti SC", "Noto Serif SC", "Source Han Serif SC", STSong, Georgia, serif;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.52;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  word-break: break-word;
+}
+
 /* ======== Flowing gradient background — 清晨湖面 ======== */
 .bg-flowing {
   position: relative;
