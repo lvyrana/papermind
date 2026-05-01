@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.6.8 - 2026-05-01
+
+### 新手引导 Onboarding Wizard
+
+- 新增独立路由 `/onboarding`，替换旧的内嵌式 OnboardingScreen
+- Step 0：欢迎介绍屏（仅从 Home 跳转时显示，刷新直接进 Step 1）
+- Steps 1–3：研究方向 → 方法偏好（芯片多选）→ 背景 + 检索范围
+- 完成后自动触发首次论文检索（`pm-auto-fetch` sessionStorage 标记）
+- "先逛逛，稍后再填" 跳过选项，防止首页无限重定向（`pm-skip-onboarding`）
+- 首页空状态 CTA 由跳 `/profile` 改为跳 `/onboarding`
+
+### 功能引导气泡 Feature Tour
+
+- 新增 `TourBubble` 组件：固定定位气泡，支持 top/bottom/left/right 四方向箭头
+- 首页 tour（移动端 + 桌面端）：第一张论文卡 → 下一页按钮
+- 论文详情页 tour：收藏按钮 → 查看原文 → AI 讨论 Tab
+- Tour 首次展示时立即写入 `localStorage` 标记，避免导航后重复弹出
+
+### IP 限流
+
+- 新增 `_get_client_ip()` 读取 `X-Forwarded-For`（nginx 反代场景）
+- `/papers` 端点同时按用户 ID 和客户端 IP 计算推荐批次配额
+- 无痕浏览器更换 userId 无法绕过每日限额
+
+### Bug 修复 & 小改动
+
+- 修复 `fetchPapers` 在 profile useEffect 中先用后声明的 lint 问题
+- 设置页"全文翻译"标签改为"翻译次数"，说明文字改为动态读取 API 返回的 limit
+- 服务器 `DAILY_RECOMMEND_LIMIT` 由 8 调整为 5
+- Onboarding 移动端顶部 padding 从 96px 收到 48px，内容不再偏下
+- 修复合并冲突：Navbar 去掉无用 `{false && ...}` 包装，Library 卡片保留 `state={{ paper }}`
+
 ## v0.6.7 - 2026-04-30
 
 ### 画像页桌面端继续微调
