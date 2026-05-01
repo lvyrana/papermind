@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Sprout, Heart, Lightbulb, ChevronLeft, BookOpen, MessageCircle, Bookmark } from 'lucide-react'
+import { ArrowRight, Clock, Loader2, RefreshCw, AlertCircle, RotateCcw, Sprout, Heart, Lightbulb, ChevronLeft, Bookmark } from 'lucide-react'
 import Navbar from '../components/Navbar'
+import TourBubble from '../components/TourBubble'
 import { apiGet, apiPost } from '../api'
 
 function loadCachedJson(key, fallback) {
@@ -60,6 +61,30 @@ export default function Home() {
   const [methodInterests, setMethodInterests] = useState('')
   const [trackingDays, setTrackingDays] = useState('90')
 
+  // ── Home tour ──────────────────────────────────────────────────────────────
+  const [homeTourStep, setHomeTourStep] = useState(0) // 0=off, 1=first card, 2=next page
+  const firstCardRef = useRef(null)
+  const nextPageRef = useRef(null)
+  const homeTourStartedRef = useRef(false)
+
+  useEffect(() => {
+    if (papers.length > 0 && !homeTourStartedRef.current && !localStorage.getItem('pm-home-tour-done')) {
+      homeTourStartedRef.current = true
+      const t = setTimeout(() => setHomeTourStep(1), 800)
+      return () => clearTimeout(t)
+    }
+  }, [papers.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function advanceHomeTour() {
+    if (homeTourStep < 2) {
+      setHomeTourStep(s => s + 1)
+    } else {
+      setHomeTourStep(0)
+      localStorage.setItem('pm-home-tour-done', '1')
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   const now = new Date()
   const hour = now.getHours()
   const greeting = hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好'
@@ -94,9 +119,18 @@ export default function Home() {
         setFocusAreas(data.focus_areas || '')
         setMethodInterests(data.method_interests || '')
         setTrackingDays(data.tracking_days || '90')
+
       })
       .catch(() => { setProfileChecked(true) })
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 新用户：画像未填且无缓存论文 → 进入引导向导（除非用户主动选择了"先逛逛"）
+  useEffect(() => {
+    if (profileChecked && !profileFilled && papers.length === 0) {
+      if (sessionStorage.getItem('pm-skip-onboarding')) return
+      navigate('/onboarding', { replace: true, state: { intro: true } })
+    }
+  }, [profileChecked, profileFilled, papers.length, navigate])
 
   const pollRef = React.useRef(null)
 
@@ -212,6 +246,15 @@ export default function Home() {
     }
   }
 
+  // 新手引导完成后自动触发首次检索（fetchPapers 已声明，无 lint 警告）
+  useEffect(() => {
+    if (!profileFilled) return
+    if (!sessionStorage.getItem('pm-auto-fetch')) return
+    sessionStorage.removeItem('pm-auto-fetch')
+    fetchPapers()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileFilled])
+
   // 清理轮询定时器
   useEffect(() => {
     return () => stopPolling()
@@ -247,11 +290,6 @@ export default function Home() {
     if (days <= 93) return '近3个月'
     return `近${Math.round(days / 30)}个月`
   }, [trackingDays])
-
-  // 新用户引导页：画像未填且无任何缓存论文
-  if (profileChecked && !profileFilled && papers.length === 0) {
-    return <OnboardingScreen />
-  }
 
   return (
     <div className="min-h-screen pb-24 lg:pb-0">
@@ -454,7 +492,7 @@ export default function Home() {
           {!loading && papers.length === 0 && !error && (
             <div className="flex flex-col items-center gap-3 py-24">
               <p className="text-warm-gray text-sm">还没有推荐结果。</p>
-              <button onClick={() => profileFilled ? fetchPapers() : navigate('/profile')}
+              <button onClick={() => profileFilled ? fetchPapers() : navigate('/onboarding')}
                 className="px-4 py-2 bg-navy text-warm-white rounded-full text-sm hover:bg-navy-light transition-colors">
                 {profileFilled ? '获取推荐论文' : '先填写研究方向'}
               </button>
@@ -554,7 +592,13 @@ export default function Home() {
           {/* Loading overlay when refreshing with existing papers */}
           <div className={`space-y-4 transition-opacity ${loading && papers.length > 0 ? 'opacity-40 pointer-events-none' : ''}`}>
             {papers.map((paper, index) => (
-              <PaperCard key={paper.pmid || paper.paper_id || index} paper={paper} index={index} />
+              index === 0 ? (
+                <div key={paper.pmid || paper.paper_id || index} ref={firstCardRef}>
+                  <PaperCard paper={paper} index={index} />
+                </div>
+              ) : (
+                <PaperCard key={paper.pmid || paper.paper_id || index} paper={paper} index={index} />
+              )
             ))}
           </div>
 
@@ -575,6 +619,7 @@ export default function Home() {
                 </button>
               )}
               <button
+                ref={nextPageRef}
                 onClick={() => {
                   fetchPapers({ refresh: true })
                   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -673,7 +718,7 @@ export default function Home() {
           {!loading && papers.length === 0 && !error && (
             <div className="flex flex-col items-center gap-3 py-12">
               <p className="text-warm-gray text-sm">还没有推荐结果。</p>
-              <button onClick={() => profileFilled ? fetchPapers() : navigate('/profile')}
+              <button onClick={() => profileFilled ? fetchPapers() : navigate('/onboarding')}
                 className="px-4 py-2 bg-navy text-warm-white rounded-full text-sm hover:bg-navy-light transition-colors">
                 {profileFilled ? '获取推荐论文' : '先填写研究方向'}
               </button>
@@ -705,6 +750,26 @@ export default function Home() {
       </div>{/* end lg:hidden */}
 
       <Navbar />
+
+      {/* Home tour bubbles */}
+      {homeTourStep === 1 && (
+        <TourBubble
+          targetRef={firstCardRef}
+          text="这是 AI 根据你的研究方向精选的论文，点击查看详情和 AI 解读"
+          step={1} total={2}
+          placement="bottom"
+          onNext={advanceHomeTour}
+        />
+      )}
+      {homeTourStep === 2 && (
+        <TourBubble
+          targetRef={nextPageRef}
+          text="看完这批？点这里获取下一批推荐"
+          step={2} total={2}
+          placement="top"
+          onNext={advanceHomeTour}
+        />
+      )}
     </div>
   )
 }
@@ -800,60 +865,3 @@ function formatSourceBadge(sourceItem) {
   return `${sourceLabel} 失败`
 }
 
-function OnboardingScreen() {
-  return (
-    <div className="min-h-screen flex flex-col pb-24">
-      <div className="flex-1 px-6 pt-16 max-w-lg mx-auto w-full">
-        <p className="text-xs text-coral font-medium tracking-wider uppercase mb-6">PaperMind</p>
-        <h1 className="text-3xl font-bold text-navy font-serif leading-snug mb-4">
-          有记忆的<br />学术文献助手
-        </h1>
-        <p className="text-navy/55 leading-relaxed mb-10">
-          它记得你的方向、偏好和每次思考——从检索到讨论，全程为你定制。
-        </p>
-
-        <div className="space-y-4 mb-10">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-full bg-coral/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <Heart size={15} className="text-coral" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-navy">理解你，不只是搜索</p>
-              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">研究画像不是关键词标签，是它理解你的起点——对话和解读都会围绕你的真实关注</p>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-full bg-coral/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <BookOpen size={15} className="text-coral" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-navy">一键检索，精准推荐</p>
-              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">根据画像生成检索词，AI 逐篇打分并生成个性化解读</p>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-full bg-coral/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <MessageCircle size={15} className="text-coral" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-navy">思考越积越厚</p>
-              <p className="text-xs text-warm-gray mt-0.5 leading-relaxed">对话、笔记、收藏全部留存，系统还会观察你的偏好——越用越懂你</p>
-            </div>
-          </div>
-        </div>
-
-        <Link
-          to="/profile"
-          className="block w-full py-3.5 rounded-full bg-coral text-warm-white text-center text-sm font-semibold hover:bg-coral-light transition-colors shadow-[0_4px_16px_rgba(232,135,122,0.4)]"
-        >
-          告诉它你在研究什么 →
-        </Link>
-        <p className="text-center text-xs text-warm-gray/60 mt-4">
-          大约 2 分钟，随时可以调整
-        </p>
-      </div>
-
-      <Navbar />
-    </div>
-  )
-}

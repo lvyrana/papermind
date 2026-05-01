@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import Home from './pages/Home'
+import Onboarding from './pages/Onboarding'
 import Profile from './pages/Profile'
 import PaperRead from './pages/PaperRead'
 import Settings from './pages/Settings'
@@ -57,6 +58,7 @@ function App() {
       <UidHandler />
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/onboarding" element={<Onboarding />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="/paper/:id" element={<PaperRead />} />
         <Route path="/settings" element={<Settings />} />

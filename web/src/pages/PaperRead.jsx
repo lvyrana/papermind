@@ -4,6 +4,7 @@ import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, D
 import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, API_BASE, getUserId } from '../api'
 import { useSpeechInput } from '../hooks/useSpeechInput'
+import TourBubble from '../components/TourBubble'
 
 export default function PaperRead() {
   const { id } = useParams()
@@ -35,6 +36,11 @@ export default function PaperRead() {
   const [summarizeError, setSummarizeError] = useState(null)
   const readingRecordedRef = useRef(false)
   const actionRecordedRef = useRef({})
+  const [paperTourStep, setPaperTourStep] = useState(0)
+  const bookmarkBtnRef = useRef(null)
+  const externalLinkRef = useRef(null)
+  const chatTabRef = useRef(null)
+  const paperTourStartedRef = useRef(false)
 
   // 如果 location.state 没有 paper（刷新/直链），尝试从后端恢复
   useEffect(() => {
@@ -153,6 +159,23 @@ export default function PaperRead() {
     const chatKey = `paper-chat-${paper.pmid || paper.paper_id || id}`
     localStorage.setItem(chatKey, JSON.stringify(chatMessages))
   }, [chatMessages, paper, id])
+
+  useEffect(() => {
+    if (!paper || paperTourStartedRef.current) return
+    if (localStorage.getItem('pm-paper-tour-done')) return
+    paperTourStartedRef.current = true
+    const t = setTimeout(() => setPaperTourStep(1), 1000)
+    return () => clearTimeout(t)
+  }, [paper])
+
+  function advancePaperTour() {
+    if (paperTourStep >= 3) {
+      localStorage.setItem('pm-paper-tour-done', '1')
+      setPaperTourStep(0)
+    } else {
+      setPaperTourStep(s => s + 1)
+    }
+  }
 
   const triggerRipple = () => {
     setRipple(true)
@@ -316,7 +339,7 @@ export default function PaperRead() {
             <ArrowLeft size={16} />
             <span>返回</span>
           </Link>
-          <button onClick={toggleBookmark} className={`p-2 rounded-full hover:bg-cream-dark/50 transition-colors ripple-btn ${ripple ? 'ripple-active' : ''}`}>
+          <button ref={bookmarkBtnRef} onClick={toggleBookmark} className={`p-2 rounded-full hover:bg-cream-dark/50 transition-colors ripple-btn ${ripple ? 'ripple-active' : ''}`}>
             {bookmarked ? (
               <Bookmark size={18} className="text-coral fill-coral" />
             ) : (
@@ -373,7 +396,7 @@ export default function PaperRead() {
           {/* 操作按钮 */}
           <div className="flex flex-wrap items-center gap-2 mt-4">
             {paper.link && (
-              <a href={paper.link} target="_blank" rel="noopener noreferrer"
+              <a ref={externalLinkRef} href={paper.link} target="_blank" rel="noopener noreferrer"
                 onClick={() => recordActionOnce('open_external')}
                 className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all">
                 <ExternalLink size={12} />
@@ -507,7 +530,7 @@ export default function PaperRead() {
               className={`text-sm pb-1 transition-colors ${activeTab === 'notes' ? 'text-navy font-medium border-b-2 border-coral' : 'text-warm-gray hover:text-navy'}`}>
               我的想法
             </button>
-            <button onClick={() => setActiveTab('chat')}
+            <button ref={chatTabRef} onClick={() => setActiveTab('chat')}
               className={`text-sm pb-1 transition-colors ${activeTab === 'chat' ? 'text-navy font-medium border-b-2 border-coral' : 'text-warm-gray hover:text-navy'}`}>
               和 AI 讨论
             </button>
@@ -620,6 +643,9 @@ export default function PaperRead() {
           )}
         </div>
       </main>
+      {paperTourStep === 1 && <TourBubble targetRef={bookmarkBtnRef} text="点击收藏，笔记和对话都会永久保存" step={1} total={3} placement="bottom" onNext={advancePaperTour} />}
+      {paperTourStep === 2 && <TourBubble targetRef={externalLinkRef} text="跳转到 PubMed 查看原文" step={2} total={3} placement="bottom" onNext={advancePaperTour} />}
+      {paperTourStep === 3 && <TourBubble targetRef={chatTabRef} text="可以和论文直接对话，问它任何问题" step={3} total={3} placement="bottom" onNext={advancePaperTour} />}
     </div>
   )
 }
