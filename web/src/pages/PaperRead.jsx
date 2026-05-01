@@ -164,8 +164,10 @@ export default function PaperRead() {
     if (!paper || paperTourStartedRef.current) return
     if (localStorage.getItem('pm-paper-tour-done')) return
     paperTourStartedRef.current = true
-    localStorage.setItem('pm-paper-tour-done', '1')
-    const t = setTimeout(() => setPaperTourStep(1), 1000)
+    const t = setTimeout(() => {
+      localStorage.setItem('pm-paper-tour-done', '1')
+      setPaperTourStep(1)
+    }, 1000)
     return () => clearTimeout(t)
   }, [paper])
 

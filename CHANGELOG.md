@@ -9,14 +9,14 @@
 - Steps 1–3：研究方向 → 方法偏好（芯片多选）→ 背景 + 检索范围
 - 完成后自动触发首次论文检索（`pm-auto-fetch` sessionStorage 标记）
 - "先逛逛，稍后再填" 跳过选项，防止首页无限重定向（`pm-skip-onboarding`）
-- 首页空状态 CTA 由跳 `/profile` 改为跳 `/onboarding`
+- 首页主要空状态 CTA 已改为跳 `/onboarding`，侧边栏"完善研究画像"等补充入口仍保留 `/profile`
 
 ### 功能引导气泡 Feature Tour
 
 - 新增 `TourBubble` 组件：固定定位气泡，支持 top/bottom/left/right 四方向箭头
 - 首页 tour（移动端 + 桌面端）：第一张论文卡 → 下一页按钮
 - 论文详情页 tour：收藏按钮 → 查看原文 → AI 讨论 Tab
-- Tour 首次展示时立即写入 `localStorage` 标记，避免导航后重复弹出
+- Tour `done` 标记在气泡实际出现时写入（setTimeout 回调内），而非 effect 启动时；用户在 800ms/1000ms 内离开则不标记，下次仍会再触发
 
 ### IP 限流
 

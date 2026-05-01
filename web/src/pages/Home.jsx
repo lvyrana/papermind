@@ -72,8 +72,10 @@ export default function Home() {
   useEffect(() => {
     if (papers.length > 0 && !homeTourStartedRef.current && !localStorage.getItem('pm-home-tour-done')) {
       homeTourStartedRef.current = true
-      localStorage.setItem('pm-home-tour-done', '1')
-      const t = setTimeout(() => setHomeTourStep(1), 800)
+      const t = setTimeout(() => {
+        localStorage.setItem('pm-home-tour-done', '1')
+        setHomeTourStep(1)
+      }, 800)
       return () => clearTimeout(t)
     }
   }, [papers.length]) // eslint-disable-line react-hooks/exhaustive-deps

@@ -24,7 +24,10 @@ export default function Onboarding() {
   const [error, setError] = useState('')
 
   function goNext() { setDir(1); setStep(s => s + 1) }
-  function goBack() { setDir(-1); setStep(s => s - 1) }
+  function goBack() {
+    if (step === 1) { navigate('/') }
+    else { setDir(-1); setStep(s => s - 1) }
+  }
 
   function skipOnboarding() {
     sessionStorage.setItem('pm-skip-onboarding', '1')
