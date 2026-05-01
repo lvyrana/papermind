@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Check, Mic, Pencil, RefreshCw, Save, Sparkles, X } from 'lucide-react'
+import { ArrowLeft, Check, ChevronDown, ChevronUp, Mic, Pencil, Save, Sparkles, Upload, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import { apiGet, apiPost } from '../api'
@@ -49,6 +49,8 @@ export default function Profile() {
   const [mergeAbsorbed, setMergeAbsorbed] = useState(false)
   const [coreEditing, setCoreEditing] = useState(false)
   const [coreDraft, setCoreDraft] = useState('')
+  const [coreExpanded, setCoreExpanded] = useState(false)
+  const [recentExpanded, setRecentExpanded] = useState(false)
 
   useEffect(() => {
     apiGet('/profile')
@@ -142,7 +144,7 @@ export default function Profile() {
     <>
       <button
         onClick={handleSave}
-        className={`w-full py-4 rounded-2xl font-medium text-sm transition-all duration-300 flex items-center justify-center gap-2 ${
+        className={`w-full lg:w-[220px] py-4 lg:py-2.5 rounded-2xl lg:rounded-[20px] font-medium text-sm transition-all duration-300 flex items-center justify-center gap-2 lg:self-end ${
           saved ? 'bg-mint/20 text-navy' : 'bg-coral text-warm-white hover:bg-coral-light shadow-sm'
         }`}
       >
@@ -150,7 +152,7 @@ export default function Profile() {
       </button>
       {saveError && <p className="text-sm text-coral text-center -mt-2">{saveError}</p>}
       {saved && (
-        <Link to="/" className="flex items-center justify-center gap-1.5 w-full py-3 rounded-2xl border border-coral/30 text-coral text-sm font-medium hover:bg-coral/5 transition-colors -mt-2">
+        <Link to="/" className="flex items-center justify-center gap-1.5 w-full lg:w-[220px] lg:self-end py-3 rounded-2xl border border-coral/30 text-coral text-sm font-medium hover:bg-coral/5 transition-colors -mt-2">
           去首页看推荐 →
         </Link>
       )}
@@ -161,60 +163,24 @@ export default function Profile() {
     <div className="min-h-screen pb-12 lg:pb-0 bg-flowing">
 
       {/* ── Desktop layout (lg+) ── */}
-      <div className="hidden lg:grid lg:grid-cols-[300px_minmax(0,1fr)] lg:gap-10 xl:gap-12 max-w-[1380px] mx-auto px-8 xl:px-12 pt-20 pb-12">
+      <div className="hidden lg:grid lg:grid-cols-[minmax(0,1fr)_320px] lg:gap-10 xl:gap-12 max-w-[1380px] mx-auto px-8 xl:px-12 pt-24 pb-12">
 
-        {/* Left sidebar */}
-        <aside className="sticky top-16 self-start flex flex-col gap-4 pb-10">
+        {/* Right sidebar */}
+        <aside className="lg:col-start-2 lg:row-start-1 self-start flex flex-col gap-4 pb-10">
 
-          {/* 画像快照 */}
-          <div className="bg-warm-white/90 backdrop-blur-sm border border-cream-dark/45 rounded-[26px] p-6 space-y-5 shadow-[0_18px_55px_rgba(30,58,95,0.045)]">
-            <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium">画像快照</p>
-            <div>
-              <p className="text-xs text-warm-gray/85 mb-2">关注方向</p>
-              <div className="flex flex-wrap gap-1.5">
-                {splitTags(profile.focus_areas).length > 0
-                  ? splitTags(profile.focus_areas).map(tag => (
-                      <span key={tag} className="px-2.5 py-1 rounded-full bg-coral/10 text-coral text-[12px] font-medium">{tag}</span>
-                    ))
-                  : <span className="text-xs text-warm-gray/35">未设置</span>}
-              </div>
-            </div>
-            <div>
-              <p className="text-xs text-warm-gray/85 mb-2">方法兴趣</p>
-              <div className="flex flex-wrap gap-1.5">
-                {splitTags(profile.method_interests).length > 0
-                  ? splitTags(profile.method_interests).map(tag => (
-                      <span key={tag} className="px-2.5 py-1 rounded-full bg-cream-dark/60 text-navy/70 text-[12px] font-medium">{tag}</span>
-                    ))
-                  : <span className="text-xs text-warm-gray/35">未设置</span>}
-              </div>
-            </div>
-            <div>
-              <p className="text-xs text-warm-gray/85 mb-2">检索范围</p>
-              <div className="flex gap-2">
-                {RANGE_OPTIONS.map(opt => (
-                  <button key={opt.value} type="button"
-                    onClick={() => patchProfile({ tracking_days: opt.value })}
-                    className={`px-3 py-1.5 rounded-full text-xs transition-all ${
-                      profile.tracking_days === opt.value
-                        ? 'bg-navy text-warm-white shadow-sm'
-                        : 'bg-cream-dark/40 text-warm-gray hover:text-navy'
-                    }`}>
-                    {opt.shortLabel}
-                  </button>
-                ))}
-              </div>
-            </div>
+          {/* 保存画像 */}
+          <div className="flex min-h-[84px] flex-col items-end justify-start gap-2">
+            {saveButton}
           </div>
 
           {/* 系统观察摘要 */}
-            <div className="bg-warm-white/90 backdrop-blur-sm border border-cream-dark/45 rounded-[26px] p-6 space-y-4 shadow-[0_18px_55px_rgba(30,58,95,0.04)]">
+            <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[26px] p-6 space-y-4 shadow-[0_18px_55px_rgba(30,58,95,0.04)]">
             <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium">系统观察摘要</p>
             <p className="text-[12px] text-warm-gray/85 leading-relaxed">由系统根据收藏与对话自动归纳，让 AI 更贴近你的研究脉络。</p>
             {profile.memory_core ? (
               <div className="rounded-2xl border border-cream-dark/40 bg-cream/55 p-4">
                 <div className="flex items-center gap-2 mb-3">
-                  <span className="text-sm font-semibold text-navy">长期画像</span>
+                  <span className="text-sm font-semibold text-navy/82">长期画像</span>
                   {profile.core_source && (
                     <span className="px-2 py-0.5 rounded-full bg-cream-dark/70 text-warm-gray/70 text-[10px]">{formatCoreSource(profile.core_source)}</span>
                   )}
@@ -239,23 +205,17 @@ export default function Profile() {
                     </div>
                   </div>
                 ) : (
-                  <p className="text-[12px] text-navy/75 leading-relaxed">{profile.memory_core}</p>
+                  <CollapsibleMemoryText
+                    content={profile.memory_core}
+                    expanded={coreExpanded}
+                    onToggle={() => setCoreExpanded(value => !value)}
+                  />
                 )}
               </div>
             ) : (
               <p className="text-[12px] text-warm-gray/40 italic">保存画像后自动生成。</p>
             )}
 
-            {profile.memory_recent && (
-              <button type="button" onClick={handleMergeToCore} disabled={mergeLoading}
-                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs transition ${
-                  mergeLoading
-                    ? 'bg-cream-dark/50 text-warm-gray/60 cursor-not-allowed'
-                    : 'text-warm-gray/70 border border-cream-dark bg-warm-white/55 hover:border-navy/20 hover:text-navy'
-                }`}>
-                <RefreshCw size={12} className={mergeLoading ? 'animate-spin' : ''} />吸收到长期画像
-              </button>
-            )}
             {mergeAbsorbed && !profile.memory_recent && (
               <div className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs bg-mint/14 text-navy/70 border border-mint/30">
                 <Check size={12} />已吸收 ✓
@@ -265,47 +225,83 @@ export default function Profile() {
             {profile.memory_recent && (
               <div className="rounded-2xl border border-mint/35 bg-mint/7 p-4">
                 <div className="flex items-center gap-1.5 mb-3">
-                  <span className="text-sm font-semibold text-navy">近期变化</span>
+                  <span className="text-sm font-semibold text-navy/82">近期变化</span>
                   {profile.last_recent_updated_at && (
                     <span className="text-[11px] text-warm-gray/55 ml-auto">{formatUpdatedAt(profile.last_recent_updated_at)}</span>
                   )}
                 </div>
-                <p className="text-[12px] text-navy/75 leading-relaxed">{profile.memory_recent}</p>
+                <CollapsibleMemoryText
+                  content={profile.memory_recent}
+                  expanded={recentExpanded}
+                  onToggle={() => setRecentExpanded(value => !value)}
+                />
               </div>
+            )}
+            {profile.memory_recent && (
+              <MergeToCoreButton
+                loading={mergeLoading}
+                onClick={handleMergeToCore}
+              />
             )}
           </div>
 
-          {/* 保存画像 */}
-          {saveButton}
+          {/* 画像快照 */}
+          <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[24px] p-5 space-y-4 shadow-[0_18px_55px_rgba(30,58,95,0.035)]">
+            <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium">画像快照</p>
+            <div>
+              <p className="text-[11px] text-warm-gray/85 mb-1.5">关注方向</p>
+              <div className="flex flex-wrap gap-1.5">
+                {splitTags(profile.focus_areas).length > 0
+                  ? splitTags(profile.focus_areas).map(tag => (
+                      <span key={tag} className="px-2 py-0.5 rounded-full bg-coral/10 text-coral text-[11px] font-medium">{tag}</span>
+                    ))
+                  : <span className="text-xs text-warm-gray/35">未设置</span>}
+              </div>
+            </div>
+            <div>
+              <p className="text-[11px] text-warm-gray/85 mb-1.5">方法兴趣</p>
+              <div className="flex flex-wrap gap-1.5">
+                {splitTags(profile.method_interests).length > 0
+                  ? splitTags(profile.method_interests).map(tag => (
+                      <span key={tag} className="px-2 py-0.5 rounded-full bg-cream-dark/60 text-navy/70 text-[11px] font-medium">{tag}</span>
+                    ))
+                  : <span className="text-xs text-warm-gray/35">未设置</span>}
+              </div>
+            </div>
+            <div className="flex items-center justify-between border-t border-cream-dark/70 pt-4">
+              <p className="text-xs text-warm-gray/85">检索范围</p>
+              <p className="text-xs font-medium text-navy/76 tabular-nums">{formatTrackingRange(profile.tracking_days)}</p>
+            </div>
+          </div>
         </aside>
 
         {/* Main form */}
-        <main className="space-y-5 pb-12">
+        <main className="lg:col-start-1 lg:row-start-1 space-y-5 pb-12">
           <div className="pt-1">
             <h1 className="pm-page-title text-[34px] text-navy leading-tight">我的研究画像</h1>
             <p className="text-warm-gray/78 mt-3 text-[15px] leading-relaxed">标记你关注的方向与近期需求，系统会逐步理解你的研究偏好。</p>
           </div>
 
           {/* 长期关注 */}
-          <div className="bg-warm-white/92 backdrop-blur-sm border border-cream-dark/45 rounded-[30px] p-8 shadow-[0_22px_70px_rgba(30,58,95,0.045)]">
+          <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[30px] p-8 shadow-[0_22px_70px_rgba(30,58,95,0.045)]">
             <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium mb-5">长期关注</p>
             <div className="grid grid-cols-2 gap-x-8 gap-y-6">
               <TagInput label="研究方向" value={profile.focus_areas} onChange={v => patchProfile({ focus_areas: v })} placeholder="例如：肺癌、中医护理、慢病管理、术后康复" />
-              <TagInput label="方法兴趣" hint="会和研究方向一起生成检索词" value={profile.method_interests} onChange={v => patchProfile({ method_interests: v })} placeholder="例如：系统综述、随机对照试验、质性研究、Meta分析" />
               <TagInput label="不想看的内容" value={profile.exclude_areas} onChange={v => patchProfile({ exclude_areas: v })} placeholder="例如：基础实验研究、动物模型、药物合成、纯分子机制" />
+              <TagInput label="方法兴趣" hint="会和研究方向一起生成检索词" value={profile.method_interests} onChange={v => patchProfile({ method_interests: v })} placeholder="例如：系统综述、随机对照试验、质性研究、Meta分析" />
               <TagInput label="学科领域" hint="只影响解读语气，不参与检索词生成" value={profile.discipline} onChange={v => patchProfile({ discipline: v })} placeholder="例如：护理学、公共卫生、心理学、康复医学、老年医学" />
             </div>
           </div>
 
           {/* 自由描述 */}
-          <div className="bg-warm-white/92 backdrop-blur-sm border border-cream-dark/45 rounded-[30px] p-6 shadow-[0_22px_70px_rgba(30,58,95,0.04)]">
+          <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[30px] p-6 shadow-[0_22px_70px_rgba(30,58,95,0.04)]">
             <VoiceTextarea label="自由描述" hint="随便写，AI 会理解你的意思并生成检索词" value={profile.background} onChange={v => patchProfile({ background: v })}
               placeholder="不知道怎么描述？用日常的话说就行，AI 会理解你的意思并生成检索词——比如：我想看带状疱疹相关的中医干预类文章" rows={2} />
           </div>
 
           {/* 检索时间范围 */}
-          <div className="bg-warm-white/92 backdrop-blur-sm border border-cream-dark/45 rounded-[30px] p-8 shadow-[0_22px_70px_rgba(30,58,95,0.04)]">
-            <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium mb-4">检索时间范围</p>
+          <div className="bg-warm-white/[0.82] backdrop-blur-sm border border-cream-dark/[0.7] rounded-[30px] p-6 shadow-[0_22px_70px_rgba(30,58,95,0.04)]">
+            <p className="text-[10px] uppercase tracking-[0.15em] text-warm-gray/85 font-medium mb-3">检索时间范围</p>
             <RangePicker value={profile.tracking_days} onChange={v => patchProfile({ tracking_days: v })} showLabel={false} />
           </div>
         </main>
@@ -313,7 +309,7 @@ export default function Profile() {
 
       {/* ── Mobile layout ── */}
       <div className="lg:hidden">
-        <header className="px-6 pt-20 pb-10 max-w-3xl mx-auto">
+        <header className="px-6 pt-[72px] pb-10 max-w-3xl mx-auto">
           <Link to="/" className="inline-flex items-center gap-1.5 text-warm-gray text-sm mb-6 hover:text-navy transition-colors">
             <ArrowLeft size={16} /><span>返回</span>
           </Link>
@@ -350,18 +346,18 @@ export default function Profile() {
           </SectionCard>
           <SectionCard title="系统观察摘要" description="由系统根据你的收藏与对话行为自动归纳，作为上下文背景让 AI 更贴近你的研究脉络。">
             <MemoryBlock title="长期画像" content={profile.memory_core} updatedAt={profile.last_core_merged_at} emptyText="保存画像后自动生成。" badge={formatCoreSource(profile.core_source)} variant="core" onEdit={startCoreEdit} />
-            {profile.memory_recent && (
-              <button type="button" onClick={handleMergeToCore} disabled={mergeLoading}
-                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs transition-all duration-200 ${mergeLoading ? 'bg-cream-dark/50 text-warm-gray/60 cursor-not-allowed' : 'text-warm-gray/70 border border-cream-dark hover:border-navy/20 hover:text-navy'}`}>
-                <RefreshCw size={12} className={mergeLoading ? 'animate-spin' : ''} />吸收到长期画像
-              </button>
-            )}
             {mergeAbsorbed && !profile.memory_recent && (
               <div className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs bg-mint/14 text-navy/70 border border-mint/30">
                 <Check size={12} />已吸收 ✓
               </div>
             )}
             <MemoryBlock title="近期变化" content={profile.memory_recent} updatedAt={profile.last_recent_updated_at} emptyText="使用一段时间后自动补充。" variant="recent" />
+            {profile.memory_recent && (
+              <MergeToCoreButton
+                loading={mergeLoading}
+                onClick={handleMergeToCore}
+              />
+            )}
           </SectionCard>
           {saveButton}
         </main>
@@ -388,6 +384,24 @@ function SectionCard({ eyebrow, title, description, children }) {
       </div>
       {children}
     </section>
+  )
+}
+
+function MergeToCoreButton({ loading, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={loading}
+      className={`inline-flex items-center justify-center gap-1.5 self-start rounded-full border px-3.5 py-2 text-xs font-medium transition-all duration-200 ${
+        loading
+          ? 'border-cream-dark/70 bg-cream-dark/45 text-warm-gray/60 cursor-not-allowed'
+          : 'border-cream-dark bg-warm-white/55 text-warm-gray/70 hover:border-navy/20 hover:bg-warm-white/75 hover:text-navy'
+      }`}
+    >
+      <Upload size={12} strokeWidth={1.8} className={loading ? 'animate-pulse' : ''} />
+      {loading ? '吸收中' : '吸收到长期画像'}
+    </button>
   )
 }
 
@@ -478,6 +492,33 @@ function TagInput({ label, hint, value, onChange, placeholder, variant = 'defaul
   )
 }
 
+function CollapsibleMemoryText({ content, expanded, onToggle }) {
+  const needsToggle = content.length > 90
+
+  return (
+    <div>
+      <div className="relative">
+        <p className={`text-[12px] text-navy/75 leading-relaxed ${expanded || !needsToggle ? '' : 'max-h-[4.15rem] overflow-hidden'}`}>
+          {content}
+        </p>
+        {!expanded && needsToggle && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-5 bg-gradient-to-b from-transparent to-cream" />
+        )}
+      </div>
+      {needsToggle && (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="mt-3 inline-flex items-center gap-1 text-[11px] text-warm-gray/70 hover:text-navy transition-colors"
+        >
+          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          {expanded ? '收起' : '展开全部'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function RangePicker({ value, onChange, showLabel = true }) {
   const presetValues = RANGE_OPTIONS.map(option => option.value)
   const isCustom = value && !presetValues.includes(value)
@@ -495,7 +536,7 @@ function RangePicker({ value, onChange, showLabel = true }) {
             key={option.value}
             type="button"
             onClick={() => onChange(option.value)}
-            className={`px-4 py-2 rounded-full text-sm transition-all duration-200 ${
+            className={`px-3.5 py-1.5 rounded-full text-xs transition-all duration-200 ${
               value === option.value
                 ? 'bg-navy/90 text-warm-white shadow-sm'
                 : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
@@ -511,7 +552,7 @@ function RangePicker({ value, onChange, showLabel = true }) {
             setCustomMonths(String(months))
             onChange(String(months * 30))
           }}
-          className={`px-4 py-2 rounded-full text-sm transition-all duration-200 ${
+          className={`px-3.5 py-1.5 rounded-full text-xs transition-all duration-200 ${
             isCustom
               ? 'bg-navy/90 text-warm-white shadow-sm'
               : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
@@ -521,7 +562,7 @@ function RangePicker({ value, onChange, showLabel = true }) {
         </button>
       </div>
       {isCustom && (
-        <div className="mt-3 flex items-center gap-3">
+        <div className="mt-3 flex items-center gap-2.5">
           <input
             type="number"
             min="1"
@@ -533,9 +574,9 @@ function RangePicker({ value, onChange, showLabel = true }) {
               const months = Math.max(1, Number(next) || 1)
               onChange(String(months * 30))
             }}
-            className="w-24 bg-warm-white rounded-2xl px-4 py-3 text-sm text-navy border border-cream-dark/60 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200"
+            className="w-20 bg-warm-white rounded-2xl px-3 py-2 text-xs text-navy border border-cream-dark/60 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200"
           />
-          <span className="text-sm text-warm-gray">个月</span>
+          <span className="text-xs text-warm-gray">个月</span>
         </div>
       )}
     </div>
@@ -547,6 +588,16 @@ function splitTags(value) {
   return value
     ? value.split(/[，,]/).map(item => item.trim()).filter(Boolean)
     : []
+}
+
+function formatTrackingRange(value) {
+  const preset = RANGE_OPTIONS.find(option => option.value === value)
+  if (preset) return preset.label
+
+  const days = Number(value)
+  if (!Number.isFinite(days) || days <= 0) return '近 3 个月'
+  if (days % 30 === 0) return `近 ${Math.round(days / 30)} 个月`
+  return `近 ${Math.round(days)} 天`
 }
 
 function HeaderRangePicker({ value, onChange }) {
@@ -707,7 +758,7 @@ function MemoryBlock({ title, content, updatedAt, emptyText, badge = '', variant
         : 'border border-cream-dark/45 bg-cream/55'
     }`}>
       <div className="flex items-center gap-2 mb-2">
-        <h3 className="text-sm font-semibold text-navy">{title}</h3>
+        <h3 className="text-sm font-semibold text-navy/82">{title}</h3>
         {badge ? (
           <span className="px-2 py-0.5 rounded-full bg-cream-dark/70 text-warm-gray/70 text-[10px]">
             {badge}
