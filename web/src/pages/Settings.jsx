@@ -250,11 +250,11 @@ export default function Settings() {
             <div className="grid grid-cols-3 gap-2.5 mb-5">
               <UsageCell label="推荐批次" used={usage.recommend.used} limit={usage.recommend.limit} />
               <UsageCell label="AI 对话"  used={usage.chat.used}      limit={usage.chat.limit} />
-              <UsageCell label="全文翻译" used={usage.translate.used}  limit={usage.translate.limit} />
+              <UsageCell label="摘要翻译" used={usage.translate.used}  limit={usage.translate.limit} />
             </div>
           ) : (
             <div className="grid grid-cols-3 gap-2.5 mb-5">
-              {['推荐批次', 'AI 对话', '全文翻译'].map(l => (
+              {['推荐批次', 'AI 对话', '摘要翻译'].map(l => (
                 <div key={l} className="bg-cream rounded-xl p-3.5 animate-pulse">
                   <div className="h-3 bg-cream-dark rounded mb-3" />
                   <div className="h-1.5 bg-cream-dark rounded-full" />
@@ -271,7 +271,7 @@ export default function Settings() {
             </div>
             <div className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-mint mt-1 flex-shrink-0" />
-              <span>每人每天最多获取 5 批推荐结果、20 次 AI 对话、30 次翻译</span>
+              <span>每人每天最多获取 {usage ? usage.recommend.limit : '—'} 批推荐结果、{usage ? usage.chat.limit : '—'} 次 AI 对话、{usage ? usage.translate.limit : '—'} 次摘要翻译</span>
             </div>
             <div className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-coral/50 mt-1 flex-shrink-0" />
