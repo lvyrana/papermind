@@ -75,10 +75,10 @@ export default function Onboarding() {
   if (step === 0) {
     return (
       <div className="min-h-screen bg-flowing">
-        <div style={{ maxWidth: 860, margin: '0 auto', padding: '96px 40px 60px' }}>
+        <div style={{ maxWidth: 860, margin: '0 auto', padding: '48px 20px 40px' }}>
 
           {/* 问候 */}
-          <div style={{ marginBottom: 52, textAlign: 'center' }}>
+          <div style={{ marginBottom: 32, textAlign: 'center' }}>
             <p style={{ fontSize: 10, color: '#8E8A85', letterSpacing: '.22em', textTransform: 'uppercase', marginBottom: 12, fontFamily: 'monospace' }}>
               {dateLabel}
             </p>
