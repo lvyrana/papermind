@@ -25,8 +25,13 @@ export default function Onboarding() {
 
   function goNext() { setDir(1); setStep(s => s + 1) }
   function goBack() {
-    if (step === 1) { navigate('/') }
-    else { setDir(-1); setStep(s => s - 1) }
+    if (step === 1) {
+      sessionStorage.setItem('pm-skip-onboarding', '1')
+      navigate('/')
+    } else {
+      setDir(-1)
+      setStep(s => s - 1)
+    }
   }
 
   function skipOnboarding() {
