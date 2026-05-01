@@ -138,6 +138,14 @@ def _get_user_id(request: Request) -> str:
     return request.headers.get("X-User-ID", "anonymous")
 
 
+def _get_client_ip(request: Request) -> str:
+    """获取客户端真实 IP（nginx 反代场景读 X-Forwarded-For）"""
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 def _get_owned_paper_or_none(paper_id: int, user_id: str) -> Optional[dict]:
     """只返回当前用户自己的收藏论文。"""
     paper = get_saved_paper(paper_id)
@@ -1696,6 +1704,7 @@ def api_get_papers(
 ):
     """获取论文。首次请求触发后台抓取，前端轮询获取结果。"""
     uid = _get_user_id(request)
+    client_ip = _get_client_ip(request)
     cache = _get_user_cache(uid)
 
     # 如果前端没传 days，从用户画像读取 tracking_days
@@ -1766,7 +1775,8 @@ def api_get_papers(
     is_owner = OWNER_UID and uid == OWNER_UID
     if not is_owner and force_fetch:
         remaining_quota = get_rate_limit_remaining(uid, "recommend", DAILY_RECOMMEND_LIMIT)
-        if remaining_quota <= 0:
+        ip_remaining = get_rate_limit_remaining(f"ip:{client_ip}", "recommend", DAILY_RECOMMEND_LIMIT)
+        if remaining_quota <= 0 or ip_remaining <= 0:
             return {
                 "papers": cache.get("papers") or [],
                 "total": len(cache.get("papers") or []),
@@ -1794,6 +1804,7 @@ def api_get_papers(
         cache["fetching"] = True
         if force_fetch and not is_owner:
             increment_rate_limit(uid, "recommend")
+            increment_rate_limit(f"ip:{client_ip}", "recommend")
         t = threading.Thread(
             target=_bg_fetch_and_enrich,
             args=(cache, keyword_list, days, source, profile, uid),

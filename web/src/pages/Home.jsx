@@ -65,6 +65,8 @@ export default function Home() {
   const [homeTourStep, setHomeTourStep] = useState(0) // 0=off, 1=first card, 2=next page
   const firstCardRef = useRef(null)
   const nextPageRef = useRef(null)
+  const desktopFirstCardRef = useRef(null)
+  const desktopNextPageRef = useRef(null)
   const homeTourStartedRef = useRef(false)
 
   useEffect(() => {
@@ -399,7 +401,7 @@ export default function Home() {
                     重新抓取
                   </button>
                 )}
-                <button onClick={() => { fetchPapers({ refresh: true }); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+                <button ref={desktopNextPageRef} onClick={() => { fetchPapers({ refresh: true }); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
                   disabled={loading || allExplored}
                   className={`px-5 py-2 rounded-full text-sm font-medium transition disabled:opacity-50 flex items-center gap-1.5 ${allExplored ? 'bg-cream-dark/60 text-warm-gray cursor-not-allowed' : 'bg-coral text-warm-white hover:bg-coral-light shadow-[0_3px_12px_rgba(232,135,122,0.35)]'}`}>
                   {loading ? <><Loader2 size={13} className="animate-spin" />加载中</> : allExplored ? '已全部探索' : <><RefreshCw size={13} />下一页</>}
@@ -436,7 +438,9 @@ export default function Home() {
           {/* 论文网格 */}
           <div className={`grid grid-cols-2 gap-4 transition-opacity ${loading && papers.length > 0 ? 'opacity-40 pointer-events-none' : ''}`}>
             {papers.map((paper, index) => (
-              <PaperCard key={paper.pmid || paper.paper_id || index} paper={paper} index={index} />
+              <div key={paper.pmid || paper.paper_id || index} ref={index === 0 ? desktopFirstCardRef : null}>
+                <PaperCard paper={paper} index={index} />
+              </div>
             ))}
           </div>
 
@@ -755,7 +759,7 @@ export default function Home() {
       {/* Home tour bubbles */}
       {homeTourStep === 1 && (
         <TourBubble
-          targetRef={firstCardRef}
+          targetRef={window.innerWidth >= 1024 ? desktopFirstCardRef : firstCardRef}
           text="这是 AI 根据你的研究方向精选的论文，点击查看详情和 AI 解读"
           step={1} total={2}
           placement="bottom"
@@ -764,7 +768,7 @@ export default function Home() {
       )}
       {homeTourStep === 2 && (
         <TourBubble
-          targetRef={nextPageRef}
+          targetRef={window.innerWidth >= 1024 ? desktopNextPageRef : nextPageRef}
           text="看完这批？点这里获取下一批推荐"
           step={2} total={2}
           placement="top"
