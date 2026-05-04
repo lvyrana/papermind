@@ -25,6 +25,7 @@ export default function LibraryDetail() {
   const [titleZh, setTitleZh] = useState(null)
   const [showTitleZh, setShowTitleZh] = useState(false)
   const [titleTranslating, setTitleTranslating] = useState(false)
+  const [titleTranslateError, setTitleTranslateError] = useState(null)
   const [savedMsgIndexes, setSavedMsgIndexes] = useState(new Set())
 
   const enrichPollRef = useRef(null)
@@ -208,18 +209,22 @@ export default function LibraryDetail() {
             {paper.category || '未分类'}
           </span>
           <div className="mt-3">
-            <h1 className="text-xl font-bold text-navy font-serif leading-relaxed">
+            <h1 className={`${showTitleZh && titleZh ? 'pm-paper-title-zh' : 'pm-paper-title-en'} text-[23px]`}>
               {showTitleZh && titleZh ? titleZh : paper.title}
             </h1>
             <button
               onClick={async () => {
                 if (!titleZh && !titleTranslating) {
                   setTitleTranslating(true)
+                  setTitleTranslateError(null)
                   try {
                     const data = await apiPost('/translate', { text: paper.title })
                     if (data.ok) { setTitleZh(data.translated); setShowTitleZh(true) }
-                  } catch { /* ignore */ } finally { setTitleTranslating(false) }
+                  } catch {
+                    setTitleTranslateError('标题翻译暂时失败，请稍后再试')
+                  } finally { setTitleTranslating(false) }
                 } else {
+                  setTitleTranslateError(null)
                   setShowTitleZh(v => !v)
                 }
               }}
@@ -229,6 +234,9 @@ export default function LibraryDetail() {
               {titleTranslating ? <Loader2 size={12} className="animate-spin" /> : <Languages size={12} />}
               <span>{showTitleZh ? '原文' : '译'}</span>
             </button>
+            {titleTranslateError && (
+              <p className="mt-1 text-xs text-coral">{titleTranslateError}</p>
+            )}
           </div>
           <p className="text-warm-gray text-sm mt-2">
             {paper.authors} &middot; {paper.journal} &middot; {paper.pub_date}

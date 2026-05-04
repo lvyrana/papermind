@@ -29,11 +29,23 @@ body {
   letter-spacing: -0.035em;
 }
 
-.pm-paper-title {
-  font-family: "Songti SC", "Noto Serif SC", "Source Han Serif SC", STSong, Georgia, serif;
-  font-weight: 400;
-  letter-spacing: 0;
-  line-height: 1.52;
+.pm-paper-title-en {
+  color: #274A73;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  line-height: 1.5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  word-break: break-word;
+}
+
+.pm-paper-title-zh {
+  color: #274A73;
+  font-family: "Songti SC", "STSong", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.6;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   word-break: break-word;
