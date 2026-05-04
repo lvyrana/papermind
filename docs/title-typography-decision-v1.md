@@ -27,6 +27,26 @@
 - 收藏详情页和阅读详情页共用同一套规则
 - 翻译失败时给出明确提示，不再静默无反馈
 
+## 当前定稿值
+
+### 英文标题
+
+- `font-family`: `"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif`
+- `font-weight`: `600`
+- `font-size`: `23px`
+- `line-height`: `1.5`
+- `letter-spacing`: `-0.018em`
+- `color`: `#274A73`
+
+### 中文标题
+
+- `font-family`: `"Songti SC", "STSong", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif`
+- `font-weight`: `600`
+- `font-size`: `23px`
+- `line-height`: `1.6`
+- `letter-spacing`: `-0.02em`
+- `color`: `#274A73`
+
 ## 后续约定
 
 - 如果后面还要调，只分别调英文和中文，不再把它们重新混成一套 class
