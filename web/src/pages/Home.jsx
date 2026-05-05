@@ -438,7 +438,7 @@ export default function Home() {
           )}
 
           {/* 论文网格 */}
-          <div className={`grid grid-cols-2 gap-4 transition-opacity ${loading && papers.length > 0 ? 'opacity-40 pointer-events-none' : ''}`}>
+          <div className={`grid grid-cols-2 gap-4 auto-rows-[320px] transition-opacity ${loading && papers.length > 0 ? 'opacity-40 pointer-events-none' : ''}`}>
             {papers.map((paper, index) => (
               <div key={paper.pmid || paper.paper_id || index} ref={index === 0 ? desktopFirstCardRef : null}>
                 <PaperCard paper={paper} index={index} />
@@ -811,20 +811,18 @@ function PaperCard({ paper, index }) {
         {paper.title_zh && (
           <p className="text-navy font-medium leading-relaxed text-[14px] mt-1">{paper.title_zh}</p>
         )}
-        <div className="flex-1">
+        <div className="flex-1 overflow-hidden mt-3">
           {paper.summary_zh && (
-            <p className="text-warm-gray text-sm mt-3 leading-relaxed line-clamp-3">
-              {paper.summary_zh}
-            </p>
+            <p className="text-warm-gray text-sm leading-relaxed">{paper.summary_zh}</p>
           )}
           {isPendingSummary && (
-            <p className="text-warm-gray text-sm mt-3 leading-relaxed flex items-center gap-1.5">
+            <p className="text-warm-gray text-sm leading-relaxed flex items-center gap-1.5">
               <Loader2 size={13} className="animate-spin text-coral flex-shrink-0" />
               <span>AI 解读生成中...</span>
             </p>
           )}
           {isFailedSummary && (
-            <p className="text-warm-gray text-sm mt-3 leading-relaxed">
+            <p className="text-warm-gray text-sm leading-relaxed">
               AI 解读暂时不可用，稍后刷新可再试。
             </p>
           )}

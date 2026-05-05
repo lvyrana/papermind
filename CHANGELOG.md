@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.9 - 2026-05-06
+
+### 项目夹（任务型收藏夹）MVP
+
+- 新增 `projects` 表，`saved_papers` 加 `project_id` 列（自动迁移，向后兼容）
+- 后端新增 5 个接口：`GET/POST /api/projects`、`PATCH/DELETE /api/projects/{id}`、`PATCH /api/library/{id}/project`
+- 前端 `api.js` 新增 `apiPatch` 工具函数
+- 收藏页桌面侧边栏新增「项目」区块：支持新建项目（回车确认）、点击筛选、hover 删除
+- 论文详情页（LibraryDetail）在作者信息下方新增项目归属选择器，实时保存
+
+### 论文卡片充填优化
+
+- 首页推荐卡片：网格固定行高 320px，摘要改为 `flex-1 overflow-hidden`——标题短时摘要自动显示更多行，标题长时摘要缩减，相关性始终固定间距贴底
+- 收藏页桌面卡片：同样修复，固定行高 240px，摘要填充逻辑统一
+
+### 论文标题颜色调深
+
+- `pm-paper-title-en` / `pm-paper-title-zh` 颜色从 `#274A73` 调为 `#153D72`，饱和度提升、灰度降低，阅读感更厚重
+
+---
+
 ## v0.6.8 - 2026-05-01
 
 ### 新手引导 Onboarding Wizard
@@ -8,8 +29,8 @@
 - Step 0：欢迎介绍屏（仅从 Home 跳转时显示，刷新直接进 Step 1）
 - Steps 1–3：研究方向 → 方法偏好（芯片多选）→ 背景 + 检索范围
 - 完成后自动触发首次论文检索（`pm-auto-fetch` sessionStorage 标记）
-- "先逛逛，稍后再填" 跳过选项，防止首页无限重定向（`pm-skip-onboarding`）
-- 首页主要空状态 CTA 已改为跳 `/onboarding`，侧边栏"完善研究画像"等补充入口仍保留 `/profile`
+- “先逛逛，稍后再填” 跳过选项，防止首页无限重定向（`pm-skip-onboarding`）
+- 首页主要空状态 CTA 已改为跳 `/onboarding`，侧边栏”完善研究画像”等补充入口仍保留 `/profile`
 
 ### 功能引导气泡 Feature Tour
 
@@ -27,10 +48,10 @@
 ### Bug 修复 & 小改动
 
 - 修复 `fetchPapers` 在 profile useEffect 中先用后声明的 lint 问题
-- 设置页"全文翻译"标签改为"翻译次数"，说明文字改为动态读取 API 返回的 limit
+- 设置页”全文翻译”标签改为”翻译次数”，说明文字改为动态读取 API 返回的 limit
 - 服务器 `DAILY_RECOMMEND_LIMIT` 由 8 调整为 5
 - Onboarding 移动端顶部 padding 从 96px 收到 48px，内容不再偏下
-- 修复合并冲突：Navbar 去掉无用 `{false && ...}` 包装，Library 卡片保留 `state={{ paper }}`
+- 论文详情标题拆成两套字体规则（英文 serif / 中文宋体），收藏详情页与阅读详情页同步
 
 ## v0.6.7 - 2026-04-30
 

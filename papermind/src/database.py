@@ -118,6 +118,21 @@ def _ensure_db():
             created_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    # 迁移：给 saved_papers 加 project_id 列
+    try:
+        conn.execute("ALTER TABLE saved_papers ADD COLUMN project_id INTEGER REFERENCES projects(id)")
+    except sqlite3.OperationalError:
+        pass
 
     # 迁移：给旧表加 user_id 列（如果不存在）
     for table in ("saved_papers", "reading_history"):
@@ -175,6 +190,8 @@ def _ensure_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_search_runs_user_created ON search_runs(user_id, created_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_cache_key ON enrichment_cache(paper_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_feedback_user ON user_feedback(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_saved_papers_project ON saved_papers(project_id)")
 
     conn.commit()
     return conn
@@ -713,6 +730,68 @@ def get_user_stats(user_id: str) -> dict:
     ).fetchone()["cnt"]
     conn.close()
     return {"papers": paper_count, "notes": note_count, "chats": chat_count}
+
+
+# ========== Projects ==========
+
+def create_project(user_id: str, name: str, description: str = "") -> int:
+    conn = _ensure_db()
+    cursor = conn.execute(
+        "INSERT INTO projects (user_id, name, description, created_at) VALUES (?, ?, ?, ?)",
+        (user_id, name, description, datetime.now().isoformat())
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    conn.close()
+    return row_id
+
+
+def get_projects(user_id: str) -> list[dict]:
+    conn = _ensure_db()
+    rows = conn.execute("""
+        SELECT p.*,
+               (SELECT COUNT(*) FROM saved_papers sp WHERE sp.project_id = p.id AND sp.user_id = ?) as paper_count
+        FROM projects p
+        WHERE p.user_id = ?
+        ORDER BY p.created_at DESC
+    """, (user_id, user_id)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_project(project_id: int, name: str = None, description: str = None) -> bool:
+    conn = _ensure_db()
+    updates = []
+    params = []
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name)
+    if description is not None:
+        updates.append("description = ?")
+        params.append(description)
+    if not updates:
+        conn.close()
+        return False
+    params.append(project_id)
+    conn.execute(f"UPDATE projects SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_project(project_id: int):
+    conn = _ensure_db()
+    conn.execute("UPDATE saved_papers SET project_id = NULL WHERE project_id = ?", (project_id,))
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    conn.close()
+
+
+def set_paper_project(paper_id: int, project_id: Optional[int]):
+    conn = _ensure_db()
+    conn.execute("UPDATE saved_papers SET project_id = ? WHERE id = ?", (project_id, paper_id))
+    conn.commit()
+    conn.close()
 
 
 # ========== Enrichment Cache ==========

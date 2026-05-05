@@ -38,6 +38,7 @@ from src.database import (
     get_enrichment_cache, save_enrichment_cache,
     increment_recent_events, reset_recent_events,
     save_feedback, get_user_stats,
+    create_project, get_projects, update_project, delete_project, set_paper_project,
 )
 
 # 加载 .env
@@ -128,7 +129,18 @@ class SaveNoteRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     type: str = "general"
-    content: str = Field(max_length=2000)
+    content: str
+
+class CreateProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = ""
+
+class UpdateProjectRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+class SetPaperProjectRequest(BaseModel):
+    project_id: Optional[int] = None
 
 
 # ========== User ID ==========
@@ -2160,6 +2172,52 @@ def api_delete_from_library(paper_id: int, request: Request):
     if not paper:
         return {"ok": False, "error": "not found"}
     delete_saved_paper(paper_id)
+    return {"ok": True}
+
+
+@app.patch("/api/library/{paper_id}/project")
+def api_set_paper_project(paper_id: int, data: SetPaperProjectRequest, request: Request):
+    """设置论文所属项目（project_id=null 表示移出项目）"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_id, uid)
+    if not paper:
+        return {"ok": False, "error": "not found"}
+    set_paper_project(paper_id, data.project_id)
+    return {"ok": True}
+
+
+# ========== Projects Routes ==========
+
+@app.get("/api/projects")
+def api_get_projects(request: Request):
+    uid = _get_user_id(request)
+    return {"projects": get_projects(uid)}
+
+
+@app.post("/api/projects")
+def api_create_project(data: CreateProjectRequest, request: Request):
+    uid = _get_user_id(request)
+    project_id = create_project(uid, data.name, data.description)
+    return {"ok": True, "id": project_id}
+
+
+@app.patch("/api/projects/{project_id}")
+def api_update_project(project_id: int, data: UpdateProjectRequest, request: Request):
+    uid = _get_user_id(request)
+    projects = get_projects(uid)
+    if not any(p["id"] == project_id for p in projects):
+        return {"ok": False, "error": "not found"}
+    update_project(project_id, data.name, data.description)
+    return {"ok": True}
+
+
+@app.delete("/api/projects/{project_id}")
+def api_delete_project(project_id: int, request: Request):
+    uid = _get_user_id(request)
+    projects = get_projects(uid)
+    if not any(p["id"] == project_id for p in projects):
+        return {"ok": False, "error": "not found"}
+    delete_project(project_id)
     return {"ok": True}
 
 
