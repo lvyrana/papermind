@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { ArrowLeft, Sparkles, Send, Loader2, FileText, MessageCircle, Download, ExternalLink, Languages, BookmarkPlus, Trash2, Plus, Mic, MicOff } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
-import { apiGet, apiPost, apiDelete, API_BASE } from '../api'
+import { apiGet, apiPost, apiDelete, apiPatch, API_BASE } from '../api'
 import { useSpeechInput } from '../hooks/useSpeechInput'
 
 export default function LibraryDetail() {
@@ -27,6 +27,8 @@ export default function LibraryDetail() {
   const [titleTranslating, setTitleTranslating] = useState(false)
   const [titleTranslateError, setTitleTranslateError] = useState(null)
   const [savedMsgIndexes, setSavedMsgIndexes] = useState(new Set())
+  const [projects, setProjects] = useState([])
+  const [paperProjectId, setPaperProjectId] = useState(null)
 
   const enrichPollRef = useRef(null)
   const enrichPollCountRef = useRef(0)
@@ -41,10 +43,15 @@ export default function LibraryDetail() {
   }
 
   useEffect(() => {
+    apiGet('/projects').then(data => setProjects(data.projects || [])).catch(() => {})
+  }, [])
+
+  useEffect(() => {
     apiGet(`/library/${id}`)
       .then(data => {
         const p = data.paper
         setPaper(p)
+        setPaperProjectId(p?.project_id ?? null)
         setNotes(data.notes || [])
         setChats(data.chats || [])
         // 手动添加的论文可能还没有 AI 解读，轮询等待后台补全
@@ -241,6 +248,26 @@ export default function LibraryDetail() {
           <p className="text-warm-gray text-sm mt-2">
             {paper.authors} &middot; {paper.journal} &middot; {paper.pub_date}
           </p>
+          {/* 项目归属 */}
+          {projects.length > 0 && (
+            <div className="flex items-center gap-2 mt-3">
+              <span className="text-xs text-warm-gray/60">项目：</span>
+              <select
+                value={paperProjectId ?? ''}
+                onChange={async e => {
+                  const val = e.target.value === '' ? null : parseInt(e.target.value)
+                  await apiPatch(`/library/${id}/project`, { project_id: val }).catch(() => {})
+                  setPaperProjectId(val)
+                }}
+                className="text-xs bg-warm-white/60 border border-cream-dark/50 rounded-xl px-2 py-1 text-navy outline-none focus:border-coral/40 cursor-pointer"
+              >
+                <option value="">未归属</option>
+                {projects.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           {/* 操作按钮 */}
           <div className="flex flex-wrap items-center gap-2 mt-4">
             {paper.link && (

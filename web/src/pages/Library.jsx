@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, BookOpen, MessageCircle, FileText, Search, Trash2, Plus, X, Loader2 } from 'lucide-react'
+import { ArrowLeft, BookOpen, MessageCircle, FileText, Search, Trash2, Plus, X, Loader2, FolderOpen } from 'lucide-react'
 import Navbar from '../components/Navbar'
 import { apiGet, apiDelete, apiPost } from '../api'
 
@@ -26,13 +26,41 @@ export default function Library() {
   const [activeCategory, setActiveCategory] = useState('全部')
   const [notesOnly, setNotesOnly] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [projects, setProjects] = useState([])
+  const [activeProject, setActiveProject] = useState(null)
+  const [newProjectName, setNewProjectName] = useState('')
+  const [showNewProject, setShowNewProject] = useState(false)
+  const newProjectRef = useRef(null)
 
   useEffect(() => {
     apiGet('/library')
       .then(data => setPapers(data.papers || []))
       .catch(() => {})
       .finally(() => setLoading(false))
+    apiGet('/projects')
+      .then(data => setProjects(data.projects || []))
+      .catch(() => {})
   }, [])
+
+  const handleCreateProject = async () => {
+    const name = newProjectName.trim()
+    if (!name) return
+    const res = await apiPost('/projects', { name }).catch(() => null)
+    if (res?.ok) {
+      setProjects(prev => [{ id: res.id, name, description: '', paper_count: 0 }, ...prev])
+      setNewProjectName('')
+      setShowNewProject(false)
+    }
+  }
+
+  const handleDeleteProject = async (e, id) => {
+    e.stopPropagation()
+    if (!confirm('删除项目后，项目内论文会移回普通收藏，确定删除？')) return
+    await apiDelete(`/projects/${id}`).catch(() => {})
+    setProjects(prev => prev.filter(p => p.id !== id))
+    if (activeProject === id) setActiveProject(null)
+    setPapers(prev => prev.map(p => p.project_id === id ? { ...p, project_id: null } : p))
+  }
 
   const handleDelete = async (id, e) => {
     e.preventDefault()
@@ -58,6 +86,9 @@ export default function Library() {
 
   const filtered = useMemo(() => {
     let result = papers
+    if (activeProject !== null) {
+      result = result.filter(p => p.project_id === activeProject)
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       result = result.filter(p => p.title.toLowerCase().includes(q))
@@ -69,11 +100,11 @@ export default function Library() {
       result = result.filter(p => p.note_count > 0)
     }
     return [...result].sort((a, b) => new Date(b.saved_at) - new Date(a.saved_at))
-  }, [papers, search, activeCategory, notesOnly])
+  }, [papers, search, activeCategory, notesOnly, activeProject])
 
   const hasNotes = useMemo(() => papers.some(p => p.note_count > 0), [papers])
   const hasChats = useMemo(() => papers.some(p => p.chat_count > 0), [papers])
-  const hasFilters = activeCategory !== '全部' || notesOnly || search.trim()
+  const hasFilters = activeCategory !== '全部' || notesOnly || search.trim() || activeProject !== null
 
   return (
     <div className="min-h-screen pb-24 lg:pb-12">
@@ -210,7 +241,7 @@ export default function Library() {
               </button>
             )}
             {hasFilters && (
-              <button onClick={() => { setActiveCategory('全部'); setNotesOnly(false); setSearch('') }}
+              <button onClick={() => { setActiveCategory('全部'); setNotesOnly(false); setSearch(''); setActiveProject(null) }}
                 className="w-full px-4 py-2 rounded-full text-xs text-warm-gray/60 bg-cream-dark/30 hover:text-warm-gray transition text-left">
                 清除筛选
               </button>
@@ -218,6 +249,65 @@ export default function Library() {
             {!hasNotes && !hasFilters && (
               <p className="text-[12px] text-warm-gray/50">暂无可用筛选</p>
             )}
+          </div>
+
+          {/* Projects */}
+          <div className="liquid-glass p-5">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-warm-gray/65">项目</p>
+              <button
+                onClick={() => { setShowNewProject(v => !v); setTimeout(() => newProjectRef.current?.focus(), 50) }}
+                className="text-warm-gray/50 hover:text-coral transition"
+              >
+                <Plus size={13} />
+              </button>
+            </div>
+
+            {showNewProject && (
+              <div className="flex gap-1.5 mb-3">
+                <input
+                  ref={newProjectRef}
+                  value={newProjectName}
+                  onChange={e => setNewProjectName(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleCreateProject(); if (e.key === 'Escape') setShowNewProject(false) }}
+                  placeholder="项目名称..."
+                  className="flex-1 bg-warm-white/60 rounded-xl px-3 py-1.5 text-xs text-navy border border-cream-dark/50 outline-none focus:border-coral/40 placeholder:text-warm-gray/40"
+                />
+                <button onClick={handleCreateProject} className="px-2.5 py-1.5 rounded-xl bg-coral/10 text-coral text-xs hover:bg-coral/20 transition">
+                  建
+                </button>
+              </div>
+            )}
+
+            {projects.length === 0 && !showNewProject && (
+              <p className="text-[12px] text-warm-gray/40">点击 + 新建项目</p>
+            )}
+
+            <div className="space-y-1">
+              {projects.map(proj => (
+                <div
+                  key={proj.id}
+                  onClick={() => setActiveProject(activeProject === proj.id ? null : proj.id)}
+                  className={`flex items-center justify-between px-3 py-2 rounded-xl cursor-pointer group transition ${
+                    activeProject === proj.id ? 'bg-coral/10 text-coral' : 'hover:bg-cream-dark/40 text-navy/75'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <FolderOpen size={12} className="shrink-0" />
+                    <span className="text-[12px] truncate">{proj.name}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-warm-gray/50 tabular-nums">{proj.paper_count}</span>
+                    <button
+                      onClick={e => handleDeleteProject(e, proj.id)}
+                      className="opacity-0 group-hover:opacity-100 text-warm-gray/40 hover:text-red-400 transition"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
           <button onClick={() => setShowAddModal(true)}
@@ -262,7 +352,7 @@ export default function Library() {
                 <div className="text-center py-20 text-warm-gray/60 text-sm">没有符合条件的论文</div>
               )}
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-4 auto-rows-[240px]">
                 {filtered.map((paper, i) => (
                   <PaperCard key={paper.id} paper={paper} onDelete={handleDelete} index={i} />
                 ))}
@@ -324,7 +414,7 @@ function PaperCard({ paper, onDelete, index = 0 }) {
   return (
     <Link
       to={`/library/${paper.id}`}
-      className="block bg-warm-white/[0.82] backdrop-blur-sm rounded-2xl p-5 border border-cream-dark/[0.7] hover:-translate-y-0.5 hover:shadow-md transition cursor-pointer group"
+      className="h-full block bg-warm-white/[0.82] backdrop-blur-sm rounded-2xl p-5 border border-cream-dark/[0.7] hover:-translate-y-0.5 hover:shadow-md transition cursor-pointer group flex flex-col"
       style={{ animationDelay: `${index * 40}ms` }}
     >
       <div className="flex items-center justify-between mb-3">
@@ -346,11 +436,13 @@ function PaperCard({ paper, onDelete, index = 0 }) {
         </div>
       </div>
       <h3 className="text-navy text-[14px] leading-relaxed font-medium line-clamp-3 mb-2">{paper.title}</h3>
-      {paper.summary_zh && (
-        <p className="text-warm-gray text-[12px] leading-relaxed line-clamp-2">{paper.summary_zh}</p>
-      )}
+      <div className="flex-1 overflow-hidden">
+        {paper.summary_zh && (
+          <p className="text-warm-gray text-[12px] leading-relaxed">{paper.summary_zh}</p>
+        )}
+      </div>
       {paper.relevance && (
-        <div className="mt-3 pt-3 border-t border-cream-dark/40 flex items-start gap-1.5">
+        <div className="mt-4 pt-3 border-t border-cream-dark/40 flex items-start gap-1.5">
           <span className="text-coral text-xs mt-0.5 flex-shrink-0">◆</span>
           <p className="text-navy-light text-[12px] leading-relaxed italic line-clamp-2">{paper.relevance}</p>
         </div>

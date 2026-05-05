@@ -87,6 +87,15 @@ export async function apiDelete(path) {
   return handleResponse(r)
 }
 
+export async function apiPatch(path, body) {
+  const r = await fetch(`${API_BASE}${path}`, {
+    method: 'PATCH',
+    headers: headers({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+  return handleResponse(r)
+}
+
 export async function apiGetRaw(path) {
   return fetch(`${API_BASE}${path}`, { headers: headers() })
 }

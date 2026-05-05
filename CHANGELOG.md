@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.9 - 2026-05-06
+
+### 项目夹（任务型收藏夹）MVP
+
+- 新增 `projects` 表，`saved_papers` 加 `project_id` 列（自动迁移，向后兼容）
+- 后端新增 5 个接口：`GET/POST /api/projects`、`PATCH/DELETE /api/projects/{id}`、`PATCH /api/library/{id}/project`
+- 前端 `api.js` 新增 `apiPatch` 工具函数
+- 收藏页桌面侧边栏新增「项目」区块：支持新建项目（回车确认）、点击筛选、hover 删除
+- 论文详情页（LibraryDetail）在作者信息下方新增项目归属选择器，实时保存
+
+### 论文卡片充填优化
+
+- 首页推荐卡片：网格固定行高 320px，摘要改为 `flex-1 overflow-hidden`——标题短时摘要自动显示更多行，标题长时摘要缩减，相关性始终固定间距贴底
+- 收藏页桌面卡片：同样修复，固定行高 240px，摘要填充逻辑统一
+
+### 论文标题颜色调深
+
+- `pm-paper-title-en` / `pm-paper-title-zh` 颜色从 `#274A73` 调为 `#153D72`，饱和度提升、灰度降低，阅读感更厚重
+
+---
+
 ## v0.6.8 - 2026-05-04
 
 ### 论文详情标题字体分层
