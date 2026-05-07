@@ -1332,9 +1332,10 @@ async def api_post_feedback(data: FeedbackRequest, request: Request):
 # ========== 静态文件服务（生产模式） ==========
 
 _dist = Path(__file__).resolve().parent.parent / "web" / "dist"
+_dist_assets = _dist / "assets"
 
-if _dist.exists():
-    app.mount("/assets", StaticFiles(directory=_dist / "assets"), name="static-assets")
+if _dist.exists() and _dist_assets.exists():
+    app.mount("/assets", StaticFiles(directory=_dist_assets), name="static-assets")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):

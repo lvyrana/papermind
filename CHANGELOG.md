@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.6.10 - 2026-05-07
+
+### 后端渐进式拆分
+
+- 从 `api.py` 中拆出 `llm_router.py`，集中管理模型 provider、任务模型选择、fallback、冷却和同步/异步 LLM 调用
+- 从 `api.py` 中拆出 `search_service.py`，集中管理检索词生成、query 清洗、PubMed / Semantic Scholar 抓取、低价值论文过滤、排除词硬过滤、打分排序和 search trace
+- 从 `api.py` 中拆出 `memory_service.py`，集中管理 `memory_core` / `memory_recent` 的生成、更新、自动刷新和手动合并
+- `api.py` 从 2600 多行降到约 1350 行，保留 HTTP 路由、用户缓存、后台线程入口和收藏/导出等接口逻辑
+
+### 后端护栏测试
+
+- 新增 `tests/test_backend_guards.py`，覆盖 LLM 无配置兜底、检索词锚点、排除词过滤、低价值论文过滤、推荐流程过滤链路和画像保存不覆盖后端记忆字段
+- 推荐流程测试会模拟 PubMed 返回结果，确认去重、无摘要过滤和“不想看的内容”硬过滤在 service 层生效
+- 代码层将 `ProfileData.dict()` 更新为 Pydantic v2 推荐的 `model_dump()`
+
 ## v0.6.9 - 2026-05-06
 
 ### 项目夹（任务型收藏夹）MVP
