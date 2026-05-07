@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "papermind"))
 
 import api  # noqa: E402
 import llm_router  # noqa: E402
+import memory_service  # noqa: E402
 import search_service  # noqa: E402
 
 
@@ -38,6 +39,38 @@ class LLMRouterTests(unittest.IsolatedAsyncioTestCase):
                 task="chat",
             )
             self.assertEqual((content, provider_name, provider_model), ("", "", ""))
+
+
+class MemoryServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_update_memory_recent_skips_when_there_are_no_recent_signals(self):
+        profile = {
+            "memory_core": "stable core",
+            "memory_recent": "",
+            "behavior_events_since_recent": "3",
+        }
+        with patch.object(memory_service, "get_profile", return_value=profile), \
+             patch.object(memory_service, "get_saved_titles_since", return_value=[]), \
+             patch.object(memory_service, "get_all_recent_chats_since", return_value=[]), \
+             patch.object(memory_service, "get_reading_history_since", return_value=[]), \
+             patch.object(memory_service, "_llm_chat_complete_async") as llm_call:
+            result = await memory_service.update_memory_recent("user-1")
+
+        self.assertEqual(result, {
+            "ok": True,
+            "skipped": True,
+            "reason": "no_recent_signals",
+            "core_generated": False,
+        })
+        llm_call.assert_not_called()
+
+    def test_build_memory_context_includes_core_and_recent(self):
+        context = memory_service.build_memory_context({
+            "memory_core": "长期关注 COPD。",
+            "memory_recent": "最近关注肺康复。",
+        })
+
+        self.assertIn("长期研究画像：长期关注 COPD。", context)
+        self.assertIn("近期关注变化：最近关注肺康复。", context)
 
 
 class SearchGuardTests(unittest.TestCase):
