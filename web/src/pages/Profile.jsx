@@ -566,13 +566,21 @@ function RangePicker({ value, onChange, showLabel = true }) {
           <input
             type="number"
             min="1"
-            max="24"
             value={customMonths}
             onChange={e => {
               const next = e.target.value
               setCustomMonths(next)
-              const months = Math.max(1, Number(next) || 1)
-              onChange(String(months * 30))
+              const num = Number(next)
+              if (next !== '' && num >= 1) {
+                onChange(String(Math.round(num) * 30))
+              }
+            }}
+            onBlur={e => {
+              const num = Number(e.target.value)
+              if (!e.target.value || num < 1) {
+                const fallback = Math.max(1, Math.round(Number(value) / 30)) || 12
+                setCustomMonths(String(fallback))
+              }
             }}
             className="w-20 bg-warm-white rounded-2xl px-3 py-2 text-xs text-navy border border-cream-dark/60 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all duration-200"
           />
@@ -649,11 +657,18 @@ function HeaderRangePicker({ value, onChange }) {
           <input
             type="number"
             min="1"
-            max="36"
             value={customMonths}
             onChange={e => {
-              setCustomMonths(e.target.value)
-              applyCustom(e.target.value)
+              const next = e.target.value
+              setCustomMonths(next)
+              const num = Number(next)
+              if (next !== '' && num >= 1) applyCustom(next)
+            }}
+            onBlur={e => {
+              if (!e.target.value || Number(e.target.value) < 1) {
+                const fallback = isCustom ? String(Math.max(1, Math.round(Number(value) / 30))) : '2'
+                setCustomMonths(fallback)
+              }
             }}
             className="w-14 bg-warm-white rounded-xl px-2 py-1 text-sm text-navy border border-cream-dark/60 outline-none focus:border-coral/40 text-center"
           />
