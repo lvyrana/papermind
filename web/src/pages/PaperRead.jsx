@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages, Mic, MicOff } from 'lucide-react'
+import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages, Mic, MicOff, BookMarked, Check } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
-import { apiGet, apiPost, apiDelete, API_BASE, getUserId } from '../api'
+import { apiGet, apiPost, apiDelete, apiPatch, API_BASE, getUserId } from '../api'
 import { useSpeechInput } from '../hooks/useSpeechInput'
 import TourBubble from '../components/TourBubble'
 
@@ -35,6 +35,12 @@ export default function PaperRead() {
   const [titleTranslating, setTitleTranslating] = useState(false)
   const [titleTranslateError, setTitleTranslateError] = useState(null)
   const [summarizeError, setSummarizeError] = useState(null)
+  const [projects, setProjects] = useState([])
+  const [showProjectPicker, setShowProjectPicker] = useState(false)
+  const [zoteroStatus, setZoteroStatus] = useState('idle') // idle | loading | success | error
+  const [zoteroItemKey, setZoteroItemKey] = useState(null)
+  const zoteroApiKey = localStorage.getItem('pm-zotero-api-key') || ''
+  const zoteroUserIdConfig = localStorage.getItem('pm-zotero-user-id') || ''
   const readingRecordedRef = useRef(false)
   const actionRecordedRef = useRef({})
   const [paperTourStep, setPaperTourStep] = useState(0)
@@ -42,6 +48,7 @@ export default function PaperRead() {
   const externalLinkRef = useRef(null)
   const chatTabRef = useRef(null)
   const paperTourStartedRef = useRef(false)
+  const projectPickerRef = useRef(null)
 
   // 如果 location.state 没有 paper（刷新/直链），尝试从后端恢复
   useEffect(() => {
@@ -121,6 +128,10 @@ export default function PaperRead() {
     }
   }, [paper, id])
 
+  useEffect(() => {
+    apiGet('/projects').then(data => setProjects(data.projects || [])).catch(() => {})
+  }, [])
+
   // 如果已收藏，从后端加载对话历史（覆盖 localStorage）
   useEffect(() => {
     if (!savedRowId) return
@@ -186,6 +197,63 @@ export default function PaperRead() {
     setTimeout(() => setRipple(false), 700)
   }
 
+  const handleSaveToZotero = async () => {
+    if (!paper || !zoteroApiKey || !zoteroUserIdConfig) return
+    setZoteroStatus('loading')
+    try {
+      const creators = (paper.authors || '').split(/,\s*/).slice(0, 15)
+        .map(name => {
+          name = name.trim()
+          if (!name) return null
+          const parts = name.split(/\s+/)
+          return { creatorType: 'author', lastName: parts[0] || '', firstName: parts.slice(1).join(' ') }
+        }).filter(Boolean)
+      const item = {
+        itemType: 'journalArticle',
+        title: paper.title || '',
+        abstractNote: paper.abstract || '',
+        publicationTitle: paper.journal || '',
+        date: paper.pub_date || '',
+        DOI: paper.doi || '',
+        extra: paper.pmid ? `PMID: ${paper.pmid}` : '',
+        url: paper.link || '',
+        creators,
+        tags: paper.category ? [{ tag: paper.category }] : [],
+      }
+      const res = await fetch(`https://api.zotero.org/users/${zoteroUserIdConfig}/items`, {
+        method: 'POST',
+        headers: { 'Zotero-API-Key': zoteroApiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify([item]),
+      })
+      if (!res.ok) throw new Error(`${res.status}`)
+      const data = await res.json()
+      const key = data.successful?.['0']?.key
+      if (!key) throw new Error('no key')
+      setZoteroItemKey(key)
+      setZoteroStatus('success')
+    } catch {
+      setZoteroStatus('error')
+      setTimeout(() => setZoteroStatus('idle'), 3000)
+    }
+  }
+
+  const saveToProject = async (projectId) => {
+    setShowProjectPicker(false)
+    try {
+      const data = await apiPost('/library/save', { paper, chats: chatMessages })
+      setSavedRowId(data.id)
+      localStorage.setItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`, String(data.id))
+      setBookmarked(true)
+      triggerRipple()
+      if (projectId !== null) {
+        apiPatch(`/library/${data.id}/project`, { project_id: projectId }).catch(() => {})
+      }
+      if (notes) {
+        apiPost('/notes', { paper_rowid: data.id, content: notes }).catch(() => {})
+      }
+    } catch { /* ignore */ }
+  }
+
   const toggleBookmark = async () => {
     if (!paper) return
 
@@ -196,19 +264,12 @@ export default function PaperRead() {
       setBookmarked(false)
       setSavedRowId(null)
     } else {
-      // 收藏
-      try {
-        const data = await apiPost('/library/save', { paper, chats: chatMessages })
-        setSavedRowId(data.id)
-        localStorage.setItem(`paper-bookmark-${paper.pmid || paper.paper_id || id}`, String(data.id))
-        setBookmarked(true)
-        triggerRipple()
-
-        // 如果有笔记，也存到后端
-        if (notes) {
-          apiPost('/notes', { paper_rowid: data.id, content: notes }).catch(() => {})
-        }
-      } catch { /* ignore */ }
+      if (projects.length > 0) {
+        setShowProjectPicker(true)
+        setTimeout(() => projectPickerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50)
+      } else {
+        await saveToProject(null)
+      }
     }
   }
 
@@ -422,6 +483,26 @@ export default function PaperRead() {
               {pdfLoading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
               下载 PDF
             </button>
+            {zoteroApiKey && zoteroUserIdConfig && (
+              zoteroStatus === 'success' ? (
+                <a href={`zotero://select/library/items/${zoteroItemKey}`}
+                  className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-mint/40 text-mint bg-mint/5 transition-all">
+                  <Check size={12} />
+                  已存入 Zotero
+                </a>
+              ) : (
+                <button
+                  onClick={handleSaveToZotero}
+                  disabled={zoteroStatus === 'loading'}
+                  className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all disabled:opacity-50"
+                >
+                  {zoteroStatus === 'loading'
+                    ? <Loader2 size={12} className="animate-spin" />
+                    : <BookMarked size={12} />}
+                  {zoteroStatus === 'error' ? '存入失败' : '存入 Zotero'}
+                </button>
+              )
+            )}
             <div className="relative">
               <button
                 onClick={() => setShowExport(!showExport)}
@@ -525,12 +606,32 @@ export default function PaperRead() {
 
         {/* 收藏提示 */}
         {!bookmarked && (
-          <div className="bg-navy/5 rounded-xl p-4 mb-6 flex items-center justify-between">
-            <p className="text-sm text-warm-gray">收藏后，笔记和对话会永久保存</p>
-            <button onClick={toggleBookmark}
-              className="text-sm text-coral font-medium hover:underline">
-              收藏这篇
-            </button>
+          <div ref={projectPickerRef} className="bg-navy/5 rounded-xl p-4 mb-6">
+            {showProjectPicker ? (
+              <div>
+                <p className="text-xs text-warm-gray/70 uppercase tracking-wide mb-3">收藏到</p>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => saveToProject(null)}
+                    className="px-3 py-1.5 text-sm rounded-lg border border-cream-dark/80 text-warm-gray hover:border-navy/30 hover:text-navy transition-colors">
+                    直接收藏
+                  </button>
+                  {projects.map(p => (
+                    <button key={p.id} onClick={() => saveToProject(p.id)}
+                      className="px-3 py-1.5 text-sm rounded-lg bg-coral/5 border border-coral/25 text-coral hover:bg-coral/10 transition-colors">
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-warm-gray">收藏后，笔记和对话会永久保存</p>
+                <button onClick={toggleBookmark}
+                  className="text-sm text-coral font-medium hover:underline">
+                  收藏这篇
+                </button>
+              </div>
+            )}
           </div>
         )}
 
