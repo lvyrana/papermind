@@ -43,6 +43,7 @@ export default function PaperRead() {
   const zoteroUserIdConfig = localStorage.getItem('pm-zotero-user-id') || ''
   const [showSplitView, setShowSplitView] = useState(false)
   const [splitPdfUrl, setSplitPdfUrl] = useState(null)
+  const [splitOriginalUrl, setSplitOriginalUrl] = useState(null)
   const [splitPdfLoading, setSplitPdfLoading] = useState(false)
   const chatEndRef = useRef(null)
   const readingRecordedRef = useRef(false)
@@ -223,6 +224,7 @@ export default function PaperRead() {
       if (paper.pmcid) params.set('pmcid', paper.pmcid)
       const data = await apiGet(`/pdf-url?${params}`)
       if (data.ok) {
+        setSplitOriginalUrl(data.url)
         setSplitPdfUrl(`${API_BASE}/pdf-proxy?url=${encodeURIComponent(data.url)}`)
         setShowSplitView(true)
       } else {
@@ -449,7 +451,24 @@ export default function PaperRead() {
               退出分栏
             </button>
           </div>
-          <iframe src={splitPdfUrl} className="flex-1 w-full" title="paper full text" />
+          <object
+            data={splitPdfUrl}
+            type="application/pdf"
+            className="flex-1 w-full min-h-0"
+          >
+            {/* 降级：PDF 无法嵌入时显示 */}
+            <div className="flex-1 flex flex-col items-center justify-center p-10 text-center h-full gap-4">
+              <p className="text-warm-gray text-sm leading-relaxed">
+                该论文的全文 PDF 无法直接嵌入显示
+                <br />（可能需要机构授权或来自受限出版商）
+              </p>
+              <a href={splitOriginalUrl} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-navy text-warm-white text-sm rounded-xl hover:bg-navy/80 transition-colors">
+                <ExternalLink size={14} />
+                在新窗口打开全文
+              </a>
+            </div>
+          </object>
         </div>
 
         {/* 右：讨论面板 */}

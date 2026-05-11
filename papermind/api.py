@@ -1308,22 +1308,38 @@ def api_get_pdf_url(
 
 @app.get("/api/pdf-proxy")
 async def proxy_pdf(url: str = Query(...)):
-    """代理 OA PDF，解决浏览器 iframe CORS 限制"""
-    from fastapi.responses import StreamingResponse
+    """代理 OA PDF，解决浏览器 iframe CORS 限制。若最终内容非 PDF，返回 302 redirect 让浏览器直接访问。"""
+    from fastapi.responses import StreamingResponse, RedirectResponse
     from urllib.parse import urlparse
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise HTTPException(status_code=400, detail="Only HTTPS URLs allowed")
 
+    # 先做 HEAD 请求，确认最终 URL 和 Content-Type
+    try:
+        async with httpx.AsyncClient(
+            timeout=15,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; PaperMind/1.0)"},
+        ) as client:
+            head = await client.head(url)
+            content_type = head.headers.get("content-type", "")
+            final_url = str(head.url)  # 重定向后的最终 URL
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"HEAD failed: {e}")
+
+    # 不是 PDF → 让前端直接跳转到原始 URL
+    if "pdf" not in content_type.lower():
+        return RedirectResponse(url=final_url, status_code=302)
+
+    # 是 PDF → 流式代理返回
     async def stream_pdf():
         async with httpx.AsyncClient(
-            timeout=30,
+            timeout=60,
             follow_redirects=True,
             headers={"User-Agent": "Mozilla/5.0 (compatible; PaperMind/1.0)"},
         ) as client:
             async with client.stream("GET", url) as r:
-                if r.status_code != 200:
-                    return
                 async for chunk in r.aiter_bytes(chunk_size=32768):
                     yield chunk
 
