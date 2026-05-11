@@ -196,11 +196,25 @@ def _parse_article(article: ET.Element) -> dict | None:
         # 发表日期
         pub_date = _extract_pub_date(art)
 
+        # DOI 和 PMCID（来自 PubmedData/ArticleIdList）
+        doi = ""
+        pmcid = ""
+        pubmed_data = article.find("PubmedData")
+        if pubmed_data is not None:
+            for aid in pubmed_data.findall(".//ArticleId"):
+                id_type = aid.get("IdType", "")
+                if id_type == "doi" and not doi:
+                    doi = (aid.text or "").strip()
+                elif id_type == "pmc" and not pmcid:
+                    pmcid = (aid.text or "").strip()
+
         # 链接
         link = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
 
         return {
             "pmid": pmid,
+            "doi": doi,
+            "pmcid": pmcid,
             "title": title.strip(),
             "abstract": abstract.strip(),
             "has_abstract": has_abstract,

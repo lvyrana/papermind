@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages, Mic, MicOff, BookMarked, Check } from 'lucide-react'
+import { ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2, FileText, Download, ExternalLink, Languages, Mic, MicOff, BookMarked, Check, Columns2, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, apiPatch, API_BASE, getUserId } from '../api'
 import { useSpeechInput } from '../hooks/useSpeechInput'
@@ -41,6 +41,10 @@ export default function PaperRead() {
   const [zoteroItemKey, setZoteroItemKey] = useState(null)
   const zoteroApiKey = localStorage.getItem('pm-zotero-api-key') || ''
   const zoteroUserIdConfig = localStorage.getItem('pm-zotero-user-id') || ''
+  const [showSplitView, setShowSplitView] = useState(false)
+  const [splitPdfUrl, setSplitPdfUrl] = useState(null)
+  const [splitPdfLoading, setSplitPdfLoading] = useState(false)
+  const chatEndRef = useRef(null)
   const readingRecordedRef = useRef(false)
   const actionRecordedRef = useRef({})
   const [paperTourStep, setPaperTourStep] = useState(0)
@@ -195,6 +199,40 @@ export default function PaperRead() {
   const triggerRipple = () => {
     setRipple(true)
     setTimeout(() => setRipple(false), 700)
+  }
+
+  // Escape 关闭分栏
+  useEffect(() => {
+    if (!showSplitView) return
+    const handler = (e) => { if (e.key === 'Escape') setShowSplitView(false) }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [showSplitView])
+
+  // 新消息时滚动到底部
+  useEffect(() => {
+    if (showSplitView) chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages, showSplitView])
+
+  const handleOpenSplitView = async () => {
+    setSplitPdfLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (paper.doi) params.set('doi', paper.doi)
+      if (paper.pmid) params.set('pmid', paper.pmid)
+      if (paper.pmcid) params.set('pmcid', paper.pmcid)
+      const data = await apiGet(`/pdf-url?${params}`)
+      if (data.ok) {
+        setSplitPdfUrl(`${API_BASE}/pdf-proxy?url=${encodeURIComponent(data.url)}`)
+        setShowSplitView(true)
+      } else {
+        alert('未找到这篇论文的开放获取全文。\n\n可以先将论文存入 Zotero，在 Zotero 中阅读全文的同时在 PaperMind 中讨论。')
+      }
+    } catch {
+      alert('查询失败，请稍后重试')
+    } finally {
+      setSplitPdfLoading(false)
+    }
   }
 
   const handleSaveToZotero = async () => {
@@ -363,6 +401,7 @@ export default function PaperRead() {
       const params = new URLSearchParams()
       if (paper.doi) params.set('doi', paper.doi)
       if (paper.pmid) params.set('pmid', paper.pmid)
+      if (paper.pmcid) params.set('pmcid', paper.pmcid)
       const data = await apiGet(`/pdf-url?${params}`)
       if (data.ok) {
         recordActionOnce('download_pdf')
@@ -391,6 +430,167 @@ export default function PaperRead() {
         <div className="text-center">
           <p className="text-warm-gray mb-4">论文数据未找到</p>
           <Link to="/" className="text-coral text-sm">返回首页</Link>
+        </div>
+      </div>
+    )
+  }
+
+  // ── 分栏阅读模式 ──────────────────────────────────
+  if (showSplitView && splitPdfUrl) {
+    return (
+      <div className="fixed inset-0 z-50 flex bg-warm-white">
+        {/* 左：PDF 全文 */}
+        <div className="flex-1 flex flex-col min-w-0 border-r border-cream-dark/50">
+          <div className="flex items-center justify-between px-4 h-12 border-b border-cream-dark/50 shrink-0 gap-3">
+            <p className="text-sm text-navy/70 truncate">{paper.title}</p>
+            <button onClick={() => setShowSplitView(false)}
+              className="shrink-0 inline-flex items-center gap-1 text-xs text-warm-gray hover:text-navy transition-colors px-2 py-1 rounded-lg hover:bg-cream-dark/40">
+              <X size={13} />
+              退出分栏
+            </button>
+          </div>
+          <iframe src={splitPdfUrl} className="flex-1 w-full" title="paper full text" />
+        </div>
+
+        {/* 右：讨论面板 */}
+        <div className="w-[440px] shrink-0 flex flex-col overflow-hidden bg-warm-white">
+          {/* 论文信息头 */}
+          <div className="px-5 pt-4 pb-3 border-b border-cream-dark/40 shrink-0">
+            <p className="text-[11px] text-warm-gray/60 mb-1">{paper.journal} · {paper.pub_date}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium text-navy line-clamp-2 flex-1">{paper.title}</p>
+              <button ref={bookmarkBtnRef} onClick={toggleBookmark}
+                className={`shrink-0 p-1.5 rounded-full hover:bg-cream-dark/50 transition-colors ripple-btn ${ripple ? 'ripple-active' : ''}`}>
+                {bookmarked
+                  ? <Bookmark size={16} className="text-coral fill-coral" />
+                  : <BookmarkPlus size={16} className="text-warm-gray" />}
+              </button>
+            </div>
+          </div>
+
+          {/* 收藏/项目选择（未收藏时） */}
+          {!bookmarked && (
+            <div className="px-5 py-2.5 border-b border-cream-dark/30 shrink-0 bg-navy/[0.03]">
+              {showProjectPicker ? (
+                <div>
+                  <p className="text-xs text-warm-gray/60 mb-2">收藏到</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button onClick={() => saveToProject(null)}
+                      className="px-2.5 py-1 text-xs rounded-lg border border-cream-dark/80 text-warm-gray hover:text-navy transition-colors">
+                      直接收藏
+                    </button>
+                    {projects.map(p => (
+                      <button key={p.id} onClick={() => saveToProject(p.id)}
+                        className="px-2.5 py-1 text-xs rounded-lg bg-coral/5 border border-coral/25 text-coral hover:bg-coral/10 transition-colors">
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-warm-gray">收藏后笔记和对话永久保存</p>
+                  <button onClick={toggleBookmark} className="text-xs text-coral font-medium hover:underline">
+                    收藏这篇
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Tabs */}
+          <div className="flex gap-4 px-5 pt-3 pb-2 border-b border-cream-dark/30 shrink-0">
+            <button onClick={() => setActiveTab('notes')}
+              className={`text-sm pb-1 transition-colors ${activeTab === 'notes' ? 'text-navy font-medium border-b-2 border-coral' : 'text-warm-gray hover:text-navy'}`}>
+              我的想法
+            </button>
+            <button ref={chatTabRef} onClick={() => setActiveTab('chat')}
+              className={`text-sm pb-1 transition-colors ${activeTab === 'chat' ? 'text-navy font-medium border-b-2 border-coral' : 'text-warm-gray hover:text-navy'}`}>
+              和 AI 讨论
+            </button>
+          </div>
+
+          {/* Tab 内容 */}
+          <div className="flex-1 overflow-hidden flex flex-col">
+            {activeTab === 'notes' ? (
+              <div className="flex-1 flex flex-col p-5 overflow-y-auto">
+                <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
+                  placeholder="读完这篇，你想记下什么？"
+                  className="flex-1 w-full bg-cream/40 rounded-xl px-4 py-3 text-sm text-navy border border-cream-dark/50 outline-none resize-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/50 leading-relaxed min-h-[120px]" />
+                {notes && (
+                  <p className="text-xs text-warm-gray mt-2 italic">
+                    {bookmarked ? '笔记已自动保存到收藏。' : '笔记已保存。收藏后可永久保存。'}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col overflow-hidden p-5">
+                {/* 消息列表 */}
+                <div className="flex-1 overflow-y-auto space-y-3 mb-3">
+                  {chatMessages.length === 0 && (
+                    <div className="text-center py-8">
+                      <p className="text-sm text-warm-gray/60 italic mb-3">试试问我</p>
+                      <div className="flex flex-col gap-2">
+                        {['总结核心发现', '方法学有什么亮点？', '和我的研究有什么交集？'].map(q => (
+                          <button key={q} onClick={() => setChatInput(q)}
+                            className="text-xs px-3 py-2 rounded-xl bg-cream-dark/40 text-warm-gray hover:text-navy hover:bg-cream-dark/60 transition-all text-left">
+                            {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {chatMessages.map((msg, i) => (
+                    <div key={i}
+                      className={`text-sm px-4 py-3 rounded-2xl leading-relaxed ${
+                        msg.role === 'user'
+                          ? 'bg-navy text-warm-white ml-8'
+                          : 'bg-cream-dark/40 text-navy/80 mr-8'
+                      }`}>
+                      {msg.role === 'assistant' ? (
+                        <ReactMarkdown components={{
+                          p: ({children}) => <p className="mb-1 last:mb-0">{children}</p>,
+                          ul: ({children}) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
+                          li: ({children}) => <li>{children}</li>,
+                        }}>
+                          {msg.content}
+                        </ReactMarkdown>
+                      ) : msg.content}
+                    </div>
+                  ))}
+                  {chatLoading && (
+                    <div className="flex items-center gap-2 text-warm-gray text-sm">
+                      <Loader2 size={14} className="animate-spin" /><span>思考中...</span>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+                {/* 保存对话按钮 */}
+                {chatMessages.length >= 2 && (
+                  <button onClick={handleSummarizeChat} disabled={summarizing || summarized}
+                    className={`w-full py-2 rounded-xl text-xs font-medium mb-2 flex items-center justify-center gap-1.5 transition-all ${
+                      summarized ? 'bg-mint/20 text-navy' : 'border border-coral/20 text-coral hover:bg-coral/5'
+                    } disabled:opacity-60`}>
+                    {summarizing ? <><Loader2 size={12} className="animate-spin" />正在总结...</>
+                      : summarized ? <><FileText size={12} />已保存到笔记</>
+                      : <><FileText size={12} />将对话保存为笔记</>}
+                  </button>
+                )}
+                {/* 输入框 */}
+                <div className="flex gap-2 shrink-0">
+                  <input type="text" value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleSendChat()}
+                    placeholder="关于这篇论文，你想聊什么？"
+                    className="flex-1 bg-warm-white rounded-xl px-3 py-2.5 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all placeholder:text-warm-gray/50" />
+                  <button onClick={handleSendChat} disabled={chatLoading}
+                    className="p-2.5 bg-navy text-warm-white rounded-xl hover:bg-navy-light transition-colors disabled:opacity-50">
+                    <Send size={15} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     )
@@ -482,6 +682,14 @@ export default function PaperRead() {
             >
               {pdfLoading ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
               下载 PDF
+            </button>
+            <button
+              onClick={handleOpenSplitView}
+              disabled={splitPdfLoading || (!paper.doi && !paper.pmid)}
+              className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-full border border-cream-dark text-warm-gray hover:text-navy hover:border-coral/30 transition-all disabled:opacity-40"
+            >
+              {splitPdfLoading ? <Loader2 size={12} className="animate-spin" /> : <Columns2 size={12} />}
+              全文分栏
             </button>
             {zoteroApiKey && zoteroUserIdConfig && (
               zoteroStatus === 'success' ? (

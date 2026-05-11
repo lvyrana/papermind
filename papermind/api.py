@@ -1253,17 +1253,46 @@ def api_export_bibtex_direct(data: SavePaperRequest):
 
 
 @app.get("/api/pdf-url")
-def api_get_pdf_url(doi: str = Query(default=""), pmid: str = Query(default="")):
-    """通过 Unpaywall 查找免费 PDF 链接"""
+def api_get_pdf_url(
+    doi: str = Query(default=""),
+    pmid: str = Query(default=""),
+    pmcid: str = Query(default=""),
+):
+    """查找开放获取全文 PDF 链接（PMCID 直链 → Unpaywall → PMC ID 转换）"""
+    import requests as _req
     pdf_url = None
 
-    # 1. 尝试 Unpaywall（需要 DOI）
-    if doi:
+    # 1. 已有 PMCID，直接构造 PMC PDF URL
+    if pmcid:
+        cid = pmcid if pmcid.upper().startswith("PMC") else f"PMC{pmcid}"
+        pdf_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{cid}/pdf/"
+
+    # 2. 通过 PMID 查询 PMCID（PMC ID Converter API）
+    if not pdf_url and pmid:
         try:
-            resp = httpx.get(
-                f"https://api.unpaywall.org/v2/{doi}",
-                params={"email": "papermind@example.com"},
+            resp = _req.get(
+                "https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/",
+                params={"tool": "papermind", "email": "hello@papermindapp.com",
+                        "ids": pmid, "format": "json"},
                 timeout=10,
+                allow_redirects=True,
+            )
+            if resp.status_code == 200:
+                records = resp.json().get("records", [])
+                if records and records[0].get("pmcid"):
+                    cid = records[0]["pmcid"]
+                    pdf_url = f"https://www.ncbi.nlm.nih.gov/pmc/articles/{cid}/pdf/"
+        except Exception as e:
+            print(f"[pdf] PMC ID 转换失败: {e}")
+
+    # 3. Unpaywall（需要 DOI）
+    if not pdf_url and doi:
+        try:
+            resp = _req.get(
+                f"https://api.unpaywall.org/v2/{doi}",
+                params={"email": "hello@papermindapp.com"},
+                timeout=10,
+                allow_redirects=True,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -1272,30 +1301,37 @@ def api_get_pdf_url(doi: str = Query(default=""), pmid: str = Query(default=""))
         except Exception as e:
             print(f"[pdf] Unpaywall 查询失败: {e}")
 
-    # 2. 尝试 PubMed Central（需要 PMID）
-    if not pdf_url and pmid:
-        try:
-            resp = httpx.get(
-                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/elink.fcgi",
-                params={"dbfrom": "pubmed", "id": pmid, "cmd": "prlinks", "retmode": "json"},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                linksets = data.get("linksets", [])
-                for ls in linksets:
-                    for idurllist in ls.get("idurllist", []):
-                        for obj_url in idurllist.get("objurls", []):
-                            url = obj_url.get("url", {}).get("value", "")
-                            if url:
-                                pdf_url = url
-                                break
-        except Exception as e:
-            print(f"[pdf] PMC 查询失败: {e}")
-
     if pdf_url:
         return {"ok": True, "url": pdf_url}
     return {"ok": False, "error": "未找到免费全文，可尝试通过原文链接访问"}
+
+
+@app.get("/api/pdf-proxy")
+async def proxy_pdf(url: str = Query(...)):
+    """代理 OA PDF，解决浏览器 iframe CORS 限制"""
+    from fastapi.responses import StreamingResponse
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise HTTPException(status_code=400, detail="Only HTTPS URLs allowed")
+
+    async def stream_pdf():
+        async with httpx.AsyncClient(
+            timeout=30,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; PaperMind/1.0)"},
+        ) as client:
+            async with client.stream("GET", url) as r:
+                if r.status_code != 200:
+                    return
+                async for chunk in r.aiter_bytes(chunk_size=32768):
+                    yield chunk
+
+    return StreamingResponse(
+        stream_pdf(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "inline; filename=paper.pdf"},
+    )
 
 
 # ========== 用量 & 用户反馈 ==========
