@@ -16,12 +16,16 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, UploadFile, File, HTTPException as FastAPIHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, Field
+
+PDF_DIR = Path(__file__).parent / "data" / "pdfs"
+PDF_DIR.mkdir(parents=True, exist_ok=True)
+PDF_SIZE_LIMIT = 50 * 1024 * 1024  # 50 MB
 
 from src.database import (
     init_db, save_paper, get_saved_papers, get_saved_paper,
@@ -34,6 +38,7 @@ from src.database import (
     increment_recent_events,
     save_feedback, get_user_stats,
     create_project, get_projects, update_project, delete_project, set_paper_project,
+    set_paper_has_pdf, get_paper_owner,
 )
 from llm_router import (
     _LLM_PROVIDERS,
@@ -878,6 +883,56 @@ def api_set_paper_project(paper_id: int, data: SetPaperProjectRequest, request: 
     if not paper:
         return {"ok": False, "error": "not found"}
     set_paper_project(paper_id, data.project_id)
+    return {"ok": True}
+
+
+# ========== Paper PDF Upload ==========
+
+@app.post("/api/library/{paper_id}/pdf")
+async def api_upload_paper_pdf(paper_id: int, request: Request, file: UploadFile = File(...)):
+    """上传论文 PDF 文件，存储在服务器本地"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_id, uid)
+    if not paper:
+        raise HTTPException(status_code=404, detail="not found")
+    if not file.content_type or "pdf" not in file.content_type.lower():
+        raise HTTPException(status_code=415, detail="只支持 PDF 文件")
+    content = await file.read(PDF_SIZE_LIMIT + 1)
+    if len(content) > PDF_SIZE_LIMIT:
+        raise HTTPException(status_code=413, detail="文件超过 50MB 限制")
+    # 校验 PDF magic bytes
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(status_code=415, detail="文件不是有效的 PDF")
+    pdf_path = PDF_DIR / f"{paper_id}.pdf"
+    pdf_path.write_bytes(content)
+    set_paper_has_pdf(paper_id, True)
+    return {"ok": True, "size": len(content)}
+
+
+@app.get("/api/library/{paper_id}/pdf")
+def api_get_paper_pdf(paper_id: int, uid: str = Query(default="")):
+    """获取已上传的论文 PDF"""
+    owner = get_paper_owner(paper_id)
+    if not owner or owner != uid:
+        raise HTTPException(status_code=403, detail="forbidden")
+    pdf_path = PDF_DIR / f"{paper_id}.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF not found")
+    return FileResponse(str(pdf_path), media_type="application/pdf",
+                        headers={"Content-Disposition": "inline; filename=paper.pdf"})
+
+
+@app.delete("/api/library/{paper_id}/pdf")
+def api_delete_paper_pdf(paper_id: int, request: Request):
+    """删除已上传的论文 PDF"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_id, uid)
+    if not paper:
+        raise HTTPException(status_code=404, detail="not found")
+    pdf_path = PDF_DIR / f"{paper_id}.pdf"
+    if pdf_path.exists():
+        pdf_path.unlink()
+    set_paper_has_pdf(paper_id, False)
     return {"ok": True}
 
 

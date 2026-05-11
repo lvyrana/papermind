@@ -134,6 +134,12 @@ def _ensure_db():
     except sqlite3.OperationalError:
         pass
 
+    # 迁移：给 saved_papers 加 has_pdf 列
+    try:
+        conn.execute("ALTER TABLE saved_papers ADD COLUMN has_pdf INTEGER NOT NULL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
     # 迁移：给旧表加 user_id 列（如果不存在）
     for table in ("saved_papers", "reading_history"):
         try:
@@ -792,6 +798,21 @@ def set_paper_project(paper_id: int, project_id: Optional[int]):
     conn.execute("UPDATE saved_papers SET project_id = ? WHERE id = ?", (project_id, paper_id))
     conn.commit()
     conn.close()
+
+
+def set_paper_has_pdf(paper_id: int, has_pdf: bool):
+    conn = _ensure_db()
+    conn.execute("UPDATE saved_papers SET has_pdf = ? WHERE id = ?", (1 if has_pdf else 0, paper_id))
+    conn.commit()
+    conn.close()
+
+
+def get_paper_owner(paper_id: int) -> Optional[str]:
+    """返回论文所属的 user_id，用于权限校验"""
+    conn = _ensure_db()
+    row = conn.execute("SELECT user_id FROM saved_papers WHERE id = ?", (paper_id,)).fetchone()
+    conn.close()
+    return row["user_id"] if row else None
 
 
 # ========== Enrichment Cache ==========

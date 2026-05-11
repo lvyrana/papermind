@@ -30,7 +30,6 @@ export default function LibraryDetail() {
   const [savedMsgIndexes, setSavedMsgIndexes] = useState(new Set())
   const [projects, setProjects] = useState([])
   const [paperProjectId, setPaperProjectId] = useState(null)
-
   const enrichPollRef = useRef(null)
   const enrichPollCountRef = useRef(0)
   const ENRICH_POLL_MAX = 15  // 最多轮询 15 次（60s），超时自动放弃

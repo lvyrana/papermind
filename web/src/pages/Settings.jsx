@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, Star, FileText, Link2, Check, Download, MessageCircle, Shield, Library } from 'lucide-react'
+import { ArrowLeft, Star, FileText, Link2, Check, Download, MessageCircle, Shield } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
 import { getUserId, API_BASE, apiGet, apiPost } from '../api'
@@ -95,8 +95,6 @@ export default function Settings() {
   const [usage, setUsage] = useState(null)
   const [stats, setStats] = useState(null)
 
-  const [zoteroApiKey, setZoteroApiKey] = useState(() => localStorage.getItem('pm-zotero-api-key') || '')
-  const [zoteroUserId, setZoteroUserId] = useState(() => localStorage.getItem('pm-zotero-user-id') || '')
 
   const [anonymousData, setAnonymousData] = useState(() => {
     try {
@@ -280,60 +278,6 @@ export default function Settings() {
               <span className="w-1.5 h-1.5 rounded-full bg-coral/50 mt-1 flex-shrink-0" />
               <span>自定义 API 功能将在正式版开放</span>
             </div>
-          </div>
-        </div>
-
-        {/* ── Zotero 集成 ── */}
-        <SectionLabel>Zotero 集成</SectionLabel>
-        <div className="bg-warm-white/[0.82] backdrop-blur-sm rounded-2xl p-5 border border-cream-dark/[0.7]">
-          <div className="flex items-center gap-3 mb-4">
-            <IconBlock icon={Library} color="mint" />
-            <div className="flex-1 min-w-0">
-              <h2 className="text-navy font-semibold text-sm">Zotero 集成</h2>
-              <p className="text-xs text-warm-gray mt-0.5">配置后可在论文详情页一键将论文存入你的 Zotero 收藏库</p>
-            </div>
-          </div>
-          <div className="space-y-3">
-            <div>
-              <label className="text-xs text-warm-gray mb-1.5 block">User ID</label>
-              <input
-                type="text"
-                value={zoteroUserId}
-                onChange={e => {
-                  setZoteroUserId(e.target.value)
-                  localStorage.setItem('pm-zotero-user-id', e.target.value.trim())
-                }}
-                placeholder="数字 ID，如 1234567"
-                className="w-full bg-cream/60 rounded-xl px-3 py-2 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-warm-gray mb-1.5 block">API Key</label>
-              <input
-                type="password"
-                value={zoteroApiKey}
-                onChange={e => {
-                  setZoteroApiKey(e.target.value)
-                  localStorage.setItem('pm-zotero-api-key', e.target.value.trim())
-                }}
-                placeholder="从 zotero.org/settings/keys 创建"
-                className="w-full bg-cream/60 rounded-xl px-3 py-2 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 transition-all"
-              />
-            </div>
-            <p className="text-xs text-warm-gray/70 leading-relaxed">
-              前往{' '}
-              <a href="https://www.zotero.org/settings/keys/new" target="_blank" rel="noopener noreferrer"
-                className="text-coral hover:underline">
-                zotero.org/settings/keys
-              </a>
-              {' '}创建 API Key，勾选「允许写入收藏库」。User ID 显示在同一页面顶部。
-            </p>
-            {zoteroApiKey && zoteroUserId && (
-              <div className="flex items-center gap-1.5 text-xs text-mint">
-                <Check size={12} />
-                <span>已配置</span>
-              </div>
-            )}
           </div>
         </div>
 
