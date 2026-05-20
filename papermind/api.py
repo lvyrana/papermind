@@ -309,6 +309,7 @@ def _get_user_cache(user_id: str) -> dict:
             "fetched_at": None,
             "served_indices": set(),
             "fetching": False,    # 是否正在后台抓取
+            "fetching_since": None,  # 抓取开始时间，用于超时检测
             "enriching": False,   # 是否正在后台解读
             "enrich_gen": 0,      # 解读代次，防止旧线程清掉新状态
             "current_page": [],   # 当前页 (index, paper) 列表
@@ -325,6 +326,7 @@ def _reset_user_cache(user_id: str):
     cache["fetched_at"] = None
     cache["served_indices"] = set()
     cache["fetching"] = False
+    cache["fetching_since"] = None
     cache["enriching"] = False
     cache["enrich_gen"] = 0
     cache["current_page"] = []
@@ -386,6 +388,7 @@ def _bg_fetch_and_enrich(cache, keyword_list, days, source, profile, uid):
         traceback.print_exc()
     finally:
         cache["fetching"] = False
+        cache["fetching_since"] = None
 
 
 def _bg_enrich(cache, papers, profile, uid, gen):
@@ -471,9 +474,15 @@ def api_get_papers(
     keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
     profile = get_profile(uid)
 
-    # 正在后台抓取中，返回加载状态
+    # 正在后台抓取中，返回加载状态（超时 5 分钟或 force_fetch 时自动解锁）
     if cache["fetching"]:
-        return {"papers": [], "total": 0, "remaining": 0, "loading": True, "search_debug": cache.get("search_debug")}
+        fetching_since = cache.get("fetching_since")
+        timed_out = fetching_since and (datetime.now() - fetching_since).total_seconds() > 300
+        if not force_fetch and not timed_out:
+            return {"papers": [], "total": 0, "remaining": 0, "loading": True, "search_debug": cache.get("search_debug")}
+        # 超时或强制解锁：重置 fetching 状态，允许重新发起抓取
+        cache["fetching"] = False
+        cache["fetching_since"] = None
 
     # 判断是否需要重新抓取
     need_fetch = force_fetch or not cache["papers"]
@@ -514,6 +523,7 @@ def api_get_papers(
                 "search_debug": cache.get("search_debug"),
             }
         cache["fetching"] = True
+        cache["fetching_since"] = datetime.now()
         if force_fetch and not is_owner:
             increment_rate_limit(uid, "recommend")
             increment_rate_limit(f"ip:{client_ip}", "recommend")
@@ -1357,7 +1367,9 @@ def api_get_pdf_url(
             print(f"[pdf] Unpaywall 查询失败: {e}")
 
     if pdf_url:
-        return {"ok": True, "url": pdf_url}
+        from urllib.parse import quote as _quote
+        proxy_url = f"/api/pdf-proxy?url={_quote(pdf_url, safe='')}"
+        return {"ok": True, "url": proxy_url, "original_url": pdf_url}
     return {"ok": False, "error": "未找到免费全文，可尝试通过原文链接访问"}
 
 

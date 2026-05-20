@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.8.0 - 2026-05-21
+
+### 全站视觉重构：研究地形 + 记忆优先
+
+#### 新增组件
+- `src/components/Terrain.jsx` — 共享研究地形图组件，支持 default / mini / hero 三种 variant，Profile / Home / Onboarding 三个页面共用
+- `src/components/PdfViewer.jsx` — 基于 pdfjs-dist 的 PDF 阅读器，支持翻页、缩放、文本选中、划词浮窗
+
+#### 新增依赖
+- `pdfjs-dist@5.7.284` — PDF 渲染，不依赖 react-pdf，自行控制 worker 配置
+
+#### Home 页重构（研究地形版）
+- Hero 区：左侧 memory_recent + stats + 上次停在这里；右侧研究地形缩略图（点击跳 /profile）
+- 论文卡片：reason banner 从底部抬到顶部 coral 眉条
+- 论文网格从 2 列改为 3 列
+- 新增「papermind 还在替你 hold 这些」线索区（lastReading 派生，后续接 /home/threads）
+
+#### Profile 页重构（身份镜像版）
+- 删掉右侧 4 个 tag 表单（已搬到 Settings）
+- 顶部地形 hero + 时间游标（视觉 affordance，后续接 /profile/landscape?days_back=N）
+- 左主栏：memory_core + memory_recent 抬升为「AI 在为你记着这些」
+- 记忆来源溯源条（后续接 /profile/provenance）
+- 长期画像手动编辑直接 POST /profile，不再依赖「保存」按钮
+- 修复「4/12 添加」硬编码日期和「查看证据」空按钮
+
+#### Settings 页增强
+- 顶部新增「研究偏好」section：focus_areas / method_interests / exclude_areas / discipline / background / tracking_days
+- 保存后写入 pm-auto-fetch flag，首页自动重新拉取推荐
+- URL hash `#research-prefs` 锚点，供 Profile mobile 跳转
+
+#### Onboarding 页重构（Zotero 导入版）
+- 5 步流程：选择来源 → 导入 → 解析 → 地形浮现 → 确认方向 → 进入
+- 支持 .bib / .ris / .json 客户端解析计数（无后端依赖）
+- Fresh path（从零开始）跳过 import/parsing/reveal，直接进确认方向
+- 「先逛逛」任意步骤可跳出（pm-skip-onboarding flag 不变）
+
+#### PaperRead 页重构（三栏 + PDF Viewer）
+- 三栏布局：左 TOC/元数据 / 中 PDF 阅读器 / 右记忆通道
+- 划词浮窗：选中文字 → 浮出「问 papermind」→ 灌入右栏 chat
+- 右栏：为什么推这篇（relevance hero）+ 你追问过的句子（quote 卡）+ 画像更新预告 + sticky chat foot
+- 无 PDF 时自动降级为 AI 解读卡 + 上传 PDF 占位
+- < 1024px 退化为单栏 + tab 切换
+
+#### PDF 代理
+- `/api/pdf-url` 现在返回代理地址（url）+ 原始直链（original_url）
+- PdfViewer 错误状态下「在新标签打开」使用原始直链
+
+#### 后端 bug 修复
+- `cache["fetching"]` 卡死问题：新增 `fetching_since` 时间戳，超时 5 分钟自动解锁；`force_fetch=true` 可强制解锁
+
+#### 样式 token
+- `src/index.css @theme` 新增 `--color-coral-deep: #B56A5A` 和 `--color-mint-deep: #7BB89C`，修复全站 text-coral-deep / text-mint-deep 静默失效
+
+#### 截图规范化
+- docs/screenshots/ 历史截图从 v0.6.3 起按页面名重命名（desktop/tablet/mobile 设备类型 → home-page/library-page/profile-page 等）
+
+---
+
 ## v0.7.0 - 2026-05-12
 
 ### 论文阅读页重构为默认双栏
