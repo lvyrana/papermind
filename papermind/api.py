@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
 from fastapi import FastAPI, Query, Request, UploadFile, File, HTTPException as FastAPIHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, RedirectResponse, FileResponse
@@ -39,6 +40,10 @@ from src.database import (
     save_feedback, get_user_stats,
     create_project, get_projects, update_project, delete_project, set_paper_project,
     set_paper_has_pdf, get_paper_owner,
+    save_card, get_cards, update_card, delete_card, get_card_owner, CARD_TYPES,
+)
+from src.config_store import (
+    get_custom_provider, save_custom_provider, get_custom_provider_safe,
 )
 from llm_router import (
     _LLM_PROVIDERS,
@@ -147,6 +152,41 @@ class FeedbackRequest(BaseModel):
     type: str = "general"
     content: str
 
+class CreateCardRequest(BaseModel):
+    paper_rowid: int
+    card_type: str = "method"
+    title: str = Field(default="", max_length=200)
+    content: str = Field(min_length=1, max_length=4000)
+    quote: str = Field(default="", max_length=2000)
+    page: Optional[int] = None
+    source: str = "manual"
+
+class UpdateCardRequest(BaseModel):
+    card_type: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=200)
+    content: Optional[str] = Field(default=None, max_length=4000)
+
+class CustomLLMRequest(BaseModel):
+    enabled: bool = True
+    preset: str = Field(default="openrouter", max_length=40)
+    base_url: str = Field(max_length=300)
+    api_key: str = Field(default="", max_length=300)  # 空 = 保留已存的 key
+    model: str = Field(default="", max_length=200)
+
+class CustomLLMProbeRequest(BaseModel):
+    base_url: str = Field(max_length=300)
+    api_key: str = Field(default="", max_length=300)  # 空 = 用已存的 key
+    model: str = Field(default="", max_length=200)
+
+class DraftCardRequest(BaseModel):
+    paper_title: str = Field(max_length=500)
+    paper_abstract: str = Field(default="", max_length=5000)
+    card_type: str = "method"
+    quote: str = Field(default="", max_length=2000)
+    page: Optional[int] = None
+    question: str = Field(default="", max_length=2000)
+    answer: str = Field(default="", max_length=4000)
+
 class CreateProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = ""
@@ -188,25 +228,121 @@ def _get_owned_paper_or_none(paper_id: int, user_id: str) -> Optional[dict]:
 
 @app.get("/api/settings")
 def api_get_settings():
-    """返回当前 LLM 配置状态"""
+    """返回当前 LLM 配置状态（内置链 + 自定义通道）"""
     client, model = _get_llm_client()
     provider_name = ""
     for p in _LLM_PROVIDERS:
         if p["model"] == model:
             provider_name = p["name"]
             break
+    custom = get_custom_provider_safe()
     return {
         "provider": provider_name,
         "model": model,
         "base_url": "",
         "api_key_masked": "内置" if client else "未配置",
         "builtin": True,
+        "custom": custom,
+        "active": ("custom" if (custom.get("enabled") and custom.get("has_key") and custom.get("model")) else "builtin"),
     }
 
 @app.post("/api/settings")
 def api_save_settings():
     """内置 API 模式下，保存操作为空操作（兼容前端调用）"""
     return {"ok": True, "builtin": True}
+
+
+@app.get("/api/zotero-plugin/update.json")
+def api_zotero_plugin_update():
+    """Zotero 插件 update_url 的应答（manifest 必填字段，返回"无更新"即可）"""
+    return {"addons": {"papermind-connector@papermind.local": {"updates": []}}}
+
+
+# ========== 自定义 LLM 通道 ==========
+
+@app.post("/api/settings/custom-llm")
+def api_save_custom_llm(data: CustomLLMRequest):
+    """保存自定义 API 配置；api_key 传空表示沿用已存的 key"""
+    current = get_custom_provider()
+    api_key = data.api_key.strip() or current.get("api_key", "")
+    base_url = data.base_url.strip().rstrip("/")
+    if data.enabled and not (api_key and base_url and data.model.strip()):
+        return {"ok": False, "error": "启用自定义通道需要完整填写 API 地址、Key 和模型名。"}
+    save_custom_provider({
+        "enabled": data.enabled,
+        "preset": data.preset.strip() or "custom",
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": data.model.strip(),
+    })
+    return {"ok": True, "custom": get_custom_provider_safe()}
+
+
+@app.delete("/api/settings/custom-llm")
+def api_delete_custom_llm():
+    """清除自定义 API 配置，回到纯内置链"""
+    save_custom_provider({})
+    return {"ok": True}
+
+
+@app.post("/api/settings/custom-llm/models")
+async def api_list_custom_llm_models(data: CustomLLMProbeRequest):
+    """调用 provider 的 /models 接口，列出该账号实际可用的模型"""
+    api_key = data.api_key.strip() or get_custom_provider().get("api_key", "")
+    base_url = data.base_url.strip().rstrip("/")
+    if not (api_key and base_url):
+        return {"ok": False, "error": "请先填写 API 地址和 Key。"}
+    try:
+        # 不固定 transport：自定义通道可能是国外服务，需要走系统代理
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        if resp.status_code != 200:
+            return {"ok": False, "error": f"HTTP {resp.status_code}：{resp.text[:150]}"}
+        payload = resp.json()
+        items = payload.get("data", payload if isinstance(payload, list) else [])
+        models = sorted({
+            (m.get("id") or "").strip()
+            for m in items if isinstance(m, dict) and m.get("id")
+        })
+        if not models:
+            return {"ok": False, "error": "该接口没有返回模型列表，请手动填写模型名。"}
+        return {"ok": True, "models": models[:500]}
+    except Exception as e:
+        return {"ok": False, "error": f"获取失败：{str(e)[:150]}"}
+
+
+@app.post("/api/settings/custom-llm/test")
+async def api_test_custom_llm(data: CustomLLMProbeRequest):
+    """对填写的配置发一次最小对话请求，验证连通性"""
+    api_key = data.api_key.strip() or get_custom_provider().get("api_key", "")
+    base_url = data.base_url.strip().rstrip("/")
+    model = data.model.strip()
+    if not (api_key and base_url and model):
+        return {"ok": False, "error": "请先填写 API 地址、Key 和模型名。"}
+    client = None
+    try:
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=30.0)
+        started = time.monotonic()
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "回复两个字：正常"}],
+            max_tokens=16,
+            temperature=0,
+        )
+        latency_ms = int((time.monotonic() - started) * 1000)
+        reply = (resp.choices[0].message.content or "").strip()
+        return {"ok": True, "latency_ms": latency_ms, "reply": reply[:60], "model": model}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:250]}
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:
+                pass
 
 @app.post("/api/settings/test")
 async def api_test_settings(request: Request):
@@ -932,6 +1068,18 @@ def api_get_paper_pdf(paper_id: int, uid: str = Query(default="")):
                         headers={"Content-Disposition": "inline; filename=paper.pdf"})
 
 
+@app.head("/api/library/{paper_id}/pdf")
+def api_head_paper_pdf(paper_id: int, uid: str = Query(default="")):
+    """前端用 HEAD 探测是否已上传本地 PDF（FastAPI 的 GET 不自动支持 HEAD）"""
+    owner = get_paper_owner(paper_id)
+    if not owner or owner != uid:
+        raise HTTPException(status_code=403, detail="forbidden")
+    pdf_path = PDF_DIR / f"{paper_id}.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF not found")
+    return PlainTextResponse("", media_type="application/pdf")
+
+
 @app.delete("/api/library/{paper_id}/pdf")
 def api_delete_paper_pdf(paper_id: int, request: Request):
     """删除已上传的论文 PDF"""
@@ -1013,6 +1161,140 @@ def api_delete_note(note_id: int, request: Request):
         return {"ok": False, "error": "not found"}
     delete_note(note_id)
     return {"ok": True}
+
+
+# ========== Reading Cards Routes ==========
+
+CARD_TYPE_LABELS = {
+    "method": "方法卡",
+    "finding": "发现卡",
+    "critique": "批判卡",
+    "transfer": "迁移卡",
+}
+
+CARD_TYPE_GUIDES = {
+    "method": "提炼这篇论文的方法学要点：研究设计、样本策略、测量工具、统计/分析方法。写清楚每一步做了什么、为什么这样做。",
+    "finding": "提炼核心发现：主要结果、关键数据（效应量、置信区间等具体数字）、结论。",
+    "critique": "提炼值得批判性思考的点：局限性、潜在偏倚、样本或方法的不足、结论是否被数据支撑。",
+    "transfer": "提炼可迁移的启发：这个方法/思路能否用到用户自己的研究里，具体怎么用，需要注意什么。",
+}
+
+
+@app.post("/api/cards")
+def api_create_card(data: CreateCardRequest, request: Request):
+    """创建阅读卡片（需验证归属）"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(data.paper_rowid, uid)
+    if not paper:
+        return {"ok": False, "error": "not found"}
+    if data.card_type not in CARD_TYPES:
+        return {"ok": False, "error": "invalid card_type"}
+    card_id = save_card(
+        data.paper_rowid, data.card_type, data.title, data.content,
+        quote=data.quote, page=data.page, source=data.source,
+    )
+    increment_recent_events(uid)  # 沉淀卡片 = 关键行为
+    return {"ok": True, "id": card_id}
+
+
+@app.get("/api/cards/{paper_rowid}")
+def api_get_cards(paper_rowid: int, request: Request):
+    """获取某篇论文的全部卡片（需验证归属）"""
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(paper_rowid, uid):
+        return {"cards": []}
+    return {"cards": get_cards(paper_rowid)}
+
+
+@app.patch("/api/cards/{card_id}")
+def api_update_card(card_id: int, data: UpdateCardRequest, request: Request):
+    """编辑卡片（需验证归属）"""
+    uid = _get_user_id(request)
+    if get_card_owner(card_id) != uid:
+        return {"ok": False, "error": "not found"}
+    update_card(card_id, card_type=data.card_type, title=data.title, content=data.content)
+    return {"ok": True}
+
+
+@app.delete("/api/cards/{card_id}")
+def api_delete_card(card_id: int, request: Request):
+    """删除卡片（需验证归属）"""
+    uid = _get_user_id(request)
+    if get_card_owner(card_id) != uid:
+        return {"ok": False, "error": "not found"}
+    delete_card(card_id)
+    return {"ok": True}
+
+
+@app.post("/api/cards/draft")
+async def api_draft_card(data: DraftCardRequest, request: Request):
+    """AI 起草一张卡片（不落库，前端展示可编辑草稿）"""
+    uid = _get_user_id(request)
+    is_owner = OWNER_UID and uid == OWNER_UID
+
+    if not check_rate_limit("__global__", "chat", GLOBAL_DAILY_CHAT_LIMIT):
+        return {"ok": False, "error": "今日 AI 服务使用量已达上限，明天恢复。"}
+    if not is_owner and not check_rate_limit(uid, "chat", DAILY_CHAT_LIMIT):
+        return {"ok": False, "error": f"你今天的 AI 次数已用完（每天 {DAILY_CHAT_LIMIT} 次）。"}
+    if not _has_llm_config(task="chat"):
+        return {"ok": False, "error": "AI 服务暂不可用"}
+
+    card_type = data.card_type if data.card_type in CARD_TYPES else "method"
+    profile = get_profile(uid)
+    profile_text = _build_understanding_profile_text(profile)
+
+    context_parts = []
+    if data.quote:
+        page_note = f"（第 {data.page} 页）" if data.page else ""
+        context_parts.append(f"用户在原文划选的段落{page_note}：\n\"{data.quote}\"")
+    if data.question:
+        context_parts.append(f"用户的追问：{data.question}")
+    if data.answer:
+        context_parts.append(f"AI 此前的回答：{data.answer[:2000]}")
+    context = "\n\n".join(context_parts) if context_parts else "（用户没有提供划选段落，请基于论文摘要提炼）"
+
+    system_prompt = f"""你是一位学术阅读助手，帮用户把读到的内容沉淀为一张「{CARD_TYPE_LABELS[card_type]}」。
+{CARD_TYPE_GUIDES[card_type]}
+
+论文标题：{data.paper_title}
+论文摘要：{data.paper_abstract[:1500]}
+
+{f"用户研究背景：{chr(10)}{profile_text}" if profile_text else ""}
+
+严格按以下 JSON 格式输出，不要输出其他内容：
+{{"title": "一句话卡片标题（15 字以内）", "content": "卡片正文，100-250 字，可用简短列表，聚焦具体细节和数字，不要空话"}}"""
+
+    try:
+        raw, _, _ = await _llm_chat_complete_async(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": context},
+            ],
+            max_tokens=700,
+            temperature=0.3,
+            task="chat",
+        )
+        if not raw:
+            return {"ok": False, "error": "AI 服务当前不可用，请稍后再试。"}
+
+        increment_rate_limit("__global__", "chat")
+        if not is_owner:
+            increment_rate_limit(uid, "chat")
+
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            return {"ok": False, "error": "AI 输出格式异常，请重试。"}
+        parsed = json.loads(match.group(0))
+        title = str(parsed.get("title", "")).strip()
+        content = str(parsed.get("content", "")).strip()
+        if not content:
+            return {"ok": False, "error": "AI 输出为空，请重试。"}
+        return {"ok": True, "title": title, "content": content, "card_type": card_type}
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "AI 输出解析失败，请重试。"}
+    except Exception as e:
+        print(f"[api] cards/draft 失败: {e}")
+        return {"ok": False, "error": "起草失败，请稍后重试。"}
 
 
 # ========== Chat Route ==========

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2,
+  "name": "PaperMind Connector",
+  "version": "0.1.0",
+  "description": "在 Zotero 里选中文献，一键发送到 PaperMind 精读（含 PDF）",
+  "author": "雀雀",
+  "applications": {
+    "zotero": {
+      "id": "papermind-connector@papermind.local",
+      "update_url": "http://127.0.0.1:8000/api/zotero-plugin/update.json",
+      "strict_min_version": "6.999",
+      "strict_max_version": "10.99.99"
+    }
+  }
+}

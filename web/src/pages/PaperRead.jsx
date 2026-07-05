@@ -3,13 +3,14 @@ import { useParams, useLocation, Link } from 'react-router-dom'
 import {
   ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2,
   FileText, Download, ExternalLink, Languages, Mic, MicOff,
-  ChevronDown, ChevronUp, MessageSquare, Quote as QuoteIcon, X,
+  ChevronDown, ChevronUp, MessageSquare, Quote as QuoteIcon, X, Layers,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, apiPatch, API_BASE, getUserId } from '../api'
 import { useSpeechInput } from '../hooks/useSpeechInput'
 import TourBubble from '../components/TourBubble'
 import PdfViewer from '../components/PdfViewer'
+import CardDrawer from '../components/CardDrawer'
 
 /* ─────────────────────────────────────────────────────────────
    PaperRead — 三栏版 (PDF + 记忆通道)
@@ -127,6 +128,10 @@ export default function PaperRead() {
   const [chatOpen, setChatOpen] = useState(true)
   const [mobileTab, setMobileTab] = useState('pdf')  // pdf | meta | chat
 
+  // — reading cards —
+  const [cards, setCards] = useState([])
+  const [cardSeed, setCardSeed] = useState(null)  // {quote, page, question, answer} → CardDrawer composer
+
   // — refs —
   const chatEndRef = useRef(null)
   const chatInputRef = useRef(null)
@@ -143,21 +148,34 @@ export default function PaperRead() {
   // — derived: quotes for this paper —
   const quotes = deriveQuotesFromHistory(chatMessages)
 
-  // ── load paper (unchanged from v1) ──
+  // ── load paper: 推荐缓存 → last-reading → 收藏库（Zotero 等外部深链冷打开） ──
   useEffect(() => {
     if (paper) { setPaperLoading(false); return }
+    const loadFromLibrary = async () => {
+      if (!/^\d+$/.test(String(id))) return false
+      try {
+        const data = await apiGet(`/library/${id}`)
+        if (!data.paper) return false
+        setPaper(data.paper)
+        setSavedRowId(Number(id))
+        setBookmarked(true)
+        try {
+          localStorage.setItem(`paper-bookmark-${sliceId(data.paper, id)}`, String(id))
+        } catch { /* ignore */ }
+        return true
+      } catch { return false }
+    }
     apiGet(`/papers/${id}`)
-      .then(data => {
-        if (data.paper) setPaper(data.paper)
-        else {
-          const last = localStorage.getItem('last-reading')
-          if (last) {
-            const parsed = JSON.parse(last)
-            if (String(parsed.index) === String(id)) setPaper(parsed)
-          }
+      .then(async data => {
+        if (data.paper) { setPaper(data.paper); return }
+        const last = localStorage.getItem('last-reading')
+        if (last) {
+          const parsed = JSON.parse(last)
+          if (String(parsed.index) === String(id)) { setPaper(parsed); return }
         }
+        await loadFromLibrary()
       })
-      .catch(() => {})
+      .catch(() => loadFromLibrary())
       .finally(() => setPaperLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
@@ -220,6 +238,9 @@ export default function PaperRead() {
         if (data.notes?.length) setNotes(data.notes[0].content)
       })
       .catch(() => {})
+    apiGet(`/cards/${savedRowId}`)
+      .then(data => setCards(data.cards || []))
+      .catch(() => {})
   }, [savedRowId])
 
   // notes autosave
@@ -252,29 +273,75 @@ export default function PaperRead() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages, chatOpen])
 
-  // ── PDF URL fetch (auto on mount when we have doi/pmid) ──
+  // ── PDF URL fetch (uploaded local PDF first, then OA lookup by doi/pmid) ──
   useEffect(() => {
-    if (!paper) return
-    if (!paper.doi && !paper.pmid && !paper.pmcid) return
-    if (pdfUrl) return
-    setPdfUrlLoading(true)
-    const params = new URLSearchParams()
-    if (paper.doi) params.set('doi', paper.doi)
-    if (paper.pmid) params.set('pmid', paper.pmid)
-    if (paper.pmcid) params.set('pmcid', paper.pmcid)
-    apiGet(`/pdf-url?${params}`)
-      .then(data => {
-        if (data.ok && data.url) {
-          setPdfUrl(data.url)
-          setPdfOriginalUrl(data.original_url || data.url)
-        } else {
-          setPdfUrlError(data.error || '未找到免费全文')
-        }
-      })
-      .catch(() => setPdfUrlError('查询失败'))
-      .finally(() => setPdfUrlLoading(false))
+    if (!paper || pdfUrl) return
+    let cancelled = false
+    const run = async () => {
+      // 已上传的本地 PDF 优先
+      if (savedRowId) {
+        const localUrl = `${API_BASE}/library/${savedRowId}/pdf?uid=${getUserId()}`
+        try {
+          const r = await fetch(localUrl, { method: 'HEAD' })
+          if (r.ok && !cancelled) {
+            setPdfUrl(localUrl)
+            setPdfOriginalUrl(localUrl)
+            return
+          }
+        } catch { /* ignore */ }
+      }
+      if (!paper.doi && !paper.pmid && !paper.pmcid) return
+      if (cancelled) return
+      setPdfUrlLoading(true)
+      const params = new URLSearchParams()
+      if (paper.doi) params.set('doi', paper.doi)
+      if (paper.pmid) params.set('pmid', paper.pmid)
+      if (paper.pmcid) params.set('pmcid', paper.pmcid)
+      apiGet(`/pdf-url?${params}`)
+        .then(data => {
+          if (cancelled) return
+          if (data.ok && data.url) {
+            setPdfUrl(data.url)
+            setPdfOriginalUrl(data.original_url || data.url)
+          } else {
+            setPdfUrlError(data.error || '未找到免费全文')
+          }
+        })
+        .catch(() => { if (!cancelled) setPdfUrlError('查询失败') })
+        .finally(() => { if (!cancelled) setPdfUrlLoading(false) })
+    }
+    run()
+    return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paper])
+  }, [paper, savedRowId])
+
+  // ── upload local PDF ──
+  const [uploadingPdf, setUploadingPdf] = useState(false)
+  const handleUploadPdf = async (file) => {
+    if (!file || uploadingPdf) return
+    setUploadingPdf(true)
+    try {
+      const rowId = await ensureSaved()
+      if (!rowId) return
+      const form = new FormData()
+      form.append('file', file)
+      const resp = await fetch(`${API_BASE}/library/${rowId}/pdf`, {
+        method: 'POST',
+        headers: { 'X-User-ID': getUserId() },
+        body: form,
+      })
+      const data = await resp.json()
+      if (data.ok) {
+        const localUrl = `${API_BASE}/library/${rowId}/pdf?uid=${getUserId()}`
+        setPdfUrl(localUrl)
+        setPdfOriginalUrl(localUrl)
+        setPdfUrlError(null)
+      } else {
+        setPdfUrlError(data.detail || '上传失败，请确认是 PDF 文件')
+      }
+    } catch { setPdfUrlError('上传失败，请重试') }
+    finally { setUploadingPdf(false) }
+  }
 
   // ── tour (unchanged) ──
   useEffect(() => {
@@ -347,6 +414,46 @@ export default function PaperRead() {
       chatInputRef.current?.focus()
       chatFootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
     }, 80)
+  }
+
+  // ── selection bubble → save as reading card ──
+  const saveSelectionAsCard = () => {
+    if (!selection) return
+    setCardSeed({ quote: selection.text, page: selection.page })
+    setSelection(null)
+    window.getSelection()?.removeAllRanges()
+    setMobileTab('chat')
+  }
+
+  // ── chat message → seed a card (归卡) ──
+  const seedCardFromChat = (idx) => {
+    const m = chatMessages[idx]
+    if (!m || m.role !== 'assistant') return
+    const prev = chatMessages[idx - 1]
+    setCardSeed({
+      quote: prev?._quote?.text || '',
+      page: prev?._quote?.page || null,
+      question: prev?.role === 'user' ? prev.content : '',
+      answer: m.content,
+    })
+    setMobileTab('chat')
+  }
+
+  // ── ensure paper is saved (cards must attach to a saved paper) ──
+  const ensureSaved = async () => {
+    if (savedRowId) return savedRowId
+    if (!paper) return null
+    try {
+      const data = await apiPost('/library/save', { paper, chats: chatMessages })
+      setSavedRowId(data.id)
+      localStorage.setItem(`paper-bookmark-${sliceId(paper, id)}`, String(data.id))
+      setBookmarked(true)
+      return data.id
+    } catch { return null }
+  }
+
+  const jumpToPage = (p) => {
+    if (p && pdfViewerRef.current) pdfViewerRef.current.goToPage(p)
   }
 
   // ── send chat (extended: attach pendingQuote if present) ──
@@ -552,25 +659,31 @@ export default function PaperRead() {
               />
             )}
             {!pdfUrlLoading && !pdfUrl && (
-              <NoPdfState paper={paper} error={pdfUrlError}/>
+              <NoPdfState paper={paper} error={pdfUrlError} onUpload={handleUploadPdf} uploading={uploadingPdf}/>
             )}
 
             {/* selection bubble */}
             {selection && (
-              <button
-                onClick={askAboutSelection}
-                className="absolute z-20 flex items-center gap-2 px-3.5 py-2 rounded-full bg-navy text-warm-white text-sm font-medium shadow-[0_6px_22px_-6px_rgba(30,58,95,.45)] hover:bg-navy-light transition-all"
+              <div
+                className="absolute z-20 flex items-center gap-1.5"
                 style={{
                   left: selection.x,
                   top: selection.y - 12,
                   transform: 'translate(-50%, -100%)',
                 }}>
-                <Sparkles size={13}/>
-                问 papermind 关于这段
-                <span className="font-mono text-[10px] tracking-wider uppercase opacity-70 pl-1.5 ml-1.5 border-l border-white/20">
-                  ↵ enter
-                </span>
-              </button>
+                <button
+                  onClick={askAboutSelection}
+                  className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-navy text-warm-white text-sm font-medium shadow-[0_6px_22px_-6px_rgba(30,58,95,.45)] hover:bg-navy-light transition-all">
+                  <Sparkles size={13}/>
+                  问 papermind
+                </button>
+                <button
+                  onClick={saveSelectionAsCard}
+                  className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-coral text-warm-white text-sm font-medium shadow-[0_6px_22px_-6px_rgba(224,122,95,.5)] hover:bg-coral-deep transition-all">
+                  <Layers size={13}/>
+                  存为卡片
+                </button>
+              </div>
             )}
           </div>
 
@@ -618,6 +731,14 @@ export default function PaperRead() {
             chatInputRef={chatInputRef}
             chatFootRef={chatFootRef}
             jumpToQuote={jumpToQuote}
+            // reading cards
+            cards={cards}
+            setCards={setCards}
+            ensureSaved={ensureSaved}
+            cardSeed={cardSeed}
+            setCardSeed={setCardSeed}
+            seedCardFromChat={seedCardFromChat}
+            jumpToPage={jumpToPage}
             // bookmark + project picker passthrough
             bookmarked={bookmarked}
             onToggleBookmark={toggleBookmark}
@@ -767,6 +888,8 @@ function MemoryChannel(props) {
     notes, setNotes,
     abstractZh, translating, showTranslation, setShowTranslation,
     setAbstractZh, setTranslating,
+    cards, setCards, ensureSaved, cardSeed, setCardSeed,
+    seedCardFromChat, jumpToPage,
   } = props
 
   return (
@@ -818,6 +941,17 @@ function MemoryChannel(props) {
           )}
         </div>
       )}
+
+      {/* ★ READING CARDS */}
+      <CardDrawer
+        paper={paper}
+        cards={cards}
+        setCards={setCards}
+        ensureSaved={ensureSaved}
+        seed={cardSeed}
+        clearSeed={() => setCardSeed(null)}
+        onJumpToPage={jumpToPage}
+      />
 
       {/* ★ YOUR QUOTES */}
       <section className="px-6 py-4 border-b border-navy/5">
@@ -943,12 +1077,18 @@ function MemoryChannel(props) {
                       </p>
                     )}
                     {m.role === 'assistant' ? (
-                      <ReactMarkdown components={{
-                        p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
-                        strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-                        ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
-                        ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
-                      }}>{m.content}</ReactMarkdown>
+                      <>
+                        <ReactMarkdown components={{
+                          p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
+                          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                          ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
+                          ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
+                        }}>{m.content}</ReactMarkdown>
+                        <button onClick={() => seedCardFromChat(i)}
+                          className="mt-1.5 inline-flex items-center gap-1 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/70 hover:text-coral transition-colors">
+                          <Layers size={10}/> 归卡
+                        </button>
+                      </>
                     ) : m.content}
                   </div>
                 ))}
@@ -1072,21 +1212,29 @@ function fmtRelativeTime(iso) {
   return new Date(iso).toLocaleDateString()
 }
 
-function NoPdfState({ paper, error }) {
+function NoPdfState({ paper, error, onUpload, uploading }) {
   return (
     <div className="h-full flex items-center justify-center p-8">
       <div className="bg-warm-white border border-dashed border-navy/15 rounded-2xl p-8 text-center max-w-md">
-        <p className="font-mono text-[10px] tracking-widest uppercase text-warm-gray/60 mb-3">no free pdf</p>
-        <p className="text-sm text-navy mb-2">这篇没有免费全文</p>
+        <p className="font-mono text-[10px] tracking-widest uppercase text-warm-gray/60 mb-3">no pdf yet</p>
+        <p className="text-sm text-navy mb-2">还没有可读的全文</p>
         <p className="text-xs text-warm-gray leading-relaxed mb-5">
-          {error || '右栏的摘要和解读照常可读，也能在 PubMed 跳转原文。'}
+          {error ? `${error}。` : '未自动找到免费全文。'}你可以直接上传手头的 PDF，右栏的摘要和解读照常可读。
         </p>
-        {paper.link && (
-          <a href={paper.link} target="_blank" rel="noreferrer"
-            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-coral/30 text-coral hover:bg-coral/5">
-            <ExternalLink size={11}/> 在 PubMed 打开原文
-          </a>
-        )}
+        <div className="flex items-center justify-center gap-2 flex-wrap">
+          <label className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-coral text-warm-white cursor-pointer hover:bg-coral-deep transition-colors ${uploading ? 'opacity-60 pointer-events-none' : ''}`}>
+            {uploading ? <Loader2 size={11} className="animate-spin"/> : <Download size={11} className="rotate-180"/>}
+            {uploading ? '上传中…' : '上传 PDF 精读'}
+            <input type="file" accept="application/pdf,.pdf" className="hidden"
+              onChange={e => { onUpload?.(e.target.files?.[0]); e.target.value = '' }}/>
+          </label>
+          {paper.link && (
+            <a href={paper.link} target="_blank" rel="noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-coral/30 text-coral hover:bg-coral/5">
+              <ExternalLink size={11}/> 在 PubMed 打开原文
+            </a>
+          )}
+        </div>
       </div>
     </div>
   )

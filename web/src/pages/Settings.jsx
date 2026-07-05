@@ -1,11 +1,11 @@
 import { createElement, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft, Star, FileText, Link2, Check, Download, MessageCircle, Shield,
-  Save, Sparkles, Mic, X,
+  Save, Sparkles, Mic, X, Cpu, Loader2, ListFilter,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
-import { getUserId, API_BASE, apiGet, apiPost } from '../api'
+import { getUserId, API_BASE, apiGet, apiPost, apiDelete } from '../api'
 
 /* ─────────────────────────────────────────────────────────────
    SETTINGS — 加上「研究偏好」section（从 Profile 搬来）
@@ -303,11 +303,14 @@ export default function Settings() {
               <span>每人每天最多获取 {usage ? usage.recommend.limit : '—'} 批推荐结果、{usage ? usage.chat.limit : '—'} 次 AI 对话、{usage ? usage.translate.limit : '—'} 次翻译次数</span>
             </div>
             <div className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-coral/50 mt-1 flex-shrink-0" />
-              <span>自定义 API 功能将在正式版开放</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-mint mt-1 flex-shrink-0" />
+              <span>可在下方配置自己的 API，优先于内置通道使用，失败时自动回退</span>
             </div>
           </div>
         </div>
+
+        {/* ─── 自定义 AI 模型 ─── */}
+        <CustomLLMCard />
 
         {/* ─── 数据管理 ─── */}
         <SectionLabel>数据管理</SectionLabel>
@@ -612,6 +615,245 @@ function RangePicker({ value, onChange }) {
           自定义
         </button>
       )}
+    </div>
+  )
+}
+
+// ═════════════════════════════════════════════════════════════
+// CUSTOM LLM — 自定义 AI 模型（v0.10）
+// ═════════════════════════════════════════════════════════════
+const LLM_PRESETS = [
+  { key: 'openrouter', label: 'OpenRouter', base: 'https://openrouter.ai/api/v1',
+    hint: '一个 key 用遍 Claude / GPT / Gemini / DeepSeek 等几乎所有模型（国外服务，走代理）' },
+  { key: 'deepseek', label: 'DeepSeek', base: 'https://api.deepseek.com',
+    hint: 'deepseek-chat / deepseek-reasoner，性价比高' },
+  { key: 'glm', label: '智谱 GLM', base: 'https://open.bigmodel.cn/api/paas/v4',
+    hint: 'glm 系列，有免费档位' },
+  { key: 'qwen', label: '阿里云通义', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    hint: 'qwen 系列——内置免费额度到期后可以换成自己的 key 续用' },
+  { key: 'moonshot', label: 'Kimi', base: 'https://api.moonshot.cn/v1',
+    hint: 'kimi 系列，长上下文' },
+  { key: 'siliconflow', label: '硅基流动', base: 'https://api.siliconflow.cn/v1',
+    hint: '聚合大量国产开源模型' },
+  { key: 'custom', label: '自定义', base: '',
+    hint: '任何 OpenAI 兼容接口都可以，填以 /v1 结尾的地址' },
+]
+
+function CustomLLMCard() {
+  const [enabled, setEnabled] = useState(false)
+  const [preset, setPreset] = useState('openrouter')
+  const [baseUrl, setBaseUrl] = useState(LLM_PRESETS[0].base)
+  const [apiKey, setApiKey] = useState('')          // 始终只存新输入；空 = 沿用已存
+  const [keyMasked, setKeyMasked] = useState('')
+  const [hasKey, setHasKey] = useState(false)
+  const [model, setModel] = useState('')
+  const [models, setModels] = useState([])
+  const [modelFilter, setModelFilter] = useState('')
+  const [loadingModels, setLoadingModels] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null) // {ok, latency_ms, reply} | {ok:false, error}
+  const [saving, setSaving] = useState(false)
+  const [savedFlash, setSavedFlash] = useState(false)
+  const [error, setError] = useState('')
+  const [active, setActive] = useState('builtin')
+
+  useEffect(() => {
+    apiGet('/settings').then(data => {
+      const c = data.custom
+      if (!c) return
+      setEnabled(!!c.enabled)
+      if (c.preset) setPreset(c.preset)
+      if (c.base_url) setBaseUrl(c.base_url)
+      if (c.model) setModel(c.model)
+      setKeyMasked(c.api_key_masked || '')
+      setHasKey(!!c.has_key)
+      setActive(data.active || 'builtin')
+    }).catch(() => {})
+  }, [])
+
+  const pickPreset = (p) => {
+    setPreset(p.key)
+    if (p.base) setBaseUrl(p.base)
+    else if (preset !== 'custom') setBaseUrl('')
+    setModels([])
+    setTestResult(null)
+  }
+
+  const presetDef = LLM_PRESETS.find(p => p.key === preset) || LLM_PRESETS[LLM_PRESETS.length - 1]
+
+  const fetchModels = async () => {
+    if (loadingModels) return
+    setLoadingModels(true)
+    setError('')
+    try {
+      const data = await apiPost('/settings/custom-llm/models', { base_url: baseUrl, api_key: apiKey })
+      if (data.ok) { setModels(data.models); setModelFilter('') }
+      else setError(data.error || '获取模型列表失败')
+    } catch { setError('网络错误，请重试') }
+    finally { setLoadingModels(false) }
+  }
+
+  const runTest = async () => {
+    if (testing) return
+    setTesting(true)
+    setTestResult(null)
+    setError('')
+    try {
+      const data = await apiPost('/settings/custom-llm/test', { base_url: baseUrl, api_key: apiKey, model })
+      setTestResult(data)
+    } catch { setTestResult({ ok: false, error: '网络错误，请重试' }) }
+    finally { setTesting(false) }
+  }
+
+  const save = async (nextEnabled) => {
+    if (saving) return
+    setSaving(true)
+    setError('')
+    try {
+      const data = await apiPost('/settings/custom-llm', {
+        enabled: nextEnabled, preset, base_url: baseUrl, api_key: apiKey, model,
+      })
+      if (data.ok) {
+        setEnabled(!!data.custom.enabled)
+        setKeyMasked(data.custom.api_key_masked || '')
+        setHasKey(!!data.custom.has_key)
+        setApiKey('')
+        setActive(data.custom.enabled && data.custom.has_key && data.custom.model ? 'custom' : 'builtin')
+        setSavedFlash(true)
+        setTimeout(() => setSavedFlash(false), 2000)
+      } else setError(data.error || '保存失败')
+    } catch { setError('网络错误，请重试') }
+    finally { setSaving(false) }
+  }
+
+  const clearAll = async () => {
+    try {
+      await apiDelete('/settings/custom-llm')
+      setEnabled(false); setApiKey(''); setKeyMasked(''); setHasKey(false)
+      setModel(''); setModels([]); setTestResult(null); setActive('builtin')
+    } catch { /* ignore */ }
+  }
+
+  const filteredModels = modelFilter
+    ? models.filter(m => m.toLowerCase().includes(modelFilter.toLowerCase()))
+    : models
+
+  return (
+    <div className="bg-warm-white/[0.82] backdrop-blur-sm rounded-2xl p-5 border border-cream-dark/[0.7] mt-2.5">
+      <div className="flex items-center gap-3 mb-4">
+        <IconBlock icon={Cpu} color="navy" />
+        <div className="flex-1 min-w-0">
+          <h2 className="text-navy font-semibold text-sm">自定义 AI 模型</h2>
+          <p className="text-xs text-warm-gray mt-0.5">
+            {active === 'custom'
+              ? <>当前使用：<span className="text-navy font-medium">{model || '自定义模型'}</span>，失败时自动回退内置通道</>
+              : '当前使用内置通道；配置后你的 API 将优先使用'}
+          </p>
+        </div>
+        {hasKey && (
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="text-[11px] text-warm-gray">{enabled ? '已启用' : '已停用'}</span>
+            <Toggle on={enabled} onChange={(v) => save(v)} />
+          </div>
+        )}
+      </div>
+
+      {/* 服务商选择 */}
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {LLM_PRESETS.map(p => (
+          <button key={p.key} type="button" onClick={() => pickPreset(p)}
+            className={`px-3 py-1.5 rounded-full text-[12px] transition ${
+              preset === p.key
+                ? 'bg-navy text-warm-white font-medium'
+                : 'text-warm-gray border border-cream-dark hover:text-navy hover:border-navy/30'
+            }`}>
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-[11.5px] text-warm-gray/80 mb-4 px-1">{presetDef.hint}</p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <div>
+          <label className="block text-[11px] text-warm-gray mb-1 px-1">API 地址</label>
+          <input type="text" value={baseUrl} onChange={e => setBaseUrl(e.target.value)}
+            placeholder="https://…/v1"
+            className="w-full bg-cream/60 rounded-xl px-3 py-2 text-[12.5px] text-navy border border-navy/10 outline-none focus:border-coral/40 font-mono"/>
+        </div>
+        <div>
+          <label className="block text-[11px] text-warm-gray mb-1 px-1">API Key</label>
+          <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+            placeholder={hasKey ? `已保存 ${keyMasked}（留空沿用）` : 'sk-…'}
+            className="w-full bg-cream/60 rounded-xl px-3 py-2 text-[12.5px] text-navy border border-navy/10 outline-none focus:border-coral/40 font-mono"/>
+        </div>
+      </div>
+
+      <div className="mb-3">
+        <label className="block text-[11px] text-warm-gray mb-1 px-1">模型</label>
+        <div className="flex gap-2">
+          <input type="text" value={model} onChange={e => setModel(e.target.value)}
+            placeholder="手动填写，或点右侧按钮从你的账号拉取可用列表"
+            className="flex-1 bg-cream/60 rounded-xl px-3 py-2 text-[12.5px] text-navy border border-navy/10 outline-none focus:border-coral/40 font-mono"/>
+          <button type="button" onClick={fetchModels} disabled={loadingModels || !baseUrl || (!apiKey && !hasKey)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-navy/15 text-xs text-navy hover:border-navy/40 disabled:opacity-40 flex-shrink-0">
+            {loadingModels ? <Loader2 size={12} className="animate-spin"/> : <ListFilter size={12}/>}
+            获取可选模型
+          </button>
+        </div>
+
+        {models.length > 0 && (
+          <div className="mt-2 bg-cream/50 border border-cream-dark/60 rounded-xl p-2.5">
+            <input type="text" value={modelFilter} onChange={e => setModelFilter(e.target.value)}
+              placeholder={`共 ${models.length} 个模型，输入关键词筛选…`}
+              className="w-full bg-warm-white rounded-lg px-2.5 py-1.5 text-[12px] text-navy border border-navy/10 outline-none mb-2"/>
+            <div className="max-h-44 overflow-y-auto flex flex-wrap gap-1">
+              {filteredModels.slice(0, 60).map(m => (
+                <button key={m} type="button" onClick={() => { setModel(m); setTestResult(null) }}
+                  className={`px-2 py-1 rounded-lg text-[11px] font-mono transition ${
+                    model === m ? 'bg-navy text-warm-white' : 'bg-warm-white text-navy/70 hover:text-navy border border-cream-dark/70'
+                  }`}>
+                  {m}
+                </button>
+              ))}
+              {filteredModels.length > 60 && (
+                <span className="text-[11px] text-warm-gray px-2 py-1">…还有 {filteredModels.length - 60} 个，继续输入筛选</span>
+              )}
+              {filteredModels.length === 0 && (
+                <span className="text-[11px] text-warm-gray px-2 py-1">没有匹配的模型</span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 测试结果 / 错误 */}
+      {testResult && (
+        testResult.ok ? (
+          <p className="text-[12px] text-mint-deep mb-3 px-1">
+            ✓ 连接正常 · {testResult.latency_ms}ms · 模型回复「{testResult.reply}」
+          </p>
+        ) : (
+          <p className="text-[12px] text-coral mb-3 px-1 break-all">✗ {testResult.error}</p>
+        )
+      )}
+      {error && <p className="text-[12px] text-coral mb-3 px-1">{error}</p>}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button type="button" onClick={runTest} disabled={testing || !baseUrl || !model || (!apiKey && !hasKey)}
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border border-coral/35 text-coral text-xs font-medium hover:bg-coral/5 disabled:opacity-40">
+          {testing ? <><Loader2 size={12} className="animate-spin"/> 测试中…</> : '测试连接'}
+        </button>
+        <button type="button" onClick={() => save(true)} disabled={saving || !baseUrl || !model || (!apiKey && !hasKey)}
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-navy text-warm-white text-xs font-medium hover:bg-navy-light disabled:opacity-40">
+          {saving ? <Loader2 size={12} className="animate-spin"/> : savedFlash ? <><Check size={12}/> 已保存</> : '保存并启用'}
+        </button>
+        {hasKey && (
+          <button type="button" onClick={clearAll}
+            className="px-3 py-2 text-[11.5px] text-warm-gray hover:text-coral ml-auto">
+            清除配置
+          </button>
+        )}
+      </div>
     </div>
   )
 }

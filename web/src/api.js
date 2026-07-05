@@ -24,6 +24,29 @@ function setCookie(name, value) {
   document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`
 }
 
+// 深链 ?uid= 必须在模块加载时同步认领：子组件的数据请求先于 App.jsx 的
+// uid effect 发出，晚了就会带着随机新身份去查别人的论文。
+// 是否"换了人"也只能在这里判断——过后旧 uid 已被覆盖。
+let uidSwitchedViaUrl = false
+try {
+  const urlUid = new URLSearchParams(window.location.search).get('uid')
+  if (urlUid && /^[0-9a-f-]{36}$/i.test(urlUid)) {
+    let prev = null
+    try { prev = localStorage.getItem('papermind-uid') } catch { /* ignore */ }
+    prev = prev || getCookie('papermind-uid')
+    if (prev && prev !== urlUid) uidSwitchedViaUrl = true
+    memoryUid = urlUid
+    try { localStorage.setItem('papermind-uid', urlUid) } catch { /* ignore */ }
+    setCookie('papermind-uid', urlUid)
+  }
+} catch { /* ignore */ }
+
+function consumeUidSwitchFlag() {
+  const v = uidSwitchedViaUrl
+  uidSwitchedViaUrl = false
+  return v
+}
+
 function getUserId() {
   // 优先读 localStorage，其次 cookie，两者都写入保证跨设备恢复
   let uid = memoryUid || null
@@ -110,4 +133,4 @@ function setUserId(uid) {
   setCookie('papermind-uid', uid)
 }
 
-export { API_BASE, getUserId, setUserId }
+export { API_BASE, getUserId, setUserId, consumeUidSwitchFlag }

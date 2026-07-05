@@ -1,5 +1,113 @@
 # Changelog
 
+## v0.10.0 - 2026-07-04
+
+### 自定义 AI 模型（自带 API Key）
+
+内置免费通道（注册赠送三个月）到期前的退路：设置页可配置自己的 API，优先于内置链使用，失败自动回退。
+
+#### 后端
+
+- `src/config_store.py` 新增自定义 provider 存取（`data/config.json`，不进 git），key 打码展示
+- `llm_router.py`：`_get_custom_slots()` 注入自定义通道，永远排在 fallback 链首（不参与按任务的模型重排）；自定义通道的 httpx client 不再固定 transport——内置链固定 transport 会绕过系统代理，OpenRouter 等国外服务必须走代理；`.venv_new` 补装 `socksio` 支持 socks 代理
+- 新接口：
+  - `GET /api/settings` 扩展返回自定义配置（打码）+ 当前生效通道
+  - `POST /api/settings/custom-llm` 保存（api_key 传空 = 沿用已存）
+  - `DELETE /api/settings/custom-llm` 清除回到纯内置
+  - `POST /api/settings/custom-llm/models` 调 provider 的 `/models` 列出该账号真实可用的模型
+  - `POST /api/settings/custom-llm/test` 最小对话请求验证连通性（返回延迟 + 回复）
+
+#### 前端（Settings 页新卡片「自定义 AI 模型」）
+
+- 服务商预设：OpenRouter / DeepSeek / 智谱 GLM / 阿里云通义 / Kimi / 硅基流动 / 自定义（任何 OpenAI 兼容接口）
+- 「获取可选模型」从你的账号实时拉取模型列表，支持关键词筛选、点击即选——不用记模型名
+- 「测试连接」显示延迟和模型回复；保存后 key 打码回显（留空沿用）；启用/停用开关；清除配置
+- AI 服务卡片的「自定义 API 功能将在正式版开放」占位文案移除
+
+#### 验证
+
+- 单元验证：自定义 slot 排链首、清除后恢复、key 打码
+- Playwright + 本地 mock OpenAI 兼容服务全链路：拉模型列表 → 测试连接 → 保存启用 → `/api/chat` 实际命中自定义通道 → 刷新打码回显 → 清除恢复内置，8 项全过
+- `tests/test_backend_guards.py` 8 个测试无回归；lint 无新增错误、build 通过
+
+---
+
+## v0.9.2 - 2026-07-05
+
+### Zotero 插件安装失败修复
+
+- Zotero 9 的 manifest 校验（其源码 `parseManifest` 中的 Zotero 补丁）硬性要求 `applications.zotero.update_url` 存在，缺失时安装直接失败且只提示"可能不兼容"；插件 manifest 补上该字段
+- 新增 `GET /api/zotero-plugin/update.json` 应答更新检查（返回无更新）
+- `strict_max_version` 从 `10.0.*` 放宽到 `10.99.99`，与主流插件一致
+
+## v0.9.1 - 2026-07-04
+
+### Zotero 一键精读（v1.0 精读闭环 · 阶段 1.5）
+
+在 Zotero 里选中文献 → 右键「用 PaperMind 精读」→ 浏览器自动打开 PaperMind 阅读页，元数据 + 本地 PDF 全部就位。
+
+#### 新增：Zotero 插件（zotero-plugin/）
+
+- `manifest.json` + `bootstrap.js`，兼容 Zotero 7–10（bootstrap 插件架构），打包产物 `papermind-connector.xpi`
+- 文献右键菜单「用 PaperMind 精读」：读取选中条目元数据（标题/作者/期刊/DOI/extra 中的 PMID/摘要）+ 最佳 PDF 附件，调用 `/api/library/save` 和 `/api/library/{id}/pdf`，然后 `Zotero.launchURL` 打开 `/paper/{rowid}?uid=`
+- Tools 菜单「PaperMind 连接设置…」：配置 PaperMind 地址与设备 uid（存 Zotero prefs，首次使用自动弹出）
+- 选中附件时自动上溯父条目；无 PDF 附件时跳过上传（阅读页仍可走 OA 查找）
+
+#### PaperRead 深链支持
+
+- 冷打开 `/paper/{id}` 新增收藏库回退：推荐缓存 → last-reading → `GET /api/library/{id}`，命中后自动恢复「已收藏」状态与 savedRowId
+
+#### `?uid=` 语义修正（切换账号 vs 深链）
+
+- `?uid=` 改为在 api.js 模块加载时同步认领——原来在 App.jsx effect 里处理，子组件的数据请求先于它发出，深链会带着随机新身份查不到论文
+- UidHandler 不再无条件跳回首页：同 uid 深链保留当前路径、不清缓存；不同 uid（切换账号）才清本地缓存
+- 回归验证：切换账号（清缓存 + 参数消失）与同人深链（缓存保留 + 路径保留）两条路径均通过
+
+#### 决策：放弃 Onboarding 的 Zotero Web API 批量导入
+
+- Web API 批量导入只有元数据、无本地 PDF，与精读工作流错位；Onboarding 里的 Web API tab 目前是无后端的占位 UI，后续清理
+
+#### 验证
+
+- Playwright 全新浏览器上下文模拟插件行为链：save → PDF 上传 → 冷开 `/paper/{id}?uid=`，论文/PDF/已收藏/卡片区全部就位
+- 卡片流程与 PDF 上传流程回归通过；`npm run lint` 无新增错误、build 通过
+
+---
+
+## v0.9.0 - 2026-07-04
+
+### 阅读卡片系统（v1.0 精读闭环 · 阶段 1）
+
+v1.0 方向确定为「从发现转向精读与沉淀」，本版本落地精读闭环的地基：结构化阅读卡片。
+
+#### 新增：阅读卡片
+
+- 新表 `reading_cards`：卡片类型（method 方法 / finding 发现 / critique 批判 / transfer 迁移）、标题、正文、原文引用锚点（quote + page）、来源（manual / quote / chat）
+- 新接口：`POST/GET/PATCH/DELETE /api/cards`，全部带用户归属校验；删除论文时级联删除卡片
+- 新接口：`POST /api/cards/draft` —— AI 起草卡片（不落库），按卡片类型注入方法学/发现/批判/迁移的定向提示词，结合用户研究画像
+- 新组件 `web/src/components/CardDrawer.jsx`：右栏卡片区，含类型选择、AI 起草、编辑、删除、原文锚点跳页
+- 三条入卡路径：
+  1. 划词浮窗新增「存为卡片」按钮（与「问 papermind」并列），选中文字自动成为卡片的原文锚点
+  2. AI 回复下方新增「归卡」，把一问一答沉淀为卡片（自动携带引用上下文）
+  3. 右栏「+ 新卡片」手动创建
+- 保存卡片时若论文未收藏，自动收藏（复用对话总结的 ensureSaved 模式）
+- 创建卡片计入 memory_recent 行为信号（`increment_recent_events`）
+
+#### 新增：本地 PDF 上传精读
+
+- 阅读页无免费全文时，空状态新增「上传 PDF 精读」按钮，上传后立即进入 PDF 阅读
+- 后端 `POST /api/library/{id}/pdf` 接口此前无前端入口，本次接通
+- 新增 `HEAD /api/library/{id}/pdf` 路由（FastAPI 的 GET 不自动支持 HEAD），前端用它探测已上传的 PDF
+- 重新进入阅读页时优先加载已上传的本地 PDF，其次才查开放获取全文
+
+#### 验证
+
+- `tests/test_backend_guards.py` 8 个测试全过，无回归
+- `npm run lint` 无新增错误（PaperRead 3 个历史遗留错误未动），`npm run build` 通过
+- Playwright 端到端验证：划词 → 存为卡片 → AI 起草 → 保存（带 P.1 锚点）；上传 PDF → 渲染 → 重进自动加载；跨用户访问卡片被拒绝
+
+---
+
 ## v0.8.0 - 2026-05-21
 
 ### 全站视觉重构：研究地形 + 记忆优先

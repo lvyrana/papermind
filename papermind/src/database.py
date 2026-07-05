@@ -127,6 +127,21 @@ def _ensure_db():
             created_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reading_cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_rowid INTEGER NOT NULL,
+            card_type TEXT NOT NULL DEFAULT 'method',
+            title TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            quote TEXT DEFAULT '',
+            page INTEGER,
+            source TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (paper_rowid) REFERENCES saved_papers(id)
+        )
+    """)
 
     # 迁移：给 saved_papers 加 project_id 列
     try:
@@ -198,6 +213,7 @@ def _ensure_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_feedback_user ON user_feedback(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_saved_papers_project ON saved_papers(project_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reading_cards_paper ON reading_cards(paper_rowid)")
 
     conn.commit()
     return conn
@@ -504,6 +520,7 @@ def delete_saved_paper(paper_id: int):
     conn = _ensure_db()
     conn.execute("DELETE FROM paper_notes WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM paper_chats WHERE paper_rowid = ?", (paper_id,))
+    conn.execute("DELETE FROM reading_cards WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM saved_papers WHERE id = ?", (paper_id,))
     conn.commit()
     conn.close()
@@ -578,6 +595,81 @@ def get_notes(paper_rowid: int) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ========== Reading Cards ==========
+
+CARD_TYPES = ("method", "finding", "critique", "transfer")
+
+
+def save_card(paper_rowid: int, card_type: str, title: str, content: str,
+              quote: str = "", page: int = None, source: str = "manual") -> int:
+    conn = _ensure_db()
+    now = datetime.now().isoformat()
+    if card_type not in CARD_TYPES:
+        card_type = "method"
+    cursor = conn.execute(
+        """INSERT INTO reading_cards (paper_rowid, card_type, title, content, quote, page, source, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (paper_rowid, card_type, title, content, quote, page, source, now, now)
+    )
+    conn.commit()
+    row_id = cursor.lastrowid
+    conn.close()
+    return row_id
+
+
+def get_cards(paper_rowid: int) -> list[dict]:
+    conn = _ensure_db()
+    rows = conn.execute(
+        "SELECT * FROM reading_cards WHERE paper_rowid = ? ORDER BY created_at ASC",
+        (paper_rowid,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_card(card_id: int, card_type: str = None, title: str = None,
+                content: str = None) -> bool:
+    conn = _ensure_db()
+    updates, params = [], []
+    if card_type is not None and card_type in CARD_TYPES:
+        updates.append("card_type = ?")
+        params.append(card_type)
+    if title is not None:
+        updates.append("title = ?")
+        params.append(title)
+    if content is not None:
+        updates.append("content = ?")
+        params.append(content)
+    if not updates:
+        conn.close()
+        return False
+    updates.append("updated_at = ?")
+    params.append(datetime.now().isoformat())
+    params.append(card_id)
+    conn.execute(f"UPDATE reading_cards SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_card(card_id: int):
+    conn = _ensure_db()
+    conn.execute("DELETE FROM reading_cards WHERE id = ?", (card_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_card_owner(card_id: int) -> str:
+    """返回卡片所属论文的 user_id，用于归属校验"""
+    conn = _ensure_db()
+    row = conn.execute(
+        "SELECT sp.user_id FROM reading_cards rc JOIN saved_papers sp ON rc.paper_rowid = sp.id WHERE rc.id = ?",
+        (card_id,)
+    ).fetchone()
+    conn.close()
+    return row["user_id"] if row else ""
 
 
 # ========== Chat History ==========

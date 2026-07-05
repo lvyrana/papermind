@@ -10,6 +10,8 @@ import httpx
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, OpenAI
 
+from src.config_store import get_custom_provider
+
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -100,8 +102,33 @@ def _get_qwen_models() -> list[str]:
     return models
 
 
+def _is_custom_slot(provider: dict) -> bool:
+    return provider.get("name", "").startswith("custom:")
+
+
+def _get_custom_slots() -> list[dict]:
+    """用户在设置页配置的自定义 API，永远排在内置链之前。"""
+    try:
+        cfg = get_custom_provider()
+    except Exception:
+        return []
+    if not cfg.get("enabled"):
+        return []
+    api_key = (cfg.get("api_key") or "").strip()
+    base_url = (cfg.get("base_url") or "").strip()
+    model = (cfg.get("model") or "").strip()
+    if not (api_key and base_url and model):
+        return []
+    return [{
+        "name": f"custom:{cfg.get('preset') or 'api'}",
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+    }]
+
+
 def _get_llm_slots() -> list[dict]:
-    slots: list[dict] = []
+    slots: list[dict] = list(_get_custom_slots())
 
     qwen_api_key = os.environ.get("QWEN_API_KEY", "").strip()
     if qwen_api_key:
@@ -149,10 +176,17 @@ def _is_quota_error(e: Exception) -> bool:
 
 
 def _build_llm_client(provider: dict) -> OpenAI:
-    http_client = httpx.Client(
-        transport=httpx.HTTPTransport(local_address="0.0.0.0"),
-        timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
-    )
+    # 内置链固定 transport 会绕过系统代理（国内服务直连没问题）；
+    # 自定义通道（如 OpenRouter）可能是国外服务，必须尊重环境代理
+    if _is_custom_slot(provider):
+        http_client = httpx.Client(
+            timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
+        )
+    else:
+        http_client = httpx.Client(
+            transport=httpx.HTTPTransport(local_address="0.0.0.0"),
+            timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
+        )
     return OpenAI(
         api_key=provider["api_key"],
         base_url=provider["base_url"],
@@ -162,10 +196,15 @@ def _build_llm_client(provider: dict) -> OpenAI:
 
 
 def _build_async_llm_client(provider: dict) -> AsyncOpenAI:
-    http_client = httpx.AsyncClient(
-        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
-        timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
-    )
+    if _is_custom_slot(provider):
+        http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
+        )
+    else:
+        http_client = httpx.AsyncClient(
+            transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+            timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0),
+        )
     return AsyncOpenAI(
         api_key=provider["api_key"],
         base_url=provider["base_url"],
@@ -175,13 +214,17 @@ def _build_async_llm_client(provider: dict) -> AsyncOpenAI:
 
 
 def _ordered_llm_slots(task: str = "", prefer_model: str = "") -> list[dict]:
-    slots = _get_llm_slots()
+    all_slots = _get_llm_slots()
+    # 自定义通道不参与按任务重排——用户显式配置的模型永远最优先
+    custom_slots = [p for p in all_slots if _is_custom_slot(p)]
+    slots = [p for p in all_slots if not _is_custom_slot(p)]
+
     preferred_models = []
     if prefer_model:
         preferred_models.append(prefer_model)
     preferred_models.extend(_get_task_preferred_models(task))
     if not preferred_models:
-        return slots
+        return custom_slots + slots
 
     preferred_slots = []
     seen_keys: set[str] = set()
@@ -192,7 +235,7 @@ def _ordered_llm_slots(task: str = "", prefer_model: str = "") -> list[dict]:
                 if key not in seen_keys:
                     seen_keys.add(key)
                     preferred_slots.append(provider)
-    return preferred_slots + [provider for provider in slots if _provider_key(provider) not in seen_keys]
+    return custom_slots + preferred_slots + [provider for provider in slots if _provider_key(provider) not in seen_keys]
 
 
 def _get_llm_client(task: str = "") -> tuple[Optional[OpenAI], str]:

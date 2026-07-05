@@ -7,7 +7,7 @@ import PaperRead from './pages/PaperRead'
 import Settings from './pages/Settings'
 import Library from './pages/Library'
 import LibraryDetail from './pages/LibraryDetail'
-import { setUserId } from './api'
+import { setUserId, consumeUidSwitchFlag } from './api'
 
 const CACHE_KEY_PREFIXES = ['paper-notes-', 'paper-chat-', 'paper-bookmark-']
 const CACHE_KEY_EXACT = [
@@ -44,11 +44,13 @@ function UidHandler() {
     const params = new URLSearchParams(location.search)
     const uid = params.get('uid')
     if (uid && /^[0-9a-f-]{36}$/i.test(uid)) {
-      clearLocalAccountCache()
+      // 只有真的换了身份才清本地缓存；深链（如 Zotero 跳转）保留当前路径，
+      // 只把 ?uid= 从地址栏去掉
+      if (consumeUidSwitchFlag()) clearLocalAccountCache()
       setUserId(uid)
-      navigate('/', { replace: true })
+      navigate(location.pathname, { replace: true })
     }
-  }, [location.search, navigate])
+  }, [location.search, location.pathname, navigate])
   return null
 }
 
