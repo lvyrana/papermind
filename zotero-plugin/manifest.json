@@ -7,7 +7,7 @@
   "applications": {
     "zotero": {
       "id": "papermind-connector@papermind.local",
-      "update_url": "http://127.0.0.1:8000/api/zotero-plugin/update.json",
+      "update_url": "https://127.0.0.1:8000/api/zotero-plugin/update.json",
       "strict_min_version": "6.999",
       "strict_max_version": "10.99.99"
     }
