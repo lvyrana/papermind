@@ -759,10 +759,11 @@ export default function PaperRead() {
               <NoPdfState paper={paper} error={pdfUrlError} onUpload={handleUploadPdf} uploading={uploadingPdf}/>
             )}
 
-            {/* selection bubble */}
+            {/* selection bubble — fixed 定位吃 PdfViewer 给的视口坐标，
+                滚动后坐标不再错位（PdfViewer 会在滚动时收起浮窗） */}
             {selection && (
               <div
-                className="absolute z-20 flex items-center gap-1.5"
+                className="fixed z-50 flex items-center gap-1.5"
                 style={{
                   left: selection.x,
                   top: selection.y - 12,
