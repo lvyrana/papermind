@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from 'react'
-import { ChevronLeft, ChevronRight, Loader2, ZoomIn, ZoomOut, AlertCircle } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Loader2, ZoomIn, ZoomOut, AlertCircle, Download } from 'lucide-react'
 
 /* ─────────────────────────────────────────────────────────────
    PdfViewer · 基于 pdfjs-dist 的轻量 PDF 渲染器
@@ -35,7 +35,10 @@ const MIN_SCALE = 0.6
 const MAX_SCALE = 3.0
 
 const PdfViewer = forwardRef(function PdfViewer(
-  { url, originalUrl, onSelection, onPageChange, onTextReady, sectionHint, headerRight },
+  {
+    url, originalUrl, onSelection, onPageChange, onTextReady, sectionHint,
+    headerRight, onUploadLocalPdf, uploadingLocalPdf,
+  },
   ref,
 ) {
   const containerRef = useRef(null)
@@ -195,7 +198,7 @@ const PdfViewer = forwardRef(function PdfViewer(
   // ── selection bubble: listen for mouseup inside text layer ──
   useEffect(() => {
     if (!containerRef.current || !onSelection) return
-    const handler = (e) => {
+    const handler = () => {
       const sel = window.getSelection()
       const text = sel?.toString().trim()
       if (!text || text.length < 8) {
@@ -316,10 +319,20 @@ const PdfViewer = forwardRef(function PdfViewer(
                 ? '出版方阻止了跨域加载，请在新标签页查看原文。'
                 : error}
             </p>
-            <a href={originalUrl || url} target="_blank" rel="noreferrer"
-              className="inline-block text-xs px-3 py-1.5 rounded-full border border-coral/30 text-coral hover:bg-coral/5">
-              在新标签页打开 PDF
-            </a>
+            <div className="flex items-center justify-center gap-2 flex-wrap">
+              <a href={originalUrl || url} target="_blank" rel="noreferrer"
+                className="inline-flex items-center text-xs px-3 py-1.5 rounded-full border border-coral/30 text-coral hover:bg-coral/5">
+                在新标签页打开 PDF
+              </a>
+              {onUploadLocalPdf && (
+                <label className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-coral text-warm-white cursor-pointer hover:bg-coral-deep transition-colors ${uploadingLocalPdf ? 'opacity-60 pointer-events-none' : ''}`}>
+                  {uploadingLocalPdf ? <Loader2 size={11} className="animate-spin"/> : <Download size={11} className="rotate-180"/>}
+                  {uploadingLocalPdf ? '上传中…' : '上传本地 PDF 精读'}
+                  <input type="file" accept="application/pdf,.pdf" className="hidden"
+                    onChange={e => { onUploadLocalPdf(e.target.files?.[0]); e.target.value = '' }}/>
+                </label>
+              )}
+            </div>
           </div>
         )}
         <div ref={pagesContainerRef}/>

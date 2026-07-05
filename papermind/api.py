@@ -187,6 +187,13 @@ class DraftCardRequest(BaseModel):
     question: str = Field(default="", max_length=2000)
     answer: str = Field(default="", max_length=4000)
 
+class DeepReadGuideRequest(BaseModel):
+    paper_title: str = Field(max_length=500)
+    paper_abstract: str = Field(default="", max_length=5000)
+    page: Optional[int] = None
+    page_text: str = Field(default="", max_length=12000)
+    mode: str = Field(default="page", max_length=30)
+
 class CreateProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = ""
@@ -901,6 +908,149 @@ async def api_translate(data: TranslateRequest, request: Request):
         return {"ok": False, "error": "翻译失败，请稍后重试"}
 
 
+# ========== Deep Reading Guide ==========
+
+@app.post("/api/deep-read/guide")
+async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
+    """生成面向英文阅读困难用户的逐页/摘要精读带读。"""
+    uid = _get_user_id(request)
+    is_owner = OWNER_UID and uid == OWNER_UID
+
+    if not check_rate_limit("__global__", "chat", GLOBAL_DAILY_CHAT_LIMIT):
+        return {"ok": False, "error": "今日 AI 服务使用量已达上限，明天恢复。"}
+    if not is_owner and not check_rate_limit(uid, "chat", DAILY_CHAT_LIMIT):
+        return {"ok": False, "error": f"你今天的 AI 次数已用完（每天 {DAILY_CHAT_LIMIT} 次）。"}
+    if not _has_llm_config(task="chat"):
+        return {"ok": False, "error": "AI 服务暂不可用"}
+
+    profile_text = _build_understanding_profile_text(get_profile(uid))
+    mode = (data.mode or "page").strip().lower()
+    source_text = ""
+    if mode == "selection":
+        source_label = f"第 {data.page} 页选中句子" if data.page else "选中句子"
+        source_text = (data.page_text or "").strip()
+    elif mode == "page":
+        source_label = f"第 {data.page} 页原文" if data.page else "当前页原文"
+        source_text = (data.page_text or "").strip()
+    elif mode == "map":
+        source_label = "论文精读路线图"
+        source_text = (data.paper_abstract or "").strip()
+    else:
+        source_label = "论文摘要"
+        source_text = (data.paper_abstract or "").strip()
+
+    if not source_text and mode in {"page", "selection"}:
+        source_text = (data.paper_abstract or "").strip()
+        source_label = "论文摘要"
+    if not source_text:
+        return {"ok": False, "error": "还没有可精读的文本。请先上传并加载 PDF，或确认论文有摘要。"}
+
+    if mode == "map":
+        task_instruction = """请输出一份“精读路线图”，严格使用下面这些小标题：
+
+**这篇论文先抓什么**
+用 3-4 句话说明研究问题、对象/暴露/结局、核心设计，以及为什么值得读。
+
+**论文骨架**
+按 Introduction / Methods / Results / Discussion 拆出每一部分读的时候要找什么，不要泛泛总结。
+
+**精读顺序**
+给出 5 步阅读路线：先读哪里、再读哪里、每一步要确认什么。
+
+**先弄懂的词**
+列 4-6 个最影响理解的英文术语或方法词，用中文解释，并说明它在这篇里大概扮演什么角色。
+
+**读完后要能回答**
+列 4 个检查问题，帮助用户判断自己是否真的读懂。"""
+    elif mode == "selection":
+        task_instruction = """请专门带读用户选中的英文句子/片段，严格使用下面这些小标题：
+
+**原句在说什么**
+先用一句中文说清这句话的主干意思，不要整段机械翻译。
+
+**句子拆开读**
+把英文拆成 3-5 个语义块：英文片段 + 中文解释 + 这个片段在句子里起什么作用。
+
+**关键词**
+解释 2-4 个最容易卡住的词、变量、统计表达或连接词。
+
+**为什么重要**
+说明这句话对理解研究设计、结果、因果边界或作者论证有什么作用。
+
+**可以继续追问**
+给 2 个非常具体的追问。"""
+    elif mode == "page":
+        task_instruction = """请按“当前页陪读”的方式输出，严格使用下面这些小标题：
+
+**这一页在全文的位置**
+判断这一页更像 Introduction / Methods / Results / Discussion / 图表说明中的哪一类，并说明它承担什么任务。
+
+**逐段带读**
+按页面里的自然段落或信息块拆成 3-5 点：每点先说“这一块在讲什么”，再说“读的时候要抓什么”。
+
+**英文句子拆解**
+挑 2-4 个最关键、最容易读卡的英文短语或句子片段：英文片段 + 中文拆解。不要整页翻译。
+
+**术语、变量和数字**
+解释这一页里真正影响理解的术语、变量、统计量或比较关系，尽量保留数字和方向。
+
+**暂停自测**
+给 3 个检查问题，让用户读完这一页能判断自己是否懂了。
+
+**下一步读法**
+告诉用户下一页/下一段最应该盯住什么。"""
+    else:
+        task_instruction = """请按“摘要精读”的方式输出，严格使用下面这些小标题：
+
+**研究问题**
+用 2-3 句话讲清这篇到底想回答什么。
+
+**方法怎么读**
+把对象、暴露/干预、结局、设计和统计方法拆开说。
+
+**结果先抓什么**
+列 3 条最关键的发现，保留方向、数字和边界。
+
+**英文关键词**
+挑 3-5 个摘要里的关键英文短语，说明怎么理解。
+
+**读正文前的问题**
+列 3 个进入正文前要带着的问题。"""
+
+    prompt = f"""你是一位耐心的论文精读老师，正在带一位英文阅读吃力但有研究经验的中文研究者读论文。
+目标不是泛泛总结，也不是代替用户读完；目标是降低英文障碍，带用户抓住研究逻辑、句子结构、术语、数字和证据边界。
+不要写“本文探讨了”这种空话。要像真人陪读一样，告诉用户读这一段时眼睛应该看哪里、脑子里应该确认什么。
+
+论文标题：{data.paper_title}
+论文摘要：{data.paper_abstract[:1200]}
+{f"用户研究背景：{chr(10)}{profile_text}" if profile_text else ""}
+
+正在精读：{source_label}
+原文：
+{source_text[:6000]}
+
+请用中文输出，控制在 650-1000 字。
+{task_instruction}"""
+
+    try:
+        guide, _, _ = await _llm_chat_complete_async(
+            [{"role": "user", "content": prompt}],
+            max_tokens=1400,
+            temperature=0.25,
+            task="chat",
+        )
+        if not guide:
+            return {"ok": False, "error": "AI 服务当前不可用，请稍后再试。"}
+
+        increment_rate_limit("__global__", "chat")
+        if not is_owner:
+            increment_rate_limit(uid, "chat")
+        return {"ok": True, "guide": guide, "source": source_label}
+    except Exception as e:
+        print(f"[api] deep-read/guide 失败: {e}")
+        return {"ok": False, "error": "精读生成失败，请稍后重试。"}
+
+
 # ========== Library / 收藏库 Routes ==========
 
 class LookupPaperRequest(BaseModel):
@@ -1040,15 +1190,15 @@ async def api_upload_paper_pdf(paper_id: int, request: Request, file: UploadFile
     uid = _get_user_id(request)
     paper = _get_owned_paper_or_none(paper_id, uid)
     if not paper:
-        raise HTTPException(status_code=404, detail="not found")
+        raise FastAPIHTTPException(status_code=404, detail="not found")
     if not file.content_type or "pdf" not in file.content_type.lower():
-        raise HTTPException(status_code=415, detail="只支持 PDF 文件")
+        raise FastAPIHTTPException(status_code=415, detail="只支持 PDF 文件")
     content = await file.read(PDF_SIZE_LIMIT + 1)
     if len(content) > PDF_SIZE_LIMIT:
-        raise HTTPException(status_code=413, detail="文件超过 50MB 限制")
+        raise FastAPIHTTPException(status_code=413, detail="文件超过 50MB 限制")
     # 校验 PDF magic bytes
     if not content.startswith(b"%PDF"):
-        raise HTTPException(status_code=415, detail="文件不是有效的 PDF")
+        raise FastAPIHTTPException(status_code=415, detail="文件不是有效的 PDF")
     pdf_path = PDF_DIR / f"{paper_id}.pdf"
     pdf_path.write_bytes(content)
     set_paper_has_pdf(paper_id, True)
@@ -1060,10 +1210,10 @@ def api_get_paper_pdf(paper_id: int, uid: str = Query(default="")):
     """获取已上传的论文 PDF"""
     owner = get_paper_owner(paper_id)
     if not owner or owner != uid:
-        raise HTTPException(status_code=403, detail="forbidden")
+        raise FastAPIHTTPException(status_code=403, detail="forbidden")
     pdf_path = PDF_DIR / f"{paper_id}.pdf"
     if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail="PDF not found")
+        raise FastAPIHTTPException(status_code=404, detail="PDF not found")
     return FileResponse(str(pdf_path), media_type="application/pdf",
                         headers={"Content-Disposition": "inline; filename=paper.pdf"})
 
@@ -1073,10 +1223,10 @@ def api_head_paper_pdf(paper_id: int, uid: str = Query(default="")):
     """前端用 HEAD 探测是否已上传本地 PDF（FastAPI 的 GET 不自动支持 HEAD）"""
     owner = get_paper_owner(paper_id)
     if not owner or owner != uid:
-        raise HTTPException(status_code=403, detail="forbidden")
+        raise FastAPIHTTPException(status_code=403, detail="forbidden")
     pdf_path = PDF_DIR / f"{paper_id}.pdf"
     if not pdf_path.exists():
-        raise HTTPException(status_code=404, detail="PDF not found")
+        raise FastAPIHTTPException(status_code=404, detail="PDF not found")
     return PlainTextResponse("", media_type="application/pdf")
 
 
@@ -1086,7 +1236,7 @@ def api_delete_paper_pdf(paper_id: int, request: Request):
     uid = _get_user_id(request)
     paper = _get_owned_paper_or_none(paper_id, uid)
     if not paper:
-        raise HTTPException(status_code=404, detail="not found")
+        raise FastAPIHTTPException(status_code=404, detail="not found")
     pdf_path = PDF_DIR / f"{paper_id}.pdf"
     if pdf_path.exists():
         pdf_path.unlink()
@@ -1662,7 +1812,7 @@ async def proxy_pdf(url: str = Query(...)):
     from urllib.parse import urlparse
     parsed = urlparse(url)
     if parsed.scheme != "https":
-        raise HTTPException(status_code=400, detail="Only HTTPS URLs allowed")
+        raise FastAPIHTTPException(status_code=400, detail="Only HTTPS URLs allowed")
 
     # 先做 HEAD 请求，确认最终 URL 和 Content-Type
     try:
@@ -1675,7 +1825,7 @@ async def proxy_pdf(url: str = Query(...)):
             content_type = head.headers.get("content-type", "")
             final_url = str(head.url)  # 重定向后的最终 URL
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"HEAD failed: {e}")
+        raise FastAPIHTTPException(status_code=502, detail=f"HEAD failed: {e}")
 
     # 不是 PDF → 让前端直接跳转到原始 URL
     if "pdf" not in content_type.lower():

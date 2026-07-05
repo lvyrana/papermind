@@ -2,11 +2,11 @@ import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   ArrowRight, Bookmark, ChevronLeft, Clock, Heart, Loader2, RefreshCw, RotateCcw, Sprout,
-  AlertCircle,
+  AlertCircle, Search, Upload, FileText,
 } from 'lucide-react'
 import Navbar from '../components/Navbar'
 import TourBubble from '../components/TourBubble'
-import { apiGet, apiPost } from '../api'
+import { apiGet, apiPost, API_BASE, getUserId } from '../api'
 import Terrain, { buildHills, buildTrails } from '../components/Terrain'
 
 /* ─────────────────────────────────────────────────────────────
@@ -60,13 +60,18 @@ export default function Home() {
   const [allExplored, setAllExplored] = useState(() => loadCachedBool('cached-all-explored', false))
   const [canGoBack, setCanGoBack] = useState(() => loadCachedBool('cached-can-go-back', false))
   const [profileFilled, setProfileFilled] = useState(true)
-  const [profileChecked, setProfileChecked] = useState(false)
   const [needsProfile, setNeedsProfile] = useState(false)
   const [memoryRecent, setMemoryRecent] = useState('')
   const [memoryCore, setMemoryCore] = useState('')
   const [focusAreas, setFocusAreas] = useState('')
   const [methodInterests, setMethodInterests] = useState('')
   const [trackingDays, setTrackingDays] = useState('90')
+  const [quickQuery, setQuickQuery] = useState('')
+  const [quickResults, setQuickResults] = useState(null)
+  const [quickSearching, setQuickSearching] = useState(false)
+  const [quickSaving, setQuickSaving] = useState('')
+  const [quickUploading, setQuickUploading] = useState(false)
+  const [quickError, setQuickError] = useState('')
 
   // ── Home tour (unchanged) ─────────────────────────────────────────────────
   const [homeTourStep, setHomeTourStep] = useState(0)
@@ -104,23 +109,17 @@ export default function Home() {
       .then(data => {
         const filled = !!(data.focus_areas || data.method_interests || data.background || data.current_goal)
         setProfileFilled(filled)
-        setProfileChecked(true)
         setMemoryRecent(data.memory_recent || '')
         setMemoryCore(data.memory_core || '')
         setFocusAreas(data.focus_areas || '')
         setMethodInterests(data.method_interests || '')
         setTrackingDays(data.tracking_days || '90')
       })
-      .catch(() => { setProfileChecked(true) })
+      .catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── onboarding redirect (unchanged) ──────────────────────────────────────
-  useEffect(() => {
-    if (profileChecked && !profileFilled && papers.length === 0) {
-      if (sessionStorage.getItem('pm-skip-onboarding')) return
-      navigate('/onboarding', { replace: true, state: { intro: true } })
-    }
-  }, [profileChecked, profileFilled, papers.length, navigate])
+  // ── no blocking onboarding ────────────────────────────────────────────────
+  // 精读入口不再要求先填写画像；画像只影响推荐质量。
 
   // ── polling + fetchPapers (unchanged) ────────────────────────────────────
   const pollRef = useRef(null)
@@ -200,6 +199,91 @@ export default function Home() {
     }
   }
 
+  const openPaperForDeepRead = async (paper) => {
+    const key = paper.pmid || paper.doi || paper.paper_id || paper.title
+    setQuickSaving(key)
+    setQuickError('')
+    try {
+      const data = await apiPost('/library/save', { paper, chats: [] })
+      if (!data.ok || !data.id) throw new Error('save_failed')
+      const localKey = paper.pmid || paper.paper_id || data.id
+      localStorage.setItem(`paper-bookmark-${localKey}`, String(data.id))
+      navigate(`/paper/${data.id}?library=1`, { state: { paper } })
+    } catch {
+      setQuickError('添加失败。可以先上传 PDF，或稍后再试。')
+    } finally {
+      setQuickSaving('')
+    }
+  }
+
+  const lookupForDeepRead = async () => {
+    const query = quickQuery.trim()
+    if (!query || quickSearching) return
+    setQuickSearching(true)
+    setQuickError('')
+    setQuickResults(null)
+    try {
+      const data = await apiPost('/lookup-paper', { query })
+      if (data.error) {
+        setQuickError(data.error)
+        setQuickResults([])
+        return
+      }
+      const found = data.papers || []
+      setQuickResults(found)
+      if (found.length === 1) await openPaperForDeepRead(found[0])
+      if (found.length === 0) setQuickError('没有找到这篇。可以换 DOI/PMID，或直接上传 PDF。')
+    } catch {
+      setQuickError('检索失败。可以先用本地 PDF 进入精读。')
+      setQuickResults([])
+    } finally {
+      setQuickSearching(false)
+    }
+  }
+
+  const uploadPdfForDeepRead = async (file) => {
+    if (!file || quickUploading) return
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type && !file.type.toLowerCase().includes('pdf')) {
+      setQuickError('请选择 PDF 文件。')
+      return
+    }
+    setQuickUploading(true)
+    setQuickError('')
+    try {
+      const title = titleFromFileName(file.name)
+      const paper = {
+        title,
+        authors: '',
+        journal: '本地 PDF',
+        pub_date: '',
+        abstract: '',
+        source: 'local_pdf',
+        category: '本地精读',
+        relevance: '你手动上传的 PDF。',
+        has_pdf: true,
+      }
+      const saved = await apiPost('/library/save', { paper, chats: [] })
+      if (!saved.ok || !saved.id) throw new Error('save_failed')
+      const form = new FormData()
+      form.append('file', file)
+      const resp = await fetch(`${API_BASE}/library/${saved.id}/pdf`, {
+        method: 'POST',
+        headers: { 'X-User-ID': getUserId() },
+        body: form,
+      })
+      const payload = await resp.json().catch(() => ({}))
+      if (!resp.ok || payload.ok === false) {
+        throw new Error(payload.detail || 'upload_failed')
+      }
+      localStorage.setItem(`paper-bookmark-${saved.id}`, String(saved.id))
+      navigate(`/paper/${saved.id}?library=1`, { state: { paper } })
+    } catch {
+      setQuickError('PDF 上传失败。请确认文件没有损坏且小于 50MB。')
+    } finally {
+      setQuickUploading(false)
+    }
+  }
+
   useEffect(() => {
     if (!profileFilled) return
     if (!sessionStorage.getItem('pm-auto-fetch')) return
@@ -275,11 +359,11 @@ export default function Home() {
               </p>
             ) : profileFilled ? (
               <p className="mt-5 text-[15px] leading-relaxed text-navy/55 m-0 max-w-[560px]">
-                这里会逐渐记住你最近在追的方向。先去看看推荐吧。
+                可以直接开一篇精读，也可以继续看推荐。
               </p>
             ) : (
               <p className="mt-5 text-[15px] leading-relaxed text-navy/55 m-0 max-w-[560px]">
-                先去画像页告诉 papermind 你关注什么，它就开始记你了。
+                不用先填画像。先把手头这篇读起来，推荐偏好以后再慢慢补。
               </p>
             )}
 
@@ -325,8 +409,21 @@ export default function Home() {
           </Link>
         </section>
 
+        <DeepReadEntry
+          query={quickQuery}
+          setQuery={setQuickQuery}
+          results={quickResults}
+          searching={quickSearching}
+          saving={quickSaving}
+          uploading={quickUploading}
+          error={quickError}
+          onLookup={lookupForDeepRead}
+          onOpenPaper={openPaperForDeepRead}
+          onUploadPdf={uploadPdfForDeepRead}
+        />
+
         {/* ─── FOR YOU ─── */}
-        <section>
+        <section className="mt-12">
           <div className="flex items-end justify-between mb-7 pb-4 border-b border-cream-dark/50">
             <div>
               <p className="text-[10.5px] uppercase tracking-[0.25em] font-mono text-coral mb-2">
@@ -371,9 +468,9 @@ export default function Home() {
           {/* error / needs profile */}
           {needsProfile && (
             <div className="bg-coral/5 border border-coral/20 rounded-xl p-4 mb-5">
-              <p className="text-sm text-navy/70 mb-2">还没有填写研究方向，推荐无法生成。</p>
+              <p className="text-sm text-navy/70 mb-2">推荐需要一点研究偏好；精读工作台可以直接使用。</p>
               <Link to="/profile" className="inline-flex items-center gap-1 text-coral text-sm font-medium hover:underline">
-                去填写研究画像 <ArrowRight size={13}/>
+                去补充偏好 <ArrowRight size={13}/>
               </Link>
             </div>
           )}
@@ -403,10 +500,10 @@ export default function Home() {
 
           {!loading && papers.length === 0 && !error && (
             <div className="flex flex-col items-center gap-3 py-24">
-              <p className="text-warm-gray text-sm">还没有推荐结果。</p>
-              <button onClick={() => profileFilled ? fetchPapers() : navigate('/onboarding')}
+              <p className="text-warm-gray text-sm">推荐还没有开始。你也可以先从上面的精读工作台进入。</p>
+              <button onClick={() => profileFilled ? fetchPapers() : navigate('/profile')}
                 className="px-4 py-2 bg-navy text-warm-white rounded-full text-sm hover:bg-navy-light transition-colors">
-                {profileFilled ? '获取推荐论文' : '先填写研究方向'}
+                {profileFilled ? '获取推荐论文' : '补充偏好后推荐'}
               </button>
             </div>
           )}
@@ -478,6 +575,20 @@ export default function Home() {
         error={error}
         needsProfile={needsProfile}
         profileFilled={profileFilled}
+        deepReadEntry={(
+          <DeepReadEntry
+            query={quickQuery}
+            setQuery={setQuickQuery}
+            results={quickResults}
+            searching={quickSearching}
+            saving={quickSaving}
+            uploading={quickUploading}
+            error={quickError}
+            onLookup={lookupForDeepRead}
+            onOpenPaper={openPaperForDeepRead}
+            onUploadPdf={uploadPdfForDeepRead}
+          />
+        )}
         fetchPapers={fetchPapers}
         navigate={navigate}
         firstCardRef={firstCardRef}
@@ -518,9 +629,122 @@ function Sep() {
   return <span className="text-cream-dark">/</span>
 }
 
+function DeepReadEntry({
+  query, setQuery, results, searching, saving, uploading, error,
+  onLookup, onOpenPaper, onUploadPdf,
+}) {
+  const fileInputRef = useRef(null)
+  const hasManyResults = Array.isArray(results) && results.length > 1
+
+  return (
+    <section className="mb-8 rounded-2xl border border-navy/10 bg-warm-white/80 shadow-[0_12px_40px_-32px_rgba(30,58,95,0.35)] overflow-hidden">
+      <div className="grid lg:grid-cols-[0.95fr_1.35fr]">
+        <div className="p-5 lg:p-6 border-b lg:border-b-0 lg:border-r border-cream-dark/55 bg-[#FBF7F1]">
+          <p className="m-0 text-[10px] uppercase tracking-[0.22em] font-mono text-coral">
+            deep reading desk
+          </p>
+          <h2 className="mt-2 mb-0 font-serif text-[22px] lg:text-[25px] font-medium leading-[1.35] text-navy">
+            直接开始读一篇
+          </h2>
+          <p className="mt-3 mb-0 text-[13.5px] leading-[1.75] text-navy/62">
+            粘 PMID / DOI / 标题，或上传已经下载好的 PDF。
+          </p>
+          <div className="mt-5 flex flex-wrap gap-2 text-[11px] text-warm-gray">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cream/70">
+              <FileText size={12}/> 不需要先填画像
+            </span>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cream/70">
+              <Upload size={12}/> 本地 PDF 可直接进
+            </span>
+          </div>
+        </div>
+
+        <div className="p-5 lg:p-6">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault()
+              onLookup()
+            }}
+            className="flex flex-col sm:flex-row gap-2"
+          >
+            <div className="relative flex-1 min-w-0">
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-warm-gray/45"/>
+              <input
+                value={query}
+                onChange={event => setQuery(event.target.value)}
+                placeholder="PMID / DOI / 英文标题"
+                className="w-full h-11 rounded-xl border border-cream-dark/65 bg-cream/35 pl-10 pr-3 text-sm text-navy outline-none focus:border-coral/45 focus:ring-2 focus:ring-coral/10 placeholder:text-warm-gray/45"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={searching || !query.trim()}
+              className="h-11 px-4 rounded-xl bg-navy text-warm-white text-sm font-medium hover:bg-navy-light transition disabled:opacity-50 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+            >
+              {searching ? <><Loader2 size={14} className="animate-spin"/>检索中</> : <>开始精读<ArrowRight size={14}/></>}
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="h-11 px-4 rounded-xl border border-coral/25 bg-coral/6 text-coral text-sm font-medium hover:bg-coral/10 transition disabled:opacity-50 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+            >
+              {uploading ? <><Loader2 size={14} className="animate-spin"/>上传中</> : <><Upload size={14}/>上传 PDF</>}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf,.pdf"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.target.value = ''
+                onUploadPdf(file)
+              }}
+            />
+          </form>
+
+          {error && (
+            <p className="mt-3 mb-0 text-[12.5px] text-coral leading-relaxed">{error}</p>
+          )}
+
+          {hasManyResults && (
+            <div className="mt-4 grid gap-2 max-h-64 overflow-y-auto pr-1">
+              {results.map((paper, index) => {
+                const key = paper.pmid || paper.doi || paper.paper_id || paper.title || index
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => onOpenPaper(paper)}
+                    disabled={!!saving}
+                    className="text-left rounded-xl border border-cream-dark/55 bg-cream/30 px-3.5 py-3 hover:border-coral/35 hover:bg-warm-white transition disabled:opacity-55"
+                  >
+                    <span className="block text-[13px] leading-[1.45] font-medium text-navy line-clamp-2">
+                      {paper.title}
+                    </span>
+                    <span className="mt-1.5 flex items-center justify-between gap-3 text-[11px] text-warm-gray">
+                      <span className="truncate">
+                        {paper.pub_date || '年份未知'}{paper.journal ? ` · ${paper.journal}` : ''}
+                      </span>
+                      <span className="shrink-0 inline-flex items-center gap-1 text-coral">
+                        {saving === key ? <><Loader2 size={11} className="animate-spin"/>进入中</> : <>进入<ArrowRight size={11}/></>}
+                      </span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function MobileHome({
   greeting, memoryHighlight, total, remaining, allExplored, canGoBack, lastReading,
-  papers, loading, error, needsProfile, profileFilled, fetchPapers, navigate,
+  papers, loading, error, needsProfile, profileFilled, deepReadEntry, fetchPapers, navigate,
   firstCardRef, nextPageRef, searchDebug, showSearchDebug, setShowSearchDebug,
 }) {
   const handleTop = (action) => {
@@ -536,7 +760,7 @@ function MobileHome({
         </p>
         <h1 className="font-serif text-[32px] font-medium text-navy leading-tight m-0">{greeting}</h1>
         <p className="mt-4 text-[14px] leading-[1.85] text-navy/70 m-0">
-          {memoryHighlight || (profileFilled ? '这里会逐渐记住你最近在追的方向。先去看看推荐吧。' : '先告诉 papermind 你关注什么，它就开始记你了。')}
+          {memoryHighlight || (profileFilled ? '可以直接开一篇精读，也可以继续看推荐。' : '不用先填画像。先把手头这篇读起来，推荐偏好以后再补。')}
         </p>
 
         <div className="mt-5 grid grid-cols-3 gap-2">
@@ -574,6 +798,8 @@ function MobileHome({
         )}
       </section>
 
+      {deepReadEntry}
+
       <section>
         <div className="flex items-end justify-between gap-4 mb-4">
           <div>
@@ -609,9 +835,9 @@ function MobileHome({
 
         {needsProfile && (
           <div className="bg-coral/5 border border-coral/20 rounded-xl p-4 mb-4">
-            <p className="text-sm text-navy/70 mb-2">还没有填写研究方向，推荐无法生成。</p>
+            <p className="text-sm text-navy/70 mb-2">推荐需要一点研究偏好；精读工作台可以直接使用。</p>
             <Link to="/profile" className="inline-flex items-center gap-1 text-coral text-sm font-medium">
-              去填写研究画像 <ArrowRight size={13}/>
+              去补充偏好 <ArrowRight size={13}/>
             </Link>
           </div>
         )}
@@ -641,10 +867,10 @@ function MobileHome({
 
         {!loading && papers.length === 0 && !error && (
           <div className="flex flex-col items-center gap-3 py-20">
-            <p className="text-warm-gray text-sm">还没有推荐结果。</p>
-            <button type="button" onClick={() => profileFilled ? fetchPapers() : navigate('/onboarding')}
+            <p className="text-warm-gray text-sm">推荐还没有开始。你也可以先从上面的精读工作台进入。</p>
+            <button type="button" onClick={() => profileFilled ? fetchPapers() : navigate('/profile')}
               className="px-4 py-2 bg-navy text-warm-white rounded-full text-sm">
-              {profileFilled ? '获取推荐论文' : '先填写研究方向'}
+              {profileFilled ? '获取推荐论文' : '补充偏好后推荐'}
             </button>
           </div>
         )}
@@ -813,6 +1039,14 @@ function splitTags(value) {
   return value
     ? value.split(/[,，、\n]+/).map(s => s.trim()).filter(s => s && s.length <= 12).slice(0, 8)
     : []
+}
+function titleFromFileName(fileName) {
+  const base = (fileName || '本地 PDF')
+    .replace(/\.pdf$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return base || '本地 PDF'
 }
 function formatSearchRange(trackingDays) {
   const days = parseInt(trackingDays) || 90
