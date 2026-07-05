@@ -294,7 +294,8 @@ export default function PaperRead() {
     if (savedRowId) {
       const timer = setTimeout(() => {
         // 带 note_id 走 UPDATE；不带的话后端每次 INSERT 新行，编辑几次就积一堆重复笔记
-        apiPost('/notes', { paper_rowid: savedRowId, content: notes, note_id: manualNoteId })
+        // 注意 note_id 为空时必须整个省略：显式传 null 会被 pydantic 拒（int 字段不收 null）
+        apiPost('/notes', { paper_rowid: savedRowId, content: notes, ...(manualNoteId ? { note_id: manualNoteId } : {}) })
           .then(d => { if (d?.ok && d.id && d.id !== manualNoteId) setManualNoteId(d.id) })
           .catch(() => {})
       }, 1500)
