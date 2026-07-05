@@ -90,6 +90,7 @@ function ReasonGlyph({ size = 11 }) {
 export default function PaperRead() {
   const { id } = useParams()
   const location = useLocation()
+  const forceLibraryPaper = new URLSearchParams(location.search).get('library') === '1'
   const [paper, setPaper] = useState(location.state?.paper || null)
   const [paperLoading, setPaperLoading] = useState(!location.state?.paper)
 
@@ -110,6 +111,7 @@ export default function PaperRead() {
   const [pdfUrl, setPdfUrl] = useState(null)
   const [pdfOriginalUrl, setPdfOriginalUrl] = useState(null)
   const [pdfUrlError, setPdfUrlError] = useState(null)
+  const [pdfPageTexts, setPdfPageTexts] = useState({})
   const [ripple, setRipple] = useState(false)
   const [abstractZh, setAbstractZh] = useState(null)
   const [translating, setTranslating] = useState(false)
@@ -120,6 +122,12 @@ export default function PaperRead() {
   const [summarizeError, setSummarizeError] = useState(null)
   const [projects, setProjects] = useState([])
   const [showProjectPicker, setShowProjectPicker] = useState(false)
+  const [deepReadGuide, setDeepReadGuide] = useState('')
+  const [deepReadSource, setDeepReadSource] = useState('')
+  const [deepReadMode, setDeepReadMode] = useState('')
+  const [deepReading, setDeepReading] = useState(false)
+  const [deepReadError, setDeepReadError] = useState('')
+  const [deepReadSaved, setDeepReadSaved] = useState(false)
 
   // — three-pane new state —
   const [selection, setSelection] = useState(null)  // {text, page, x, y}
@@ -147,6 +155,23 @@ export default function PaperRead() {
 
   // — derived: quotes for this paper —
   const quotes = deriveQuotesFromHistory(chatMessages)
+  const currentPageText = pdfPageTexts[currentPage] || ''
+
+  useEffect(() => {
+    if (!forceLibraryPaper || !/^\d+$/.test(String(id))) return
+    setSavedRowId(Number(id))
+    setBookmarked(true)
+  }, [forceLibraryPaper, id])
+
+  const handlePdfTextReady = useCallback((pageNum, textContent) => {
+    const text = (textContent?.items || [])
+      .map(item => item.str || '')
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!text) return
+    setPdfPageTexts(prev => prev[pageNum] === text ? prev : { ...prev, [pageNum]: text })
+  }, [])
 
   // ── load paper: 推荐缓存 → last-reading → 收藏库（Zotero 等外部深链冷打开） ──
   useEffect(() => {
@@ -165,6 +190,10 @@ export default function PaperRead() {
         return true
       } catch { return false }
     }
+    if (forceLibraryPaper) {
+      loadFromLibrary().finally(() => setPaperLoading(false))
+      return
+    }
     apiGet(`/papers/${id}`)
       .then(async data => {
         if (data.paper) { setPaper(data.paper); return }
@@ -178,7 +207,7 @@ export default function PaperRead() {
       .catch(() => loadFromLibrary())
       .finally(() => setPaperLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id])
+  }, [id, forceLibraryPaper])
 
   // ── engagement tracking (unchanged) ──
   const recordEngagement = useCallback((reason) => {
@@ -284,13 +313,18 @@ export default function PaperRead() {
         try {
           const r = await fetch(localUrl, { method: 'HEAD' })
           if (r.ok && !cancelled) {
+            setPdfUrlLoading(false)
+            setPdfUrlError(null)
             setPdfUrl(localUrl)
             setPdfOriginalUrl(localUrl)
             return
           }
         } catch { /* ignore */ }
       }
-      if (!paper.doi && !paper.pmid && !paper.pmcid) return
+      if (!paper.doi && !paper.pmid && !paper.pmcid) {
+        if (!cancelled) setPdfUrlLoading(false)
+        return
+      }
       if (cancelled) return
       setPdfUrlLoading(true)
       const params = new URLSearchParams()
@@ -333,6 +367,7 @@ export default function PaperRead() {
       const data = await resp.json()
       if (data.ok) {
         const localUrl = `${API_BASE}/library/${rowId}/pdf?uid=${getUserId()}`
+        setPdfUrlLoading(false)
         setPdfUrl(localUrl)
         setPdfOriginalUrl(localUrl)
         setPdfUrlError(null)
@@ -425,6 +460,15 @@ export default function PaperRead() {
     setMobileTab('chat')
   }
 
+  const deepReadSelection = () => {
+    if (!selection) return
+    const selected = selection
+    setSelection(null)
+    window.getSelection()?.removeAllRanges()
+    setMobileTab('chat')
+    runDeepRead('selection', selected.text, selected.page)
+  }
+
   // ── chat message → seed a card (归卡) ──
   const seedCardFromChat = (idx) => {
     const m = chatMessages[idx]
@@ -450,6 +494,56 @@ export default function PaperRead() {
       setBookmarked(true)
       return data.id
     } catch { return null }
+  }
+
+  const runDeepRead = async (mode = 'page', textOverride = '', pageOverride = null) => {
+    if (!paper || deepReading) return
+    setDeepReading(true)
+    setDeepReadError('')
+    setDeepReadSaved(false)
+    setDeepReadMode(mode)
+    try {
+      const sourceText = textOverride || (mode === 'page' ? currentPageText : '')
+      const pageForRequest = pageOverride || currentPage
+      const data = await apiPost('/deep-read/guide', {
+        paper_title: paper.title || '',
+        paper_abstract: paper.abstract || '',
+        page: pageForRequest,
+        page_text: sourceText,
+        mode,
+      })
+      if (data.ok) {
+        setDeepReadGuide(data.guide || '')
+        setDeepReadSource(data.source || formatDeepReadSource(mode, pageForRequest))
+      } else {
+        setDeepReadError(data.error || '精读生成失败，请稍后重试。')
+      }
+    } catch {
+      setDeepReadError('网络错误，请稍后重试。')
+    } finally {
+      setDeepReading(false)
+    }
+  }
+
+  const saveDeepReadAsNote = async () => {
+    if (!deepReadGuide || deepReadSaved) return
+    const rowId = await ensureSaved()
+    if (!rowId) {
+      setDeepReadError('自动收藏失败，请先手动收藏这篇论文。')
+      return
+    }
+    try {
+      const title = deepReadSource ? `【精读带读】${deepReadSource}` : '【精读带读】'
+      const data = await apiPost('/notes', {
+        paper_rowid: rowId,
+        content: `${title}\n\n${deepReadGuide}`,
+        source: 'deep_read',
+      })
+      if (data.ok) setDeepReadSaved(true)
+      else setDeepReadError(data.error || '保存失败，请稍后重试。')
+    } catch {
+      setDeepReadError('保存失败，请稍后重试。')
+    }
   }
 
   const jumpToPage = (p) => {
@@ -623,7 +717,7 @@ export default function PaperRead() {
             {[
               { v: 'pdf', label: 'PDF' },
               { v: 'meta', label: '元信息' },
-              { v: 'chat', label: '记忆 & 对话' },
+              { v: 'chat', label: '精读' },
             ].map(t => (
               <button key={t.v}
                 onClick={() => setMobileTab(t.v)}
@@ -648,6 +742,9 @@ export default function PaperRead() {
                 originalUrl={pdfOriginalUrl}
                 onSelection={setSelection}
                 onPageChange={setCurrentPage}
+                onTextReady={handlePdfTextReady}
+                onUploadLocalPdf={handleUploadPdf}
+                uploadingLocalPdf={uploadingPdf}
                 sectionHint={null}
                 headerRight={
                   quotes.length > 0 && (
@@ -676,6 +773,12 @@ export default function PaperRead() {
                   className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-navy text-warm-white text-sm font-medium shadow-[0_6px_22px_-6px_rgba(30,58,95,.45)] hover:bg-navy-light transition-all">
                   <Sparkles size={13}/>
                   问 papermind
+                </button>
+                <button
+                  onClick={deepReadSelection}
+                  className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-warm-white text-navy text-sm font-medium border border-navy/10 shadow-[0_6px_22px_-10px_rgba(30,58,95,.28)] hover:border-coral/35 transition-all">
+                  <FileText size={13}/>
+                  精读这段
                 </button>
                 <button
                   onClick={saveSelectionAsCard}
@@ -739,6 +842,16 @@ export default function PaperRead() {
             setCardSeed={setCardSeed}
             seedCardFromChat={seedCardFromChat}
             jumpToPage={jumpToPage}
+            currentPage={currentPage}
+            currentPageText={currentPageText}
+            deepReadGuide={deepReadGuide}
+            deepReadSource={deepReadSource}
+            deepReadMode={deepReadMode}
+            deepReading={deepReading}
+            deepReadError={deepReadError}
+            deepReadSaved={deepReadSaved}
+            onRunDeepRead={runDeepRead}
+            onSaveDeepRead={saveDeepReadAsNote}
             // bookmark + project picker passthrough
             bookmarked={bookmarked}
             onToggleBookmark={toggleBookmark}
@@ -890,6 +1003,8 @@ function MemoryChannel(props) {
     setAbstractZh, setTranslating,
     cards, setCards, ensureSaved, cardSeed, setCardSeed,
     seedCardFromChat, jumpToPage,
+    currentPage, currentPageText, deepReadGuide, deepReadSource,
+    deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
   } = props
 
   return (
@@ -941,6 +1056,21 @@ function MemoryChannel(props) {
           )}
         </div>
       )}
+
+      {/* ★ GUIDED DEEP READING */}
+      <DeepReadPanel
+        paper={paper}
+        currentPage={currentPage}
+        currentPageText={currentPageText}
+        guide={deepReadGuide}
+        source={deepReadSource}
+        mode={deepReadMode}
+        loading={deepReading}
+        error={deepReadError}
+        saved={deepReadSaved}
+        onRun={onRunDeepRead}
+        onSave={onSaveDeepRead}
+      />
 
       {/* ★ READING CARDS */}
       <CardDrawer
@@ -1158,6 +1288,126 @@ function MemoryChannel(props) {
       </div>
     </div>
   )
+}
+
+function DeepReadPanel({
+  paper, currentPage, currentPageText, guide, source, mode, loading, error, saved, onRun, onSave,
+}) {
+  const hasAbstract = !!paper?.abstract
+  const hasPageText = currentPageText.trim().length > 80
+
+  return (
+    <section className="px-6 py-4 border-b border-navy/5 bg-gradient-to-b from-warm-white/60 to-transparent">
+      <SectionHeader
+        left={<><Sparkles size={11}/> 精读工作台</>}
+        right={hasPageText ? `P.${currentPage}` : '摘要'}
+        accent="coral"/>
+
+      <div className="bg-warm-white border border-coral/18 rounded-xl overflow-hidden">
+        <div className="px-3.5 pt-3.5 pb-3 border-b border-navy/6">
+          <div className="grid grid-cols-3 gap-1.5">
+            <DeepReadAction
+              active={mode === 'map'}
+              icon={<Sparkles size={12}/>}
+              label="路线图"
+              sub="整篇怎么读"
+              loading={loading && mode === 'map'}
+              disabled={loading || !hasAbstract}
+              onClick={() => onRun('map')}
+            />
+            <DeepReadAction
+              active={mode === 'abstract'}
+              icon={<FileText size={12}/>}
+              label="摘要"
+              sub="先抓研究问题"
+              loading={loading && mode === 'abstract'}
+              disabled={loading || !hasAbstract}
+              onClick={() => onRun('abstract')}
+            />
+            <DeepReadAction
+              active={mode === 'page'}
+              icon={<Layers size={12}/>}
+              label={`P.${currentPage}`}
+              sub="当前页陪读"
+              loading={loading && mode === 'page'}
+              disabled={loading || !hasPageText}
+              onClick={() => onRun('page')}
+            />
+          </div>
+
+          {!hasPageText && (
+            <p className="mt-2 mb-0 text-[11.5px] leading-relaxed text-warm-gray/70">
+              当前页文字还没提取到；PDF 加载完成后可按页带读。划选英文句子后也可以点“精读这段”。
+            </p>
+          )}
+        </div>
+
+        {!guide && !error && (
+          <div className="px-3.5 py-3.5">
+            <p className="text-[12.5px] text-navy/72 leading-relaxed m-0">
+              先用“路线图”确定整篇怎么读；读正文时切到当前页；遇到卡住的英文句子，直接在 PDF 上划选后点“精读这段”。
+            </p>
+          </div>
+        )}
+
+        {error && <p className="px-3.5 py-3 text-[12px] text-coral leading-relaxed">{error}</p>}
+
+        {guide && (
+          <div>
+            <div className="px-3.5 py-2.5 border-b border-navy/6 bg-cream/35 flex items-center justify-between gap-2">
+              <p className="m-0 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/65">
+                {source || formatDeepReadSource(mode, currentPage)}
+              </p>
+              <button onClick={onSave} disabled={saved}
+                className={`shrink-0 inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium ${
+                  saved ? 'bg-mint/20 text-navy' : 'border border-coral/30 text-coral hover:bg-coral/5'
+                }`}>
+                <FileText size={10}/>
+                {saved ? '已保存' : '存笔记'}
+              </button>
+            </div>
+            <div className="text-[12.5px] leading-relaxed text-navy/84 max-h-[430px] overflow-y-auto px-3.5 py-3.5">
+              <ReactMarkdown components={{
+                p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                strong: ({ children }) => <strong className="block text-navy font-semibold mt-3 mb-1 first:mt-0">{children}</strong>,
+                ul: ({ children }) => <ul className="list-disc pl-4 space-y-1 mb-2">{children}</ul>,
+                ol: ({ children }) => <ol className="list-decimal pl-4 space-y-1 mb-2">{children}</ol>,
+                li: ({ children }) => <li className="pl-0.5">{children}</li>,
+              }}>{guide}</ReactMarkdown>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function DeepReadAction({ active, icon, label, sub, loading, disabled, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`min-w-0 rounded-lg px-2.5 py-2 text-left border transition disabled:opacity-40 ${
+        active
+          ? 'border-coral/35 bg-coral/7 text-coral'
+          : 'border-navy/8 bg-cream/35 text-navy/76 hover:border-coral/25 hover:bg-coral/5'
+      }`}
+    >
+      <span className="flex items-center gap-1.5 text-[11.5px] font-semibold">
+        {loading ? <Loader2 size={12} className="animate-spin"/> : icon}
+        <span className="truncate">{label}</span>
+      </span>
+      <span className="block mt-0.5 text-[10px] text-warm-gray/75 truncate">{sub}</span>
+    </button>
+  )
+}
+
+function formatDeepReadSource(mode, page) {
+  if (mode === 'map') return '论文精读路线图'
+  if (mode === 'selection') return page ? `第 ${page} 页选中句子` : '选中句子'
+  if (mode === 'page') return page ? `第 ${page} 页原文` : '当前页原文'
+  return '论文摘要'
 }
 
 // ═════════════════════════════════════════════════════════════
