@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.10.1 - 2026-07-05
+## v0.11.0 - 2026-07-05
 
 ### 直接精读入口 + 精读工作台
 
@@ -37,6 +37,22 @@
 - `npm run build` 通过
 - 本地 uvicorn 已重新启动并确认 `http://127.0.0.1:8000/` 返回最新版前端 bundle
 - 仍存在既有的 `pdfjs-dist` `renderTextLayer` 构建警告，未阻断构建
+
+---
+
+## v0.10.1 - 2026-07-05
+
+### Zotero 插件安装失败真正修复（update_url 必须是 https）
+
+- v0.9.2 的结论只对了一半：Zotero 9 确实硬性要求 `applications.zotero` 提供 `id` / `update_url` / `strict_max_version` 三项（缺一即 manifest 无效，见其 `Extension.sys.mjs` 的 Zotero 补丁）；但 Gecko 内核同时要求 updateURL 必须以 `https:` 开头（`XPIDatabase.providesUpdatesSecurely`），否则插件被强制禁用（appDisabled），安装时统一弹"可能无法与该版本的 Zotero 兼容"——这句提示对所有安装失败都一样，极具误导性
+- 修复：manifest 的 update_url 从 `http://127.0.0.1:8000/...` 改为 `https://127.0.0.1:8000/...`，重新打包 xpi。本地开发阶段更新检查会静默失败（本地后端无 TLS），无副作用；后端 `/api/zotero-plugin/update.json` 接口保留，未来上 https 后自动生效
+
+#### 验证
+
+- 一次性 Zotero profile（独立数据目录，不碰真实库）侧载 A/B/C 对照实验：
+  - A `http://` update_url（v0.9.2 现状）→ 安装但 `appDisabled: true`
+  - B 删除 update_url → manifest 判无效，xpi 启动时被 Zotero 直接删除
+  - C `https://` update_url（本次修复）→ `active: true`，Zotero 日志出现 `Calling bootstrap method 'startup' for plugin papermind-connector`，插件真实运行
 
 ---
 
