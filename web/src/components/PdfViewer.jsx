@@ -114,6 +114,9 @@ const PdfViewer = forwardRef(function PdfViewer(
         width:${viewport.width}px; height:${viewport.height}px;
         line-height:1;
       `
+      // pdf_viewer.css 里文字 span 的定位全部乘以 --scale-factor；
+      // 不设置时按 1 倍铺文字层、画布却按实际缩放渲染，选区整体错位
+      textLayer.style.setProperty('--scale-factor', String(theScale))
 
       pageWrap.appendChild(canvas)
       pageWrap.appendChild(textLayer)
@@ -123,22 +126,22 @@ const PdfViewer = forwardRef(function PdfViewer(
       await page.render({ canvasContext: ctx, viewport }).promise
 
       const textContent = await page.getTextContent()
-      // pdfjs 5.x 推荐 API：renderTextLayer 接 source；4.x 也兼容
-      if (typeof pdfjsLib.renderTextLayer === 'function') {
-        await pdfjsLib.renderTextLayer({
-          textContentSource: textContent,
-          container: textLayer,
-          viewport,
-          textDivs: [],
-        }).promise.catch(() => {})
-      } else if (pdfjsLib.TextLayer) {
-        // 5.x 新写法：构造 TextLayer 类
+      if (pdfjsLib.TextLayer) {
+        // pdfjs 5.x API
         const tl = new pdfjsLib.TextLayer({
           textContentSource: textContent,
           container: textLayer,
           viewport,
         })
         await tl.render()
+      } else if (typeof pdfjsLib.renderTextLayer === 'function') {
+        // 4.x 兼容
+        await pdfjsLib.renderTextLayer({
+          textContentSource: textContent,
+          container: textLayer,
+          viewport,
+          textDivs: [],
+        }).promise.catch(() => {})
       }
 
       pageRefs.current[pageNum] = { wrapEl: pageWrap, canvas, textLayer, viewport, scale: theScale }
@@ -214,7 +217,6 @@ const PdfViewer = forwardRef(function PdfViewer(
       }
       const range = sel.getRangeAt(0)
       const rect = range.getBoundingClientRect()
-      const cRect = containerRef.current.getBoundingClientRect()
       // 找当前 page
       const wrap = node.closest('.pdf-page-wrap')
       const pageNum = wrap ? parseInt(wrap.dataset.pageNum, 10) : currentPage
@@ -222,13 +224,22 @@ const PdfViewer = forwardRef(function PdfViewer(
       onSelection({
         text,
         page: pageNum,
-        // 相对于 viewer 容器的坐标
-        x: rect.left + rect.width / 2 - cRect.left + containerRef.current.scrollLeft,
-        y: rect.top - cRect.top + containerRef.current.scrollTop,
+        // 视口坐标，配合浮窗的 position:fixed 使用；
+        // 之前加 scrollTop 换算成滚动内容坐标，但浮窗渲染在外层
+        // 不滚动的容器里，翻页后浮窗会被定位到屏幕外
+        x: rect.left + rect.width / 2,
+        y: rect.top,
       })
     }
+    // PDF 滚动后选区位置已变，收起浮窗避免悬在错误位置
+    const onScroll = () => onSelection(null)
+    const scroller = containerRef.current
     document.addEventListener('mouseup', handler)
-    return () => document.removeEventListener('mouseup', handler)
+    scroller?.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      document.removeEventListener('mouseup', handler)
+      scroller?.removeEventListener('scroll', onScroll)
+    }
   }, [currentPage, onSelection])
 
   // ── imperative API ──
