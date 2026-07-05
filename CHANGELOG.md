@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.11.1 - 2026-07-05
+
+### PDF 划词修复 + 内置模型升级 qwen3.7-plus
+
+#### 划词选区错位修复
+
+- pdfjs 5.x 的文字层定位依赖容器上的 `--scale-factor` CSS 变量，`PdfViewer.jsx` 自建 textLayer 时从未设置，导致画布按实际缩放渲染、文字层按 1 倍铺——选区错位且越往页面下方偏得越多；渲染每页时补设该变量
+- 文字层渲染改用 pdfjs 5.x 的 `TextLayer` 类（旧 `renderTextLayer` 已废弃，只留 4.x 兼容分支）
+
+#### 划词浮窗翻页后消失修复
+
+- 浮窗坐标原本加了 `scrollTop`（滚动内容坐标系），但浮窗渲染在外层不滚动的容器里，PDF 翻页后浮窗被定位到屏幕外，表现为"只有第一次划词有浮窗"
+- 改为视口坐标 + `position: fixed`；PDF 滚动时主动收起浮窗，避免悬停在错误位置
+
+#### 内置模型升级
+
+- `.env`：`QWEN_MODEL` / `LLM_TASK_CHAT_MODELS` 首选从 qwen3.5-flash 升为 qwen3.7-plus（阅读页对话、精读带读、卡片起草全部受益），flash 系降为回退链；已用最小请求验证 dashscope 接受该模型名
+
+#### 验证
+
+- Playwright E2E（临时 uid 种数据，测完删除）：14 页 PDF，第 1 页与第 2 页划词浮窗均出现且在视口内（第 2 页为修复前的必现故障场景）；`--scale-factor` 已设置；选区高亮与文字紧贴（截图）
+- `npm run build` 通过；uvicorn 已用 `.venv_new` 重启（此前进程用的系统 Python + Rosetta，arm64 下无法复现启动，`.venv_new` 才是可复现的启动方式）
+
+#### 已知问题（待修）
+
+- `DELETE /api/library/{id}` 不删除对应的 `data/pdfs/{id}.pdf`，会留孤儿文件
+
+---
+
 ## v0.11.0 - 2026-07-05
 
 ### 直接精读入口 + 精读工作台
