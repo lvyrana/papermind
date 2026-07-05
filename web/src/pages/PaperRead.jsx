@@ -96,6 +96,9 @@ export default function PaperRead() {
 
   // — existing state —
   const [notes, setNotes] = useState('')
+  const [savedNotes, setSavedNotes] = useState([])       // 后端 paper_notes 全量（含带读/对话总结）
+  const [manualNoteId, setManualNoteId] = useState(null) // 自由笔记对应的后端行 id，避免自动保存重复插行
+  const [notesOpen, setNotesOpen] = useState(false)
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
@@ -264,7 +267,13 @@ export default function PaperRead() {
     apiGet(`/library/${savedRowId}`)
       .then(data => {
         if (data.chats?.length) setChatMessages(data.chats)
-        if (data.notes?.length) setNotes(data.notes[0].content)
+        const list = data.notes || []
+        setSavedNotes(list)
+        // 自由笔记只认 source=manual 的最新一条；
+        // 原来取 notes[0]（任意来源最新），保存带读笔记后会把带读内容灌进自由笔记框
+        const manual = list.find(n => (n.source || 'manual') === 'manual')
+        if (manual) { setManualNoteId(manual.id); setNotes(manual.content) }
+        if (list.some(n => (n.source || 'manual') !== 'manual')) setNotesOpen(true)
       })
       .catch(() => {})
     apiGet(`/cards/${savedRowId}`)
@@ -284,11 +293,14 @@ export default function PaperRead() {
     }
     if (savedRowId) {
       const timer = setTimeout(() => {
-        apiPost('/notes', { paper_rowid: savedRowId, content: notes }).catch(() => {})
+        // 带 note_id 走 UPDATE；不带的话后端每次 INSERT 新行，编辑几次就积一堆重复笔记
+        apiPost('/notes', { paper_rowid: savedRowId, content: notes, note_id: manualNoteId })
+          .then(d => { if (d?.ok && d.id && d.id !== manualNoteId) setManualNoteId(d.id) })
+          .catch(() => {})
       }, 1500)
       return () => clearTimeout(timer)
     }
-  }, [notes, paper, id, savedRowId])
+  }, [notes, paper, id, savedRowId, manualNoteId])
 
   // chat autosave (localStorage)
   useEffect(() => {
@@ -413,7 +425,11 @@ export default function PaperRead() {
       if (projectId !== null) {
         apiPatch(`/library/${data.id}/project`, { project_id: projectId }).catch(() => {})
       }
-      if (notes) apiPost('/notes', { paper_rowid: data.id, content: notes }).catch(() => {})
+      if (notes) {
+        apiPost('/notes', { paper_rowid: data.id, content: notes })
+          .then(d => { if (d?.ok && d.id) setManualNoteId(d.id) })
+          .catch(() => {})
+      }
     } catch { /* ignore */ }
   }
 
@@ -539,11 +555,26 @@ export default function PaperRead() {
         content: `${title}\n\n${deepReadGuide}`,
         source: 'deep_read',
       })
-      if (data.ok) setDeepReadSaved(true)
+      if (data.ok) {
+        setDeepReadSaved(true)
+        refreshSavedNotes(rowId)
+        setNotesOpen(true)
+      }
       else setDeepReadError(data.error || '保存失败，请稍后重试。')
     } catch {
       setDeepReadError('保存失败，请稍后重试。')
     }
+  }
+
+  const refreshSavedNotes = (rowId) => {
+    apiGet(`/notes/${rowId || savedRowId}`)
+      .then(d => setSavedNotes(d.notes || []))
+      .catch(() => {})
+  }
+
+  const deleteSavedNote = async (noteId) => {
+    const d = await apiDelete(`/notes/${noteId}`).catch(() => null)
+    if (d?.ok) setSavedNotes(prev => prev.filter(n => n.id !== noteId))
   }
 
   const jumpToPage = (p) => {
@@ -607,7 +638,7 @@ export default function PaperRead() {
         paper_rowid: rowId,
         messages: chatMessages,
       })
-      if (data.ok) { setSummarized(true); triggerRipple() }
+      if (data.ok) { setSummarized(true); triggerRipple(); refreshSavedNotes(rowId); setNotesOpen(true) }
       else setSummarizeError(data.error || '总结失败，请重试。')
     } catch { setSummarizeError('网络错误，请重试。') }
     finally { setSummarizing(false) }
@@ -868,6 +899,11 @@ export default function PaperRead() {
             onToggleTitleZh={toggleTitleZh}
             notes={notes}
             setNotes={setNotes}
+            savedNotes={savedNotes}
+            manualNoteId={manualNoteId}
+            onDeleteNote={deleteSavedNote}
+            notesOpen={notesOpen}
+            setNotesOpen={setNotesOpen}
             abstractZh={abstractZh}
             translating={translating}
             showTranslation={showTranslation}
@@ -1000,6 +1036,7 @@ function MemoryChannel(props) {
     projectPickerRef, saveToProject,
     titleZh, showTitleZh, titleTranslating, onToggleTitleZh,
     notes, setNotes,
+    savedNotes, manualNoteId, onDeleteNote, notesOpen, setNotesOpen,
     abstractZh, translating, showTranslation, setShowTranslation,
     setAbstractZh, setTranslating,
     cards, setCards, ensureSaved, cardSeed, setCardSeed,
@@ -1114,23 +1151,37 @@ function MemoryChannel(props) {
         </section>
       )}
 
-      {/* NOTES — collapsible */}
-      <details className="px-6 py-3 border-b border-navy/5 group">
-        <summary className="cursor-pointer flex items-center justify-between text-[10.5px] font-mono tracking-widest uppercase text-warm-gray/70 hover:text-navy list-none">
-          <span>我的笔记</span>
-          <ChevronDown size={12} className="group-open:rotate-180 transition-transform"/>
-        </summary>
-        <textarea
-          value={notes}
-          onChange={e => setNotes(e.target.value)}
-          placeholder="读完这篇，你想记下什么？"
-          className="mt-2 w-full bg-warm-white rounded-lg px-3 py-2 text-sm text-navy border border-navy/10 outline-none resize-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 leading-relaxed min-h-[120px]"/>
-        {notes && (
-          <p className="text-[10.5px] text-warm-gray/60 mt-1 italic">
-            {bookmarked ? '已自动保存到收藏' : '已保存到本地；收藏后永久'}
-          </p>
+      {/* NOTES — 已保存笔记列表（带读/对话总结/手写）+ 自由笔记输入 */}
+      <div className="px-6 py-3 border-b border-navy/5">
+        <button
+          onClick={() => setNotesOpen(o => !o)}
+          className="w-full flex items-center justify-between text-[10.5px] font-mono tracking-widest uppercase text-warm-gray/70 hover:text-navy">
+          <span>
+            我的笔记
+            {savedNotes.length > 0 && (
+              <span className="ml-1.5 text-coral font-semibold">{savedNotes.length}</span>
+            )}
+          </span>
+          <ChevronDown size={12} className={`transition-transform ${notesOpen ? 'rotate-180' : ''}`}/>
+        </button>
+        {notesOpen && (
+          <>
+            {savedNotes.filter(n => n.id !== manualNoteId).map(n => (
+              <SavedNoteItem key={n.id} note={n} onDelete={() => onDeleteNote(n.id)}/>
+            ))}
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="读完这篇，你想记下什么？"
+              className="mt-2 w-full bg-warm-white rounded-lg px-3 py-2 text-sm text-navy border border-navy/10 outline-none resize-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 leading-relaxed min-h-[120px]"/>
+            {notes && (
+              <p className="text-[10.5px] text-warm-gray/60 mt-1 italic">
+                {bookmarked ? '已自动保存到收藏' : '已保存到本地；收藏后永久'}
+              </p>
+            )}
+          </>
         )}
-      </details>
+      </div>
 
       {/* Title translate + abstract（次要） */}
       <details className="px-6 py-3 border-b border-navy/5 group">
@@ -1414,6 +1465,39 @@ function formatDeepReadSource(mode, page) {
 // ═════════════════════════════════════════════════════════════
 // helpers / sub-components
 // ═════════════════════════════════════════════════════════════
+const NOTE_SOURCE_LABELS = {
+  deep_read: '精读带读',
+  chat_summary: '对话总结',
+  manual: '手写笔记',
+}
+
+function SavedNoteItem({ note, onDelete }) {
+  const [expanded, setExpanded] = useState(false)
+  const long = (note.content || '').length > 180
+  return (
+    <div className="mt-2 bg-warm-white rounded-lg border border-navy/10 px-3 py-2">
+      <div className="flex items-center justify-between text-[10px] font-mono tracking-wide text-warm-gray/60">
+        <span>
+          <span className="text-mint-deep">{NOTE_SOURCE_LABELS[note.source] || '笔记'}</span>
+          {note.created_at && <> · {String(note.created_at).slice(0, 10)}</>}
+        </span>
+        <button onClick={onDelete} className="hover:text-coral transition-colors">删除</button>
+      </div>
+      <p
+        className="mt-1 text-[13px] text-navy whitespace-pre-wrap leading-relaxed overflow-hidden"
+        style={!expanded && long ? { display: '-webkit-box', WebkitLineClamp: 5, WebkitBoxOrient: 'vertical' } : undefined}>
+        {note.content}
+      </p>
+      {long && (
+        <button onClick={() => setExpanded(e => !e)}
+          className="mt-1 text-[11px] text-coral hover:text-coral-deep">
+          {expanded ? '收起' : '展开全文'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function SectionHeader({ left, right, accent }) {
   const accentClass = accent === 'coral' ? 'text-coral' : 'text-warm-gray'
   return (
