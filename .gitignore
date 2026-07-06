@@ -5,6 +5,11 @@
 __pycache__/
 *.pyc
 .env
+.env.bak*
+*.log
+
+# 软著/投稿等个人申报材料，不进公开仓库
+软著申请/
 
 # Secrets - API keys and user data
 **/data/config.json
