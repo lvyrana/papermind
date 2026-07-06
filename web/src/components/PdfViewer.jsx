@@ -33,11 +33,21 @@ import 'pdfjs-dist/web/pdf_viewer.css'
 const DEFAULT_SCALE = 1.4
 const MIN_SCALE = 0.6
 const MAX_SCALE = 3.0
+const MAX_CANVAS_DPR = 2
+const MAX_CANVAS_PIXELS = 6_000_000
+
+function getCanvasOutputScale(viewport) {
+  const deviceScale = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR)
+  const cssPixels = viewport.width * viewport.height
+  if (cssPixels <= 0) return 1
+  const pixelLimitedScale = Math.sqrt(MAX_CANVAS_PIXELS / cssPixels)
+  return Math.max(1, Math.min(deviceScale, pixelLimitedScale))
+}
 
 const PdfViewer = forwardRef(function PdfViewer(
   {
     url, originalUrl, onSelection, onPageChange, onTextReady, sectionHint,
-    headerRight, onUploadLocalPdf, uploadingLocalPdf,
+    headerLeft, headerRight, onUploadLocalPdf, uploadingLocalPdf,
   },
   ref,
 ) {
@@ -105,10 +115,15 @@ const PdfViewer = forwardRef(function PdfViewer(
       `
       pageWrap.dataset.pageNum = String(pageNum)
 
+      const outputScale = getCanvasOutputScale(viewport)
       const canvas = document.createElement('canvas')
-      canvas.width = viewport.width
-      canvas.height = viewport.height
-      canvas.style.cssText = 'display:block;'
+      canvas.width = Math.floor(viewport.width * outputScale)
+      canvas.height = Math.floor(viewport.height * outputScale)
+      canvas.style.cssText = `
+        display:block;
+        width:${viewport.width}px;
+        height:${viewport.height}px;
+      `
 
       const textLayer = document.createElement('div')
       textLayer.className = 'textLayer'
@@ -126,7 +141,10 @@ const PdfViewer = forwardRef(function PdfViewer(
       pagesContainerRef.current?.appendChild(pageWrap)
 
       const ctx = canvas.getContext('2d')
-      await page.render({ canvasContext: ctx, viewport }).promise
+      const transform = outputScale !== 1
+        ? [outputScale, 0, 0, outputScale, 0, 0]
+        : null
+      await page.render({ canvasContext: ctx, viewport, transform }).promise
 
       const textContent = await page.getTextContent()
       if (pdfjsLib.TextLayer) {
@@ -147,7 +165,7 @@ const PdfViewer = forwardRef(function PdfViewer(
         }).promise.catch(() => {})
       }
 
-      pageRefs.current[pageNum] = { wrapEl: pageWrap, canvas, textLayer, viewport, scale: theScale }
+      pageRefs.current[pageNum] = { wrapEl: pageWrap, canvas, textLayer, viewport, scale: theScale, outputScale }
       onTextReady?.(pageNum, textContent)
     } catch (err) {
       // 单页渲染失败不影响其它页
@@ -266,6 +284,7 @@ const PdfViewer = forwardRef(function PdfViewer(
     <div className="pdf-viewer-root flex flex-col h-full bg-gradient-to-b from-navy/[0.04] to-navy/[0.06]">
       {/* toolbar */}
       <div className="pdf-toolbar sticky top-0 z-[5] flex items-center gap-3 px-6 py-2 bg-cream/95 backdrop-blur border-b border-navy/5 text-xs text-warm-gray">
+        {headerLeft}
         <button
           onClick={() => goToPage(Math.max(1, currentPage - 1))}
           disabled={currentPage <= 1 || loading}

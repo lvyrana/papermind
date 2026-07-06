@@ -132,6 +132,8 @@ class ChatRequest(BaseModel):
     message: str = Field(max_length=2000)
     history: list[dict] = []
     paper_rowid: int = 0
+    current_page: Optional[int] = None
+    current_page_text: str = Field(default="", max_length=12000)
 
 class SummarizeChatRequest(BaseModel):
     paper_title: str
@@ -1476,6 +1478,16 @@ async def api_chat(data: ChatRequest, request: Request):
         if notes:
             notes_context = f"\n用户关于这篇论文的笔记：\n{notes[0]['content'][:500]}"
 
+    page_context = ""
+    current_page_text = (data.current_page_text or "").strip()
+    if current_page_text:
+        page_label = f"第 {data.current_page} 页" if data.current_page else "当前页"
+        page_context = f"""
+用户当前正在看的页面：{page_label}
+当前页 PDF 文字层内容（可能包含图题、图注、坐标轴文字和正文；这不是视觉识别，若图像细节不足，应说明只能依据文字层/图注判断）：
+{current_page_text[:5000]}
+"""
+
     system_prompt = f"""你是一位学术研究伙伴。用户正在阅读一篇论文，请基于论文内容和用户的研究背景来回答问题。
 用中文回答，专业但亲切，像同事在聊天，不像在写报告。
 
@@ -1484,6 +1496,7 @@ async def api_chat(data: ChatRequest, request: Request):
 
 {f"用户研究背景：{chr(10)}{profile_text}" if profile_text else ""}
 {notes_context}
+{page_context}
 
 回答要求：
 - 直接回答问题，控制在 150-250 字
@@ -1491,6 +1504,10 @@ async def api_chat(data: ChatRequest, request: Request):
 - 可以用短列表，但不要超过 3 条
 - 结合用户研究背景给出具体建议
 - 引用论文数据时给出具体数字"""
+    if page_context:
+        system_prompt += """
+- 如果用户问 Fig/Figure/图/表/这张图/这一页/上面这个，优先根据当前页文字层、图题和图注解释；不要直接说“我看不见图”，除非当前页文字也不足
+- 对图表问题，要先说明这张图想比较什么，再解释各 panel/坐标轴/颜色/组别代表什么，最后讲它支持了什么结论"""
 
     if not _has_llm_config(task="chat"):
         return {"reply": "AI 服务暂不可用，请稍后重试", "ok": False}

@@ -2,8 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
 import {
   ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2,
-  FileText, Download, ExternalLink, Languages, Mic, MicOff,
+  FileText, Download, ExternalLink, Mic, MicOff,
   ChevronDown, ChevronUp, MessageSquare, Quote as QuoteIcon, X, Layers,
+  GripVertical, PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, apiPatch, API_BASE, getUserId } from '../api'
@@ -21,7 +22,7 @@ import CardDrawer from '../components/CardDrawer'
    2. 三栏：左 (240) TOC + meta + actions / 中 PDF / 右 (420) 记忆通道
    3. 中栏的 PDF 用 pdfjs-dist 渲染（支持文本选中），无法渲染时降级为「在新标签打开」
    4. 划词浮窗 → 一键把这段话作为 quote 灌进右栏 chat foot
-   5. 右栏「你在这篇里追问过」= 把过去 chat 中 user 消息里带 quote 的，按段归档
+   5. 右栏只在已有 quote 时展示「你在这篇里追问过」，避免空占位打断精读
    6. localStorage 兜底：未收藏的论文也能存 quotes + chat（和原版一致）
    7. mobile (< 1024px) 退化为单栏 tab，等同老版功能不丢
 
@@ -33,6 +34,30 @@ import CardDrawer from '../components/CardDrawer'
 // ── helpers ──────────────────────────────────────────────────
 const QUOTE_KEY = (id) => `paper-quotes-${id}`
 const sliceId = (paper, id) => paper?.pmid || paper?.paper_id || id
+const LEFT_RAIL_STORAGE_KEY = 'paper-read-left-rail'
+const RIGHT_PANEL_STORAGE_KEY = 'paper-read-right-panel-width'
+const RIGHT_PANEL_DEFAULT_WIDTH = 420
+const RIGHT_PANEL_MIN_WIDTH = 340
+const RIGHT_PANEL_MAX_WIDTH = 620
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function getRightPanelMaxWidth() {
+  if (typeof window === 'undefined') return RIGHT_PANEL_MAX_WIDTH
+  return Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(RIGHT_PANEL_MAX_WIDTH, Math.floor(window.innerWidth * 0.55)))
+}
+
+function getStoredRightPanelWidth() {
+  try {
+    const saved = Number(localStorage.getItem(RIGHT_PANEL_STORAGE_KEY))
+    if (Number.isFinite(saved)) {
+      return clampNumber(saved, RIGHT_PANEL_MIN_WIDTH, getRightPanelMaxWidth())
+    }
+  } catch { /* ignore */ }
+  return RIGHT_PANEL_DEFAULT_WIDTH
+}
 
 function loadLocalQuotes(id) {
   try { return JSON.parse(localStorage.getItem(QUOTE_KEY(id)) || '[]') }
@@ -62,17 +87,6 @@ function deriveQuotesFromHistory(chatMessages) {
     }
   }
   return quotes
-}
-
-// ── icons / glyphs ───────────────────────────────────────────
-function SproutGlyph({ size = 12 }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 14 14">
-      <line x1="7" y1="12" x2="7" y2="7" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
-      <path d="M7 8 C7 5 9 3.5 11 3.5 C11 6 9 8 7 8 Z" fill="currentColor" opacity="0.85"/>
-      <path d="M7 7.5 C7 5 5 3.5 3 3.5 C3 6 5 7.5 7 7.5 Z" fill="currentColor" opacity="0.5"/>
-    </svg>
-  )
 }
 
 function ReasonGlyph({ size = 11 }) {
@@ -116,12 +130,6 @@ export default function PaperRead() {
   const [pdfUrlError, setPdfUrlError] = useState(null)
   const [pdfPageTexts, setPdfPageTexts] = useState({})
   const [ripple, setRipple] = useState(false)
-  const [abstractZh, setAbstractZh] = useState(null)
-  const [translating, setTranslating] = useState(false)
-  const [showTranslation, setShowTranslation] = useState(false)
-  const [titleZh, setTitleZh] = useState(null)
-  const [showTitleZh, setShowTitleZh] = useState(false)
-  const [titleTranslating, setTitleTranslating] = useState(false)
   const [summarizeError, setSummarizeError] = useState(null)
   const [projects, setProjects] = useState([])
   const [showProjectPicker, setShowProjectPicker] = useState(false)
@@ -138,6 +146,11 @@ export default function PaperRead() {
   const [currentPage, setCurrentPage] = useState(1)
   const [chatOpen, setChatOpen] = useState(true)
   const [mobileTab, setMobileTab] = useState('pdf')  // pdf | meta | chat
+  const [leftRailOpen, setLeftRailOpen] = useState(() => {
+    try { return localStorage.getItem(LEFT_RAIL_STORAGE_KEY) !== 'closed' }
+    catch { return true }
+  })
+  const [rightPanelWidth, setRightPanelWidth] = useState(getStoredRightPanelWidth)
 
   // — reading cards —
   const [cards, setCards] = useState([])
@@ -597,6 +610,8 @@ export default function PaperRead() {
     setChatLoading(true)
 
     try {
+      const contextPage = sentQuote?.page || currentPage
+      const contextText = (pdfPageTexts[contextPage] || currentPageText || '').slice(0, 10000)
       const data = await apiPost('/chat', {
         paper_title: paper?.title || '',
         paper_abstract: paper?.abstract || '',
@@ -605,6 +620,8 @@ export default function PaperRead() {
           : chatInput,
         history: chatMessages,
         paper_rowid: savedRowId || 0,
+        current_page: contextPage,
+        current_page_text: contextText,
       })
       setChatMessages(prev => [...prev, { role: 'assistant', content: data.reply }])
     } catch {
@@ -666,24 +683,61 @@ export default function PaperRead() {
     setShowExport(false)
   }
 
-  // ── title translate (unchanged) ──
-  const toggleTitleZh = async () => {
-    if (!titleZh && !titleTranslating) {
-      setTitleTranslating(true)
-      try {
-        const data = await apiPost('/translate', { text: paper.title })
-        if (data.ok) { setTitleZh(data.translated); setShowTitleZh(true) }
-      } catch { /* ignore */ }
-      finally { setTitleTranslating(false) }
-    } else setShowTitleZh(s => !s)
-  }
-
   // ── jump to quote ──
   const jumpToQuote = (q) => {
     if (q.page && pdfViewerRef.current) {
       pdfViewerRef.current.goToPage(q.page)
     }
   }
+
+  const toggleLeftRail = useCallback(() => {
+    setLeftRailOpen(prev => {
+      const next = !prev
+      try { localStorage.setItem(LEFT_RAIL_STORAGE_KEY, next ? 'open' : 'closed') } catch { /* ignore */ }
+      return next
+    })
+  }, [])
+
+  const persistRightPanelWidth = useCallback((width) => {
+    const next = clampNumber(width, RIGHT_PANEL_MIN_WIDTH, getRightPanelMaxWidth())
+    try { localStorage.setItem(RIGHT_PANEL_STORAGE_KEY, String(next)) } catch { /* ignore */ }
+    return next
+  }, [])
+
+  const startRightPanelResize = useCallback((event) => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = rightPanelWidth
+    let latestWidth = startWidth
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const onPointerMove = (moveEvent) => {
+      const delta = startX - moveEvent.clientX
+      latestWidth = clampNumber(startWidth + delta, RIGHT_PANEL_MIN_WIDTH, getRightPanelMaxWidth())
+      setRightPanelWidth(latestWidth)
+    }
+    const stopResize = () => {
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+      persistRightPanelWidth(latestWidth)
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', stopResize)
+      window.removeEventListener('pointercancel', stopResize)
+    }
+
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', stopResize)
+    window.addEventListener('pointercancel', stopResize)
+  }, [persistRightPanelWidth, rightPanelWidth])
+
+  const handleRightPanelResizeKey = useCallback((event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    setRightPanelWidth(prev => persistRightPanelWidth(prev + (event.key === 'ArrowLeft' ? 24 : -24)))
+  }, [persistRightPanelWidth])
 
   // ── loading states ──
   if (paperLoading) {
@@ -723,23 +777,36 @@ export default function PaperRead() {
       </div>
 
       {/* ─── 3-pane main ─── */}
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[240px_1fr_420px] xl:grid-cols-[240px_1fr_420px] 2xl:grid-cols-[260px_1fr_440px]">
+      <div
+        className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[var(--left-rail-width)_minmax(0,1fr)_10px_var(--right-panel-width)] transition-[grid-template-columns] duration-200 ease-out"
+        style={{
+          '--left-rail-width': leftRailOpen ? '240px' : '0px',
+          '--right-panel-width': `${rightPanelWidth}px`,
+        }}>
 
         {/* ───── LEFT RAIL (hidden on mobile, optionally on tablet) ───── */}
-        <aside className="hidden lg:flex flex-col border-r border-navy/5 bg-warm-white/55 overflow-y-auto px-5 py-5">
-          <RailContent
-            paper={paper}
-            bookmarked={bookmarked}
-            onToggleBookmark={toggleBookmark}
-            bookmarkBtnRef={bookmarkBtnRef}
-            ripple={ripple}
-            externalLinkRef={externalLinkRef}
-            onExport={handleExport}
-            showExport={showExport}
-            setShowExport={setShowExport}
-            recordActionOnce={recordActionOnce}
-            currentPage={currentPage}
-          />
+        <aside
+          aria-hidden={!leftRailOpen}
+          className={`hidden lg:flex flex-col bg-warm-white/55 overflow-y-auto transition-[opacity,padding,border-color] duration-200 ease-out ${
+            leftRailOpen
+              ? 'border-r border-navy/5 px-5 py-5 opacity-100'
+              : 'border-r-0 px-0 py-0 opacity-0 pointer-events-none'
+          }`}>
+          {leftRailOpen && (
+            <RailContent
+              paper={paper}
+              bookmarked={bookmarked}
+              onToggleBookmark={toggleBookmark}
+              bookmarkBtnRef={bookmarkBtnRef}
+              ripple={ripple}
+              externalLinkRef={externalLinkRef}
+              onExport={handleExport}
+              showExport={showExport}
+              setShowExport={setShowExport}
+              recordActionOnce={recordActionOnce}
+              currentPage={currentPage}
+            />
+          )}
         </aside>
 
         {/* ───── MIDDLE PDF ───── */}
@@ -778,6 +845,16 @@ export default function PaperRead() {
                 onUploadLocalPdf={handleUploadPdf}
                 uploadingLocalPdf={uploadingPdf}
                 sectionHint={null}
+                headerLeft={
+                  <button
+                    type="button"
+                    onClick={toggleLeftRail}
+                    aria-expanded={leftRailOpen}
+                    aria-label={leftRailOpen ? '收起左侧面板' : '展开左侧面板'}
+                    className="hidden lg:inline-flex h-7 w-7 items-center justify-center rounded-md border border-navy/10 bg-warm-white/70 text-warm-gray shadow-[0_1px_2px_rgba(30,58,95,.05)] hover:bg-warm-white hover:text-navy hover:border-navy/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-coral/40 transition-colors">
+                    {leftRailOpen ? <PanelLeftClose size={15}/> : <PanelLeftOpen size={15}/>}
+                  </button>
+                }
                 headerRight={
                   quotes.length > 0 && (
                     <span className="font-mono text-[10px] tracking-wider uppercase">
@@ -841,8 +918,22 @@ export default function PaperRead() {
           </div>
         </main>
 
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整右侧面板宽度"
+          tabIndex={0}
+          onPointerDown={startRightPanelResize}
+          onKeyDown={handleRightPanelResizeKey}
+          className="hidden lg:flex cursor-col-resize touch-none items-center justify-center bg-cream transition-colors group focus-visible:outline focus-visible:outline-2 focus-visible:outline-coral/35">
+          <div className="h-full w-px bg-navy/8 group-hover:bg-coral/30 group-focus-visible:bg-coral/35 transition-colors"/>
+          <div className="absolute flex h-8 w-5 items-center justify-center rounded-md bg-cream text-warm-gray/45 opacity-0 shadow-[0_2px_10px_rgba(30,58,95,.10)] ring-1 ring-navy/8 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+            <GripVertical size={13}/>
+          </div>
+        </div>
+
         {/* ───── RIGHT MEMORY CHANNEL ───── */}
-        <aside className={`border-l border-navy/5 bg-cream flex flex-col overflow-hidden lg:flex ${mobileTab === 'chat' ? 'flex' : 'hidden lg:flex'}`}>
+        <aside className={`border-l border-navy/5 bg-cream flex flex-col overflow-hidden lg:border-l-0 lg:flex ${mobileTab === 'chat' ? 'flex' : 'hidden lg:flex'}`}>
           <MemoryChannel
             paper={paper}
             quotes={quotes}
@@ -893,11 +984,6 @@ export default function PaperRead() {
             setShowProjectPicker={setShowProjectPicker}
             projectPickerRef={projectPickerRef}
             saveToProject={saveToProject}
-            // title translate + notes (compact)
-            titleZh={titleZh}
-            showTitleZh={showTitleZh}
-            titleTranslating={titleTranslating}
-            onToggleTitleZh={toggleTitleZh}
             notes={notes}
             setNotes={setNotes}
             savedNotes={savedNotes}
@@ -905,12 +991,6 @@ export default function PaperRead() {
             onDeleteNote={deleteSavedNote}
             notesOpen={notesOpen}
             setNotesOpen={setNotesOpen}
-            abstractZh={abstractZh}
-            translating={translating}
-            showTranslation={showTranslation}
-            setShowTranslation={setShowTranslation}
-            setAbstractZh={setAbstractZh}
-            setTranslating={setTranslating}
           />
         </aside>
       </div>
@@ -976,6 +1056,18 @@ function RailContent({
         )}
       </dl>
 
+      {paper.abstract && (
+        <details className="group mb-5 border-y border-navy/5 py-3">
+          <summary className="cursor-pointer list-none flex items-center justify-between gap-3">
+            <span className="font-mono text-[10px] tracking-widest uppercase text-warm-gray/70">Abstract</span>
+            <ChevronDown size={12} className="text-warm-gray/60 transition-transform group-open:rotate-180"/>
+          </summary>
+          <p className="mt-2 max-h-52 overflow-y-auto pr-1 text-xs leading-relaxed text-navy/72">
+            {paper.abstract}
+          </p>
+        </details>
+      )}
+
       {/* actions */}
       <h4 className="font-mono text-[10px] tracking-widest uppercase text-warm-gray/70 mb-2">Actions</h4>
       <div className="flex flex-col gap-1.5">
@@ -1035,11 +1127,8 @@ function MemoryChannel(props) {
     chatEndRef, chatInputRef, chatFootRef, jumpToQuote,
     bookmarked, onToggleBookmark, projects, showProjectPicker, setShowProjectPicker,
     projectPickerRef, saveToProject,
-    titleZh, showTitleZh, titleTranslating, onToggleTitleZh,
     notes, setNotes,
     savedNotes, manualNoteId, onDeleteNote, notesOpen, setNotesOpen,
-    abstractZh, translating, showTranslation, setShowTranslation,
-    setAbstractZh, setTranslating,
     cards, setCards, ensureSaved, cardSeed, setCardSeed,
     seedCardFromChat, jumpToPage,
     currentPage, currentPageText, deepReadGuide, deepReadSource,
@@ -1123,32 +1212,15 @@ function MemoryChannel(props) {
       />
 
       {/* ★ YOUR QUOTES */}
-      <section className="px-6 py-4 border-b border-navy/5">
-        <SectionHeader
-          left={<><QuoteIcon size={11}/> 你在这篇里追问过</>}
-          right={quotes.length > 0 ? `${quotes.length} 段` : null}
-          accent="coral"/>
-        {quotes.length === 0 ? (
-          <div className="text-xs text-warm-gray/70 leading-relaxed py-3 px-3 border border-dashed border-navy/15 rounded-xl text-center">
-            划选 PDF 中的文字，<br/>把它带进对话作为追问的起点
-          </div>
-        ) : (
-          quotes.map(q => (
-            <QuoteCard key={q.n} quote={q} onJump={() => jumpToQuote(q)}/>
-          ))
-        )}
-      </section>
-
-      {/* PROFILE PREVIEW
-          TODO(backend): 真实派生需要 LLM 看完这次对话之后给出 add/strengthen 提议
-          当前只在「收藏 + chat 中有 >= 2 个 user 消息」时 占位显示 */}
-      {bookmarked && chatMessages.filter(m => m.role === 'user').length >= 2 && (
+      {quotes.length > 0 && (
         <section className="px-6 py-4 border-b border-navy/5">
           <SectionHeader
-            left={<><SproutGlyph/> 这篇会让画像往这里走</>}
-            right="收藏时生效"
-            accent="muted"/>
-          <ProfileUpdatePreview paper={paper}/>
+            left={<><QuoteIcon size={11}/> 你在这篇里追问过</>}
+            right={`${quotes.length} 段`}
+            accent="coral"/>
+          {quotes.map(q => (
+            <QuoteCard key={q.n} quote={q} onJump={() => jumpToQuote(q)}/>
+          ))}
         </section>
       )}
 
@@ -1183,51 +1255,6 @@ function MemoryChannel(props) {
           </>
         )}
       </div>
-
-      {/* Title translate + abstract（次要） */}
-      <details className="px-6 py-3 border-b border-navy/5 group">
-        <summary className="cursor-pointer flex items-center justify-between text-[10.5px] font-mono tracking-widest uppercase text-warm-gray/70 hover:text-navy list-none">
-          <span>标题翻译 · 摘要</span>
-          <ChevronDown size={12} className="group-open:rotate-180 transition-transform"/>
-        </summary>
-
-        <div className="mt-2 mb-3">
-          <button onClick={onToggleTitleZh}
-            disabled={titleTranslating}
-            className="inline-flex items-center gap-1 text-xs text-warm-gray hover:text-navy disabled:opacity-50">
-            {titleTranslating
-              ? <><Loader2 size={11} className="animate-spin"/> 翻译中…</>
-              : <><Languages size={11}/> {showTitleZh ? '回到原文' : '中文标题'}</>}
-          </button>
-          {showTitleZh && titleZh && (
-            <p className="text-sm text-navy/80 mt-1 leading-snug" style={{ fontFamily: '"Noto Serif SC", serif' }}>{titleZh}</p>
-          )}
-        </div>
-
-        {paper.abstract && (
-          <div className="text-xs text-navy/70 leading-relaxed">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-warm-gray/60">{showTranslation ? '中文翻译' : 'Abstract'}</span>
-              <button
-                onClick={async () => {
-                  if (!abstractZh && !translating) {
-                    setTranslating(true)
-                    try {
-                      const data = await apiPost('/translate', { text: paper.abstract })
-                      if (data.ok) { setAbstractZh(data.translated); setShowTranslation(true) }
-                    } catch { /* ignore */ }
-                    finally { setTranslating(false) }
-                  } else setShowTranslation(!showTranslation)
-                }}
-                disabled={translating}
-                className="inline-flex items-center gap-1 text-[11px] text-warm-gray hover:text-navy">
-                {translating ? <><Loader2 size={10} className="animate-spin"/> 翻译中…</> : <><Languages size={10}/> {showTranslation ? '原文' : '译'}</>}
-              </button>
-            </div>
-            <p>{showTranslation && abstractZh ? abstractZh : paper.abstract}</p>
-          </div>
-        )}
-      </details>
 
       {/* spacer */}
       <div className="flex-1"/>
@@ -1571,37 +1598,6 @@ function NoPdfState({ paper, error, onUpload, uploading }) {
             </a>
           )}
         </div>
-      </div>
-    </div>
-  )
-}
-
-function ProfileUpdatePreview({ paper }) {
-  // TODO(backend): 看完 chat 后由后端给出真实的画像更新建议
-  // 当前是从 paper.relevance 抽 1-2 个高频词做占位
-  const candidates = (paper.relevance || '')
-    .split(/[，、,。\s]+/)
-    .map(s => s.trim())
-    .filter(s => s.length >= 2 && s.length <= 8)
-    .slice(0, 2)
-  if (candidates.length === 0) return null
-  return (
-    <div className="bg-mint/10 border border-mint/30 rounded-xl px-3.5 py-3">
-      <div className="flex flex-col gap-1.5 mb-3">
-        {candidates.map((tag, i) => (
-          <div key={tag} className="flex items-center gap-2 text-[12.5px] text-navy">
-            <span className="font-mono text-[11.5px] text-mint-deep w-3">+</span>
-            <span className={`text-[11.5px] px-2 py-0.5 rounded-full ${
-              i === 0 ? 'bg-coral/13 text-coral-deep' : 'bg-mint/20 text-mint-deep'
-            }`}>{tag}</span>
-            <span className="text-[10.5px] text-warm-gray">{i === 0 ? '新方向' : '强化'}</span>
-          </div>
-        ))}
-      </div>
-      <div className="flex gap-1.5">
-        <button className="text-[11px] px-3 py-1 rounded-full bg-mint-deep text-warm-white">采纳</button>
-        <button className="text-[11px] px-3 py-1 rounded-full border border-mint/40 text-mint-deep">改一下</button>
-        <button className="text-[11px] px-3 py-1 rounded-full text-warm-gray">不要</button>
       </div>
     </div>
   )

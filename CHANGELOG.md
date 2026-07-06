@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.11.3 - 2026-07-06
+
+### 图表追问上下文 + 精读右栏减负
+
+- 对话请求现在会携带当前 PDF 页码和当前页 text layer 文本；用户问 “Fig 3 / Figure / 图 / 表” 时，后端会优先用当前页文字、图注和周围段落解释，而不是直接说“看不见图”
+- 右栏移除空状态的「你在这篇里追问过」虚线占位：只有真正发出带 quote 的追问后，才展示 quote 卡片归档
+- 移除「这篇会让画像往这里走」预览；这块没有真实后端画像更新闭环，放在精读页会显得没头没尾
+- 移除右栏「标题翻译 · 摘要」折叠区；标题已在左侧元信息中展示，摘要改为左侧元信息栏里的低干扰 `Abstract` 折叠区
+- 保持划词浮窗作为选区后的主入口：问 paperMind / 精读这段 / 存为卡片，后续若要做更像专业阅读器的高亮，需要单独实现 quote anchor 和自定义 highlight overlay
+
+#### 验证
+
+- `env PYTHONPYCACHEPREFIX=/Users/loujiahui/Desktop/papermind/.pycache-check /Users/loujiahui/Desktop/papermind/papermind/.venv_new/bin/python -m py_compile papermind/api.py` 通过
+- `npm run build` 通过；仍有既有的 `pdfjs-dist` `renderTextLayer` 构建 warning，未阻断构建
+
+---
+
 ## v0.11.2 - 2026-07-05
 
 ### 阅读页笔记浮出——已保存的笔记终于看得见了
