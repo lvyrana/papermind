@@ -10,10 +10,17 @@
 - 移除右栏「标题翻译 · 摘要」折叠区；标题已在左侧元信息中展示，摘要改为左侧元信息栏里的低干扰 `Abstract` 折叠区
 - 保持划词浮窗作为选区后的主入口：问 paperMind / 精读这段 / 存为卡片，后续若要做更像专业阅读器的高亮，需要单独实现 quote anchor 和自定义 highlight overlay
 
+### PDF 阅读器布局微调
+
+- PDF canvas 渲染按设备像素比提高清晰度，同时限制单页最大绘制像素，避免 Retina 屏上文字发糊但不让大 PDF 过度吃内存
+- 左侧论文信息栏支持桌面端收起/展开，状态写入本地偏好；控制按钮从顶栏移入 PDF 工具栏，放在上一页箭头和页码前，更接近 Zotero/专业阅读器的布局习惯
+- 右侧精读工作台支持手动拖拽调整宽度，并记住上次宽度；保留键盘方向键微调，移动端仍沿用原来的 PDF / 元信息 / 精读 tab
+
 #### 验证
 
 - `env PYTHONPYCACHEPREFIX=/Users/loujiahui/Desktop/papermind/.pycache-check /Users/loujiahui/Desktop/papermind/papermind/.venv_new/bin/python -m py_compile papermind/api.py` 通过
 - `npm run build` 通过；仍有既有的 `pdfjs-dist` `renderTextLayer` 构建 warning，未阻断构建
+- `npm run lint` 仍被既有规则债阻断：`PdfViewer.jsx` effect 同步 setState、`Terrain.jsx` fast-refresh export、`PaperRead.jsx` 旧 quote/project picker 未使用变量；本次布局微调未新增 lint 类别
 
 ---
 
