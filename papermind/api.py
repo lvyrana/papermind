@@ -41,6 +41,7 @@ from src.database import (
     create_project, get_projects, update_project, delete_project, set_paper_project,
     set_paper_has_pdf, get_paper_owner,
     save_card, get_cards, update_card, delete_card, get_card_owner, CARD_TYPES,
+    save_quote, get_quotes, delete_quote, get_quote_owner,
 )
 from src.config_store import (
     get_custom_provider, save_custom_provider, get_custom_provider_safe,
@@ -126,6 +127,13 @@ class ProfileData(BaseModel):
 class MemoryActionRequest(BaseModel):
     force: bool = False
 
+class QuotePayload(BaseModel):
+    text: str = Field(default="", max_length=4000)
+    page: Optional[int] = None
+    section: Optional[str] = None
+    anchor: dict = Field(default_factory=dict)
+    created_at: Optional[str] = None
+
 class ChatRequest(BaseModel):
     paper_title: str = Field(max_length=500)
     paper_abstract: str = Field(default="", max_length=5000)
@@ -134,6 +142,7 @@ class ChatRequest(BaseModel):
     paper_rowid: int = 0
     current_page: Optional[int] = None
     current_page_text: str = Field(default="", max_length=12000)
+    quote: Optional[QuotePayload] = None
 
 class SummarizeChatRequest(BaseModel):
     paper_title: str
@@ -149,6 +158,16 @@ class SaveNoteRequest(BaseModel):
     content: str
     source: str = "manual"
     note_id: int = None
+
+class SaveQuoteRequest(BaseModel):
+    paper_rowid: int
+    text: str = Field(min_length=1, max_length=4000)
+    page: Optional[int] = None
+    section: Optional[str] = None
+    anchor: dict = Field(default_factory=dict)
+    question: str = Field(default="", max_length=2000)
+    answer: str = Field(default="", max_length=4000)
+    source: str = Field(default="quote", max_length=30)
 
 class FeedbackRequest(BaseModel):
     type: str = "general"
@@ -1315,6 +1334,47 @@ def api_delete_note(note_id: int, request: Request):
     return {"ok": True}
 
 
+# ========== Paper Quote Routes ==========
+
+@app.get("/api/quotes/{paper_rowid}")
+def api_get_quotes(paper_rowid: int, request: Request):
+    """获取某篇论文的结构化 quote（需验证归属）"""
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(paper_rowid, uid):
+        return {"quotes": []}
+    return {"quotes": get_quotes(paper_rowid)}
+
+
+@app.post("/api/quotes")
+def api_save_quote(data: SaveQuoteRequest, request: Request):
+    """保存一条结构化 quote，用于刷新后恢复高亮和追问记录。"""
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(data.paper_rowid, uid):
+        return {"ok": False, "error": "not found"}
+    quote = save_quote(
+        paper_rowid=data.paper_rowid,
+        text=data.text,
+        page=data.page,
+        section=data.section or "",
+        anchor=data.anchor,
+        question=data.question,
+        answer=data.answer,
+        source=data.source or "quote",
+    )
+    increment_recent_events(uid)
+    return {"ok": True, "quote": quote}
+
+
+@app.delete("/api/quotes/{quote_id}")
+def api_delete_quote(quote_id: int, request: Request):
+    """删除一条结构化 quote（需验证归属）"""
+    uid = _get_user_id(request)
+    if get_quote_owner(quote_id) != uid:
+        return {"ok": False, "error": "not found"}
+    delete_quote(quote_id)
+    return {"ok": True}
+
+
 # ========== Reading Cards Routes ==========
 
 CARD_TYPE_LABELS = {
@@ -1515,7 +1575,12 @@ async def api_chat(data: ChatRequest, request: Request):
     messages = [{"role": "system", "content": system_prompt}]
     for msg in data.history[-8:]:
         messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
-    messages.append({"role": "user", "content": data.message})
+
+    user_content = data.message
+    if data.quote and data.quote.text:
+        page_note = f" p.{data.quote.page}" if data.quote.page else ""
+        user_content = f"[引用{page_note}] \"{data.quote.text}\"\n\n{data.message}"
+    messages.append({"role": "user", "content": user_content})
 
     try:
         reply, _, _ = await _llm_chat_complete_async(
@@ -1533,12 +1598,24 @@ async def api_chat(data: ChatRequest, request: Request):
             increment_rate_limit(uid, "chat")
 
         # 如果已收藏，持久化对话
+        saved_quote = None
         if data.paper_rowid:
-            save_chat_message(data.paper_rowid, "user", data.message)
+            save_chat_message(data.paper_rowid, "user", user_content)
             save_chat_message(data.paper_rowid, "assistant", reply)
+            if data.quote and data.quote.text:
+                saved_quote = save_quote(
+                    paper_rowid=data.paper_rowid,
+                    text=data.quote.text,
+                    page=data.quote.page,
+                    section=data.quote.section or "",
+                    anchor=data.quote.anchor,
+                    question=data.message,
+                    answer=reply,
+                    source="chat",
+                )
             increment_recent_events(uid)  # 对话 = 关键行为
 
-        return {"reply": reply, "ok": True}
+        return {"reply": reply, "ok": True, "quote": saved_quote}
     except Exception as e:
         print(f"[api] chat 失败: {e}")
         return {"reply": "AI 回复失败，请稍后重试。", "ok": False}

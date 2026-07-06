@@ -47,7 +47,7 @@ function getCanvasOutputScale(viewport) {
 const PdfViewer = forwardRef(function PdfViewer(
   {
     url, originalUrl, onSelection, onPageChange, onTextReady, sectionHint,
-    headerLeft, headerRight, onUploadLocalPdf, uploadingLocalPdf,
+    headerLeft, headerRight, onUploadLocalPdf, uploadingLocalPdf, highlights = [],
   },
   ref,
 ) {
@@ -55,16 +55,68 @@ const PdfViewer = forwardRef(function PdfViewer(
   const pagesContainerRef = useRef(null)
   const pdfRef = useRef(null)
   const pageRefs = useRef({})  // pageNum -> { canvasEl, textLayerEl, viewport, scale }
+  const highlightsRef = useRef([])
   const [numPages, setNumPages] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const [scale, setScale] = useState(DEFAULT_SCALE)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
+  const getHighlightAnchor = useCallback((highlight) => {
+    if (!highlight) return {}
+    if (highlight.anchor && typeof highlight.anchor === 'object') return highlight.anchor
+    if (typeof highlight.anchor === 'string') {
+      try { return JSON.parse(highlight.anchor) } catch { return {} }
+    }
+    return {}
+  }, [])
+
+  const paintPageHighlights = useCallback((pageNum) => {
+    const pageInfo = pageRefs.current[pageNum]
+    if (!pageInfo?.highlightLayer) return
+    pageInfo.highlightLayer.innerHTML = ''
+    const pageHighlights = (highlightsRef.current || [])
+      .filter(h => Number(h.page) === Number(pageNum))
+
+    for (const h of pageHighlights) {
+      const anchor = getHighlightAnchor(h)
+      const rects = Array.isArray(anchor.rects) ? anchor.rects : []
+      if (!rects.length) continue
+      const sourceScale = Number(anchor.scale) || pageInfo.scale || 1
+      const ratio = (pageInfo.scale || 1) / sourceScale
+      const id = String(h.id || h.created_at || `${pageNum}-${h.text?.slice(0, 24)}`)
+
+      for (const rect of rects) {
+        const width = Number(rect.width) * ratio
+        const height = Number(rect.height) * ratio
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width < 2 || height < 2) continue
+        const marker = document.createElement('div')
+        marker.className = 'pdf-quote-highlight'
+        marker.dataset.quoteHighlight = id
+        marker.title = h.question || h.text || ''
+        marker.style.cssText = `
+          position:absolute;
+          left:${Number(rect.x) * ratio}px;
+          top:${Number(rect.y) * ratio}px;
+          width:${width}px;
+          height:${Math.max(height, 4)}px;
+          border-radius:3px;
+          background:rgba(224,122,95,.24);
+          box-shadow:0 0 0 1px rgba(224,122,95,.12);
+          mix-blend-mode:multiply;
+          transition:background-color .28s ease, box-shadow .28s ease;
+        `
+        pageInfo.highlightLayer.appendChild(marker)
+      }
+    }
+  }, [getHighlightAnchor])
+
   // ── load PDF ──
   useEffect(() => {
     if (!url) return
     let cancelled = false
+    // pdfjs loading is an external task lifecycle; reset UI state when the source changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
     setError(null)
     pageRefs.current = {}
@@ -131,12 +183,23 @@ const PdfViewer = forwardRef(function PdfViewer(
         position:absolute; inset:0;
         width:${viewport.width}px; height:${viewport.height}px;
         line-height:1;
+        z-index:2;
       `
       // pdf_viewer.css 里文字 span 的定位全部乘以 --scale-factor；
       // 不设置时按 1 倍铺文字层、画布却按实际缩放渲染，选区整体错位
       textLayer.style.setProperty('--scale-factor', String(theScale))
 
+      const highlightLayer = document.createElement('div')
+      highlightLayer.className = 'quoteHighlightLayer'
+      highlightLayer.style.cssText = `
+        position:absolute; inset:0;
+        width:${viewport.width}px; height:${viewport.height}px;
+        pointer-events:none;
+        z-index:1;
+      `
+
       pageWrap.appendChild(canvas)
+      pageWrap.appendChild(highlightLayer)
       pageWrap.appendChild(textLayer)
       pagesContainerRef.current?.appendChild(pageWrap)
 
@@ -165,13 +228,14 @@ const PdfViewer = forwardRef(function PdfViewer(
         }).promise.catch(() => {})
       }
 
-      pageRefs.current[pageNum] = { wrapEl: pageWrap, canvas, textLayer, viewport, scale: theScale, outputScale }
+      pageRefs.current[pageNum] = { wrapEl: pageWrap, canvas, highlightLayer, textLayer, viewport, scale: theScale, outputScale }
+      paintPageHighlights(pageNum)
       onTextReady?.(pageNum, textContent)
     } catch (err) {
       // 单页渲染失败不影响其它页
       console.warn(`PDF page ${pageNum} render failed:`, err)
     }
-  }, [onTextReady])
+  }, [onTextReady, paintPageHighlights])
 
   // ── render all pages whenever pdf or scale changes ──
   useEffect(() => {
@@ -241,10 +305,30 @@ const PdfViewer = forwardRef(function PdfViewer(
       // 找当前 page
       const wrap = node.closest('.pdf-page-wrap')
       const pageNum = wrap ? parseInt(wrap.dataset.pageNum, 10) : currentPage
+      const wrapRect = wrap?.getBoundingClientRect()
+      const selectedRects = wrapRect
+        ? Array.from(range.getClientRects())
+            .map(r => ({
+              x: +(r.left - wrapRect.left).toFixed(2),
+              y: +(r.top - wrapRect.top).toFixed(2),
+              width: +r.width.toFixed(2),
+              height: +r.height.toFixed(2),
+            }))
+            .filter(r => r.width >= 2 && r.height >= 2)
+        : []
+      const pageInfo = pageRefs.current[pageNum]
 
       onSelection({
         text,
         page: pageNum,
+        anchor: {
+          version: 1,
+          page: pageNum,
+          scale: pageInfo?.scale || scale,
+          rects: selectedRects,
+          textStart: text.slice(0, 120),
+          textEnd: text.slice(-120),
+        },
         // 视口坐标，配合浮窗的 position:fixed 使用；
         // 之前加 scrollTop 换算成滚动内容坐标，但浮窗渲染在外层
         // 不滚动的容器里，翻页后浮窗会被定位到屏幕外
@@ -261,7 +345,13 @@ const PdfViewer = forwardRef(function PdfViewer(
       document.removeEventListener('mouseup', handler)
       scroller?.removeEventListener('scroll', onScroll)
     }
-  }, [currentPage, onSelection])
+  }, [currentPage, onSelection, scale])
+
+  // ── repaint persisted quote highlights whenever backend quotes change ──
+  useEffect(() => {
+    highlightsRef.current = Array.isArray(highlights) ? highlights : []
+    Object.keys(pageRefs.current).forEach(pageNum => paintPageHighlights(Number(pageNum)))
+  }, [highlights, paintPageHighlights])
 
   // ── imperative API ──
   const goToPage = useCallback((n) => {
@@ -272,12 +362,33 @@ const PdfViewer = forwardRef(function PdfViewer(
     }
   }, [])
 
+  const highlightQuote = useCallback((quoteOrId) => {
+    const quote = typeof quoteOrId === 'object'
+      ? quoteOrId
+      : highlightsRef.current.find(h => String(h.id) === String(quoteOrId))
+    const id = String(quote?.id || quoteOrId || '')
+    if (quote?.page) goToPage(Number(quote.page))
+    window.setTimeout(() => {
+      const markers = containerRef.current?.querySelectorAll('.pdf-quote-highlight') || []
+      markers.forEach(marker => {
+        if (marker.dataset.quoteHighlight !== id) return
+        marker.style.background = 'rgba(224,122,95,.42)'
+        marker.style.boxShadow = '0 0 0 2px rgba(224,122,95,.28), 0 0 18px rgba(224,122,95,.22)'
+        window.setTimeout(() => {
+          marker.style.background = 'rgba(224,122,95,.24)'
+          marker.style.boxShadow = '0 0 0 1px rgba(224,122,95,.12)'
+        }, 900)
+      })
+    }, 420)
+  }, [goToPage])
+
   useImperativeHandle(ref, () => ({
     goToPage,
+    highlightQuote,
     getCurrentPage: () => currentPage,
     getNumPages: () => numPages,
     setScale,
-  }), [goToPage, currentPage, numPages])
+  }), [goToPage, highlightQuote, currentPage, numPages])
 
   // ── render ──
   return (

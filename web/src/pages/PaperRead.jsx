@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
 import {
   ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2,
@@ -32,7 +32,6 @@ import CardDrawer from '../components/CardDrawer'
    ───────────────────────────────────────────────────────────── */
 
 // ── helpers ──────────────────────────────────────────────────
-const QUOTE_KEY = (id) => `paper-quotes-${id}`
 const sliceId = (paper, id) => paper?.pmid || paper?.paper_id || id
 const LEFT_RAIL_STORAGE_KEY = 'paper-read-left-rail'
 const RIGHT_PANEL_STORAGE_KEY = 'paper-read-right-panel-width'
@@ -59,16 +58,8 @@ function getStoredRightPanelWidth() {
   return RIGHT_PANEL_DEFAULT_WIDTH
 }
 
-function loadLocalQuotes(id) {
-  try { return JSON.parse(localStorage.getItem(QUOTE_KEY(id)) || '[]') }
-  catch { return [] }
-}
-function saveLocalQuotes(id, qs) {
-  try { localStorage.setItem(QUOTE_KEY(id), JSON.stringify(qs)) } catch { /* ignore */ }
-}
-
 // 把 chat 历史里出现过的 user-with-quote 抽出来形成 quote 卡片
-// 当后端 /papers/<id>/quotes 上线后这个函数就废了
+// 兼容旧本地聊天；新数据优先来自后端 /api/quotes/<paper_rowid>
 function deriveQuotesFromHistory(chatMessages) {
   const quotes = []
   for (let i = 0; i < chatMessages.length; i++) {
@@ -76,17 +67,40 @@ function deriveQuotesFromHistory(chatMessages) {
     if (m.role === 'user' && m._quote) {
       const next = chatMessages[i + 1]
       quotes.push({
+        id: m._quote.id || `local-${quotes.length + 1}`,
         n: quotes.length + 1,
         text: m._quote.text,
         page: m._quote.page,
         section: m._quote.section,
+        anchor: m._quote.anchor || {},
         createdAt: m._quote.createdAt || new Date().toISOString(),
         question: m.content,
         answer: next?.role === 'assistant' ? next.content : null,
+        source: 'local_chat',
       })
     }
   }
   return quotes
+}
+
+function normalizeQuote(raw, index = 0) {
+  const anchor = raw?.anchor && typeof raw.anchor === 'object' ? raw.anchor : {}
+  return {
+    id: raw?.id || `local-${index + 1}`,
+    n: index + 1,
+    text: raw?.text || '',
+    page: raw?.page || anchor.page || null,
+    section: raw?.section || anchor.section || null,
+    anchor,
+    createdAt: raw?.created_at || raw?.createdAt || new Date().toISOString(),
+    question: raw?.question || '',
+    answer: raw?.answer || null,
+    source: raw?.source || 'quote',
+  }
+}
+
+function quoteFingerprint(q) {
+  return `${q.page || ''}|${(q.text || '').slice(0, 180)}|${(q.question || '').slice(0, 120)}`
 }
 
 function ReasonGlyph({ size = 11 }) {
@@ -146,6 +160,7 @@ export default function PaperRead() {
   const [currentPage, setCurrentPage] = useState(1)
   const [chatOpen, setChatOpen] = useState(true)
   const [mobileTab, setMobileTab] = useState('pdf')  // pdf | meta | chat
+  const [structuredQuotes, setStructuredQuotes] = useState([])
   const [leftRailOpen, setLeftRailOpen] = useState(() => {
     try { return localStorage.getItem(LEFT_RAIL_STORAGE_KEY) !== 'closed' }
     catch { return true }
@@ -170,7 +185,14 @@ export default function PaperRead() {
   const projectPickerRef = useRef(null)
 
   // — derived: quotes for this paper —
-  const quotes = deriveQuotesFromHistory(chatMessages)
+  const quotes = useMemo(() => {
+    const persisted = structuredQuotes.map((q, index) => normalizeQuote(q, index))
+    const seen = new Set(persisted.map(quoteFingerprint))
+    const localOnly = deriveQuotesFromHistory(chatMessages)
+      .map((q, index) => normalizeQuote(q, index + persisted.length))
+      .filter(q => !seen.has(quoteFingerprint(q)))
+    return [...persisted, ...localOnly].map((q, index) => ({ ...q, n: index + 1 }))
+  }, [structuredQuotes, chatMessages])
   const currentPageText = pdfPageTexts[currentPage] || ''
 
   useEffect(() => {
@@ -291,6 +313,9 @@ export default function PaperRead() {
       .catch(() => {})
     apiGet(`/cards/${savedRowId}`)
       .then(data => setCards(data.cards || []))
+      .catch(() => {})
+    apiGet(`/quotes/${savedRowId}`)
+      .then(data => setStructuredQuotes(data.quotes || []))
       .catch(() => {})
   }, [savedRowId])
 
@@ -453,6 +478,7 @@ export default function PaperRead() {
       await apiDelete(`/library/${savedRowId}`).catch(() => {})
       localStorage.removeItem(`paper-bookmark-${sliceId(paper, id)}`)
       setBookmarked(false); setSavedRowId(null)
+      setStructuredQuotes([])
     } else {
       if (projects.length > 0) {
         setShowProjectPicker(true)
@@ -469,6 +495,7 @@ export default function PaperRead() {
     setPendingQuote({
       text: selection.text,
       page: selection.page,
+      anchor: selection.anchor || {},
       section: null, // TODO(backend): pdfjs 给的纯文本无 section 信息，需要后端 /papers/<id>/sections 或前端做 outline 匹配
       createdAt: new Date().toISOString(),
     })
@@ -485,6 +512,12 @@ export default function PaperRead() {
   const saveSelectionAsCard = () => {
     if (!selection) return
     setCardSeed({ quote: selection.text, page: selection.page })
+    persistStructuredQuote({
+      text: selection.text,
+      page: selection.page,
+      anchor: selection.anchor || {},
+      createdAt: new Date().toISOString(),
+    }, { source: 'card_seed' }).catch(() => {})
     setSelection(null)
     window.getSelection()?.removeAllRanges()
     setMobileTab('chat')
@@ -496,6 +529,12 @@ export default function PaperRead() {
     setSelection(null)
     window.getSelection()?.removeAllRanges()
     setMobileTab('chat')
+    persistStructuredQuote({
+      text: selected.text,
+      page: selected.page,
+      anchor: selected.anchor || {},
+      createdAt: new Date().toISOString(),
+    }, { source: 'deep_read', question: '精读这段' }).catch(() => {})
     runDeepRead('selection', selected.text, selected.page)
   }
 
@@ -524,6 +563,39 @@ export default function PaperRead() {
       setBookmarked(true)
       return data.id
     } catch { return null }
+  }
+
+  const upsertStructuredQuote = (quote) => {
+    if (!quote?.id) return
+    setStructuredQuotes(prev => {
+      const normalized = normalizeQuote(quote)
+      const exists = prev.some(q => String(q.id) === String(normalized.id))
+      if (exists) return prev.map(q => String(q.id) === String(normalized.id) ? normalized : q)
+      return [...prev, normalized]
+    })
+  }
+
+  const persistStructuredQuote = async (quote, extras = {}) => {
+    if (!quote?.text) return null
+    const rowId = await ensureSaved()
+    if (!rowId) return null
+    try {
+      const data = await apiPost('/quotes', {
+        paper_rowid: rowId,
+        text: quote.text,
+        page: quote.page || null,
+        section: quote.section || null,
+        anchor: quote.anchor || {},
+        question: extras.question || quote.question || '',
+        answer: extras.answer || quote.answer || '',
+        source: extras.source || quote.source || 'quote',
+      })
+      if (data?.ok && data.quote) {
+        upsertStructuredQuote(data.quote)
+        return data.quote
+      }
+    } catch { /* ignore */ }
+    return null
   }
 
   const runDeepRead = async (mode = 'page', textOverride = '', pageOverride = null) => {
@@ -612,17 +684,26 @@ export default function PaperRead() {
     try {
       const contextPage = sentQuote?.page || currentPage
       const contextText = (pdfPageTexts[contextPage] || currentPageText || '').slice(0, 10000)
+      const rowIdForChat = sentQuote ? (savedRowId || await ensureSaved()) : (savedRowId || 0)
       const data = await apiPost('/chat', {
         paper_title: paper?.title || '',
         paper_abstract: paper?.abstract || '',
-        message: sentQuote
-          ? `[引用 p.${sentQuote.page}] "${sentQuote.text}"\n\n${chatInput}`
-          : chatInput,
+        message: chatInput,
         history: chatMessages,
-        paper_rowid: savedRowId || 0,
+        paper_rowid: rowIdForChat || 0,
         current_page: contextPage,
         current_page_text: contextText,
+        quote: sentQuote
+          ? {
+              text: sentQuote.text,
+              page: sentQuote.page || null,
+              section: sentQuote.section || null,
+              anchor: sentQuote.anchor || {},
+              created_at: sentQuote.createdAt || null,
+            }
+          : null,
       })
+      if (data.quote) upsertStructuredQuote(data.quote)
       setChatMessages(prev => [...prev, { role: 'assistant', content: data.reply }])
     } catch {
       setChatMessages(prev => [...prev, { role: 'assistant', content: '连接失败，请重试。' }])
@@ -685,9 +766,9 @@ export default function PaperRead() {
 
   // ── jump to quote ──
   const jumpToQuote = (q) => {
-    if (q.page && pdfViewerRef.current) {
-      pdfViewerRef.current.goToPage(q.page)
-    }
+    if (!q?.page || !pdfViewerRef.current) return
+    if (pdfViewerRef.current.highlightQuote) pdfViewerRef.current.highlightQuote(q)
+    else pdfViewerRef.current.goToPage(q.page)
   }
 
   const toggleLeftRail = useCallback(() => {
@@ -844,6 +925,7 @@ export default function PaperRead() {
                 onTextReady={handlePdfTextReady}
                 onUploadLocalPdf={handleUploadPdf}
                 uploadingLocalPdf={uploadingPdf}
+                highlights={quotes}
                 sectionHint={null}
                 headerLeft={
                   <button
@@ -1125,7 +1207,7 @@ function MemoryChannel(props) {
     speechSupported, listening, startListening, stopListening,
     pendingQuote, setPendingQuote, chatOpen, setChatOpen,
     chatEndRef, chatInputRef, chatFootRef, jumpToQuote,
-    bookmarked, onToggleBookmark, projects, showProjectPicker, setShowProjectPicker,
+    bookmarked, onToggleBookmark, projects, showProjectPicker,
     projectPickerRef, saveToProject,
     notes, setNotes,
     savedNotes, manualNoteId, onDeleteNote, notesOpen, setNotesOpen,
@@ -1215,7 +1297,7 @@ function MemoryChannel(props) {
       {quotes.length > 0 && (
         <section className="px-6 py-4 border-b border-navy/5">
           <SectionHeader
-            left={<><QuoteIcon size={11}/> 你在这篇里追问过</>}
+            left={<><QuoteIcon size={11}/> 引用与追问</>}
             right={`${quotes.length} 段`}
             accent="coral"/>
           {quotes.map(q => (

@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.11.4 - 2026-07-06
+
+### 结构化 quote anchor + PDF 持久高亮
+
+- 新增 `paper_quotes` 表：保存划词文本、页码、章节占位、anchor 矩形、追问、回答、来源和时间；删除收藏时同步清理 quote
+- 新增 quote API：
+  - `GET /api/quotes/{paper_rowid}`：拉取某篇论文的结构化引用
+  - `POST /api/quotes`：保存一条引用/标记
+  - `DELETE /api/quotes/{quote_id}`：删除引用
+- `/api/chat` 支持单独接收 `quote` 对象；用户带引用追问时，后端会把 quote、问题和 AI 回答一起结构化落库
+- `PdfViewer` 新增 quote highlight layer：划词时生成页面相对矩形 anchor，刷新后可按 anchor 重画淡 coral 高亮；点击右栏 quote 卡会跳回对应页并闪一下
+- 阅读页右栏改为从后端 quote 表恢复「引用与追问」，同时保留旧本地 `_quote` 聊天的兼容去重
+- 「精读这段」和「存为卡片」也会保存 quote anchor，让这些阅读动作在 PDF 上留下可恢复痕迹
+
+#### 验证
+
+- `POST /api/quotes` 烟测写入 paper 51 成功，并用 `DELETE /api/quotes/{id}` 清理；随后 `GET /api/quotes/51` 返回空列表
+- `env PYTHONPYCACHEPREFIX=/Users/loujiahui/Desktop/papermind/.pycache-check /Users/loujiahui/Desktop/papermind/papermind/.venv_new/bin/python -m py_compile papermind/api.py papermind/src/database.py` 通过
+- `npm run build` 通过；仍有既有的 `pdfjs-dist` `renderTextLayer` 构建 warning，未阻断构建
+- `npm run lint` 仍失败于既有问题：`Terrain.jsx` fast-refresh 规则错误，以及 `Home.jsx` 两条 unused eslint-disable warning；本次修改过的 `PdfViewer.jsx` / `PaperRead.jsx` 不再报错
+
+---
+
 ## v0.11.3 - 2026-07-06
 
 ### 图表追问上下文 + 精读右栏减负

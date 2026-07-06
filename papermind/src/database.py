@@ -142,6 +142,22 @@ def _ensure_db():
             FOREIGN KEY (paper_rowid) REFERENCES saved_papers(id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_quotes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_rowid INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            page INTEGER,
+            section TEXT NOT NULL DEFAULT '',
+            anchor_json TEXT NOT NULL DEFAULT '{}',
+            question TEXT NOT NULL DEFAULT '',
+            answer TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'chat',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (paper_rowid) REFERENCES saved_papers(id)
+        )
+    """)
 
     # 迁移：给 saved_papers 加 project_id 列
     try:
@@ -203,6 +219,12 @@ def _ensure_db():
     except sqlite3.OperationalError:
         pass  # 列已存在
 
+    # 迁移：给 paper_quotes 加 section 列（如果不存在）
+    try:
+        conn.execute("ALTER TABLE paper_quotes ADD COLUMN section TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
+
     # 索引：加速按 user_id 查询
     conn.execute("CREATE INDEX IF NOT EXISTS idx_saved_papers_user ON saved_papers(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reading_history_user ON reading_history(user_id)")
@@ -214,6 +236,7 @@ def _ensure_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_saved_papers_project ON saved_papers(project_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reading_cards_paper ON reading_cards(paper_rowid)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_quotes_paper ON paper_quotes(paper_rowid)")
 
     conn.commit()
     return conn
@@ -521,6 +544,7 @@ def delete_saved_paper(paper_id: int):
     conn.execute("DELETE FROM paper_notes WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM paper_chats WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM reading_cards WHERE paper_rowid = ?", (paper_id,))
+    conn.execute("DELETE FROM paper_quotes WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM saved_papers WHERE id = ?", (paper_id,))
     conn.commit()
     conn.close()
@@ -670,6 +694,64 @@ def get_card_owner(card_id: int) -> str:
     ).fetchone()
     conn.close()
     return row["user_id"] if row else ""
+
+
+# ========== Paper Quotes ==========
+
+def _quote_row_to_dict(row) -> dict:
+    data = dict(row)
+    raw_anchor = data.pop("anchor_json", "{}") or "{}"
+    try:
+        data["anchor"] = json.loads(raw_anchor)
+    except Exception:
+        data["anchor"] = {}
+    return data
+
+
+def save_quote(paper_rowid: int, text: str, page: int = None, section: str = "", anchor: dict = None,
+               question: str = "", answer: str = "", source: str = "chat") -> dict:
+    conn = _ensure_db()
+    now = datetime.now().isoformat()
+    anchor_json = json.dumps(anchor or {}, ensure_ascii=False)
+    cursor = conn.execute(
+        """INSERT INTO paper_quotes
+              (paper_rowid, text, page, section, anchor_json, question, answer, source, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (paper_rowid, text, page, section or "", anchor_json, question, answer, source, now, now)
+    )
+    row_id = cursor.lastrowid
+    row = conn.execute("SELECT * FROM paper_quotes WHERE id = ?", (row_id,)).fetchone()
+    conn.commit()
+    conn.close()
+    return _quote_row_to_dict(row)
+
+
+def get_quotes(paper_rowid: int) -> list[dict]:
+    conn = _ensure_db()
+    rows = conn.execute(
+        "SELECT * FROM paper_quotes WHERE paper_rowid = ? ORDER BY created_at ASC",
+        (paper_rowid,)
+    ).fetchall()
+    conn.close()
+    return [_quote_row_to_dict(r) for r in rows]
+
+
+def get_quote_owner(quote_id: int) -> str:
+    conn = _ensure_db()
+    row = conn.execute(
+        "SELECT sp.user_id FROM paper_quotes pq JOIN saved_papers sp ON pq.paper_rowid = sp.id WHERE pq.id = ?",
+        (quote_id,)
+    ).fetchone()
+    conn.close()
+    return row["user_id"] if row else ""
+
+
+def delete_quote(quote_id: int) -> bool:
+    conn = _ensure_db()
+    conn.execute("DELETE FROM paper_quotes WHERE id = ?", (quote_id,))
+    conn.commit()
+    conn.close()
+    return True
 
 
 # ========== Chat History ==========
