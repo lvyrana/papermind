@@ -158,6 +158,32 @@ def _ensure_db():
             FOREIGN KEY (paper_rowid) REFERENCES saved_papers(id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS presentation_boards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_rowid INTEGER NOT NULL UNIQUE,
+            sections_json TEXT NOT NULL,
+            why_reading TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (paper_rowid) REFERENCES saved_papers(id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS board_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_rowid INTEGER NOT NULL,
+            section TEXT NOT NULL,
+            content TEXT NOT NULL,
+            quote TEXT NOT NULL DEFAULT '',
+            page INTEGER,
+            source TEXT NOT NULL DEFAULT 'selection',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (paper_rowid) REFERENCES saved_papers(id)
+        )
+    """)
 
     # 迁移：给 saved_papers 加 project_id 列
     try:
@@ -545,6 +571,8 @@ def delete_saved_paper(paper_id: int):
     conn.execute("DELETE FROM paper_chats WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM reading_cards WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM paper_quotes WHERE paper_rowid = ?", (paper_id,))
+    conn.execute("DELETE FROM board_items WHERE paper_rowid = ?", (paper_id,))
+    conn.execute("DELETE FROM presentation_boards WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM saved_papers WHERE id = ?", (paper_id,))
     conn.commit()
     conn.close()
@@ -752,6 +780,126 @@ def delete_quote(quote_id: int) -> bool:
     conn.commit()
     conn.close()
     return True
+
+
+# ========== Presentation Board（组会汇报板）==========
+
+# 板块用稳定英文 key 存储，中文名只是展示层默认值（用户可改名）
+DEFAULT_BOARD_SECTIONS = [
+    {"key": "background", "title": "研究背景"},
+    {"key": "question", "title": "研究问题"},
+    {"key": "methods", "title": "方法"},
+    {"key": "results", "title": "关键结果"},
+    {"key": "critique", "title": "批判与局限"},
+    {"key": "implications", "title": "对我的启发"},
+    {"key": "discussion", "title": "讨论问题"},
+]
+
+BOARD_ITEM_SOURCES = ("selection", "deep_read", "card", "chat", "manual")
+
+
+def get_or_create_board(paper_rowid: int, why_reading: str = "") -> dict:
+    """惰性建板：收藏过的论文第一次访问汇报板时自动创建默认结构"""
+    conn = _ensure_db()
+    row = conn.execute(
+        "SELECT * FROM presentation_boards WHERE paper_rowid = ?", (paper_rowid,)
+    ).fetchone()
+    if not row:
+        now = datetime.now().isoformat()
+        conn.execute(
+            """INSERT INTO presentation_boards (paper_rowid, sections_json, why_reading, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (paper_rowid, json.dumps(DEFAULT_BOARD_SECTIONS, ensure_ascii=False), why_reading or "", now, now)
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM presentation_boards WHERE paper_rowid = ?", (paper_rowid,)
+        ).fetchone()
+    conn.close()
+    d = dict(row)
+    try:
+        d["sections"] = json.loads(d.pop("sections_json"))
+    except (json.JSONDecodeError, TypeError):
+        d["sections"] = list(DEFAULT_BOARD_SECTIONS)
+    return d
+
+
+def update_board(paper_rowid: int, sections: list = None, why_reading: str = None):
+    conn = _ensure_db()
+    now = datetime.now().isoformat()
+    if sections is not None:
+        conn.execute(
+            "UPDATE presentation_boards SET sections_json = ?, updated_at = ? WHERE paper_rowid = ?",
+            (json.dumps(sections, ensure_ascii=False), now, paper_rowid)
+        )
+    if why_reading is not None:
+        conn.execute(
+            "UPDATE presentation_boards SET why_reading = ?, updated_at = ? WHERE paper_rowid = ?",
+            (why_reading, now, paper_rowid)
+        )
+    conn.commit()
+    conn.close()
+
+
+def add_board_item(paper_rowid: int, section: str, content: str, quote: str = "",
+                   page: int = None, source: str = "selection") -> dict:
+    if source not in BOARD_ITEM_SOURCES:
+        source = "manual"
+    conn = _ensure_db()
+    now = datetime.now().isoformat()
+    max_order = conn.execute(
+        "SELECT COALESCE(MAX(sort_order), 0) FROM board_items WHERE paper_rowid = ? AND section = ?",
+        (paper_rowid, section)
+    ).fetchone()[0]
+    cursor = conn.execute(
+        """INSERT INTO board_items (paper_rowid, section, content, quote, page, source, sort_order, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (paper_rowid, section, content, quote or "", page, source, max_order + 1, now, now)
+    )
+    row = conn.execute("SELECT * FROM board_items WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    conn.commit()
+    conn.close()
+    return dict(row)
+
+
+def get_board_items(paper_rowid: int) -> list[dict]:
+    conn = _ensure_db()
+    rows = conn.execute(
+        "SELECT * FROM board_items WHERE paper_rowid = ? ORDER BY section, sort_order, created_at",
+        (paper_rowid,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_board_item(item_id: int, content: str = None, section: str = None, sort_order: int = None):
+    conn = _ensure_db()
+    now = datetime.now().isoformat()
+    if content is not None:
+        conn.execute("UPDATE board_items SET content = ?, updated_at = ? WHERE id = ?", (content, now, item_id))
+    if section is not None:
+        conn.execute("UPDATE board_items SET section = ?, updated_at = ? WHERE id = ?", (section, now, item_id))
+    if sort_order is not None:
+        conn.execute("UPDATE board_items SET sort_order = ?, updated_at = ? WHERE id = ?", (sort_order, now, item_id))
+    conn.commit()
+    conn.close()
+
+
+def get_board_item_owner(item_id: int) -> str:
+    conn = _ensure_db()
+    row = conn.execute(
+        "SELECT sp.user_id FROM board_items bi JOIN saved_papers sp ON bi.paper_rowid = sp.id WHERE bi.id = ?",
+        (item_id,)
+    ).fetchone()
+    conn.close()
+    return row["user_id"] if row else ""
+
+
+def delete_board_item(item_id: int):
+    conn = _ensure_db()
+    conn.execute("DELETE FROM board_items WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
 
 
 # ========== Chat History ==========

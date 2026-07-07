@@ -42,6 +42,8 @@ from src.database import (
     set_paper_has_pdf, get_paper_owner,
     save_card, get_cards, update_card, delete_card, get_card_owner, CARD_TYPES,
     save_quote, get_quotes, delete_quote, get_quote_owner,
+    get_or_create_board, update_board, add_board_item, get_board_items,
+    update_board_item, get_board_item_owner, delete_board_item,
 )
 from src.config_store import (
     get_custom_provider, save_custom_provider, get_custom_provider_safe,
@@ -168,6 +170,22 @@ class SaveQuoteRequest(BaseModel):
     question: str = Field(default="", max_length=2000)
     answer: str = Field(default="", max_length=4000)
     source: str = Field(default="quote", max_length=30)
+
+class BoardPatchRequest(BaseModel):
+    sections: Optional[list] = None
+    why_reading: Optional[str] = Field(default=None, max_length=1000)
+
+class BoardItemRequest(BaseModel):
+    section: str = Field(min_length=1, max_length=40)
+    content: str = Field(min_length=1, max_length=8000)
+    quote: str = Field(default="", max_length=4000)
+    page: Optional[int] = None
+    source: str = Field(default="selection", max_length=20)
+
+class BoardItemPatchRequest(BaseModel):
+    content: Optional[str] = Field(default=None, max_length=8000)
+    section: Optional[str] = Field(default=None, max_length=40)
+    sort_order: Optional[int] = None
 
 class FeedbackRequest(BaseModel):
     type: str = "general"
@@ -1373,6 +1391,134 @@ def api_delete_quote(quote_id: int, request: Request):
         return {"ok": False, "error": "not found"}
     delete_quote(quote_id)
     return {"ok": True}
+
+
+# ========== Presentation Board Routes（组会汇报板）==========
+
+@app.get("/api/board/{paper_rowid}")
+def api_get_board(paper_rowid: int, request: Request):
+    """汇报板结构 + 全部条目；首次访问惰性创建，why_reading 默认取推荐理由"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_rowid, uid)
+    if not paper:
+        return {"ok": False, "error": "not found"}
+    board = get_or_create_board(paper_rowid, why_reading=paper.get("relevance") or "")
+    return {
+        "ok": True,
+        "sections": board["sections"],
+        "why_reading": board["why_reading"],
+        "items": get_board_items(paper_rowid),
+    }
+
+
+@app.patch("/api/board/{paper_rowid}")
+def api_patch_board(paper_rowid: int, data: BoardPatchRequest, request: Request):
+    """修改板块结构（增删改名）或 why_reading"""
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(paper_rowid, uid):
+        return {"ok": False, "error": "not found"}
+    if data.sections is not None:
+        cleaned = [
+            {"key": str(s.get("key", ""))[:40], "title": str(s.get("title", ""))[:60]}
+            for s in data.sections
+            if isinstance(s, dict) and s.get("key") and s.get("title")
+        ]
+        if not cleaned:
+            return {"ok": False, "error": "sections empty"}
+        update_board(paper_rowid, sections=cleaned)
+    if data.why_reading is not None:
+        update_board(paper_rowid, why_reading=data.why_reading)
+    return {"ok": True}
+
+
+@app.post("/api/board/{paper_rowid}/items")
+def api_add_board_item(paper_rowid: int, data: BoardItemRequest, request: Request):
+    """投递条目到板块（划词/带读/卡片/对话/手动）"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_rowid, uid)
+    if not paper:
+        return {"ok": False, "error": "not found"}
+    get_or_create_board(paper_rowid, why_reading=paper.get("relevance") or "")
+    item = add_board_item(
+        paper_rowid, data.section, data.content,
+        quote=data.quote, page=data.page, source=data.source,
+    )
+    increment_recent_events(uid)
+    return {"ok": True, "item": item}
+
+
+@app.patch("/api/board/items/{item_id}")
+def api_patch_board_item(item_id: int, data: BoardItemPatchRequest, request: Request):
+    uid = _get_user_id(request)
+    if get_board_item_owner(item_id) != uid:
+        return {"ok": False, "error": "not found"}
+    update_board_item(item_id, content=data.content, section=data.section, sort_order=data.sort_order)
+    return {"ok": True}
+
+
+@app.delete("/api/board/items/{item_id}")
+def api_delete_board_item(item_id: int, request: Request):
+    uid = _get_user_id(request)
+    if get_board_item_owner(item_id) != uid:
+        return {"ok": False, "error": "not found"}
+    delete_board_item(item_id)
+    return {"ok": True}
+
+
+@app.get("/api/board/{paper_rowid}/export/marp")
+def api_export_board_marp(paper_rowid: int, request: Request):
+    """导出 Marp Markdown（白底黑字极简）；空板块出占位页——骨架即进度"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_rowid, uid)
+    if not paper:
+        return PlainTextResponse("not found", status_code=404)
+    board = get_or_create_board(paper_rowid, why_reading=paper.get("relevance") or "")
+    items = get_board_items(paper_rowid)
+    by_section: dict = {}
+    for it in items:
+        by_section.setdefault(it["section"], []).append(it)
+
+    def esc(s: str) -> str:
+        return (s or "").replace("\r", "").strip()
+
+    year = (paper.get("pub_date") or "")[:4]
+    lines = [
+        "---",
+        "marp: true",
+        "paginate: true",
+        "style: |",
+        "  section { background: #ffffff; color: #111111; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; }",
+        "  h1, h2 { color: #000000; }",
+        "  blockquote { color: #555555; border-left: 3px solid #999999; font-size: 0.8em; }",
+        "---",
+        "",
+        f"# {esc(paper.get('title'))}",
+        "",
+        f"**{esc(paper.get('authors'))}**",
+        "",
+        f"{esc(paper.get('journal'))}{' · ' + year if year else ''}{' · DOI: ' + esc(paper.get('doi')) if paper.get('doi') else ''}",
+        "",
+        f"> 为什么读这篇：{esc(board['why_reading']) or '（待填入）'}",
+        "",
+        "汇报人：＿＿＿＿　　日期：＿＿＿＿",
+    ]
+    for sec in board["sections"]:
+        lines += ["", "---", "", f"## {sec['title']}", ""]
+        sec_items = by_section.get(sec["key"], [])
+        if not sec_items:
+            lines.append("（待填入）")
+            continue
+        for it in sec_items:
+            lines.append(f"- {esc(it['content'])}")
+            if it.get("quote"):
+                page_tag = f"（P.{it['page']}）" if it.get("page") else ""
+                lines.append(f"  > {esc(it['quote'])[:300]}{page_tag}")
+    md = "\n".join(lines) + "\n"
+    return PlainTextResponse(
+        md,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="board-{paper_rowid}.md"'},
+    )
 
 
 # ========== Reading Cards Routes ==========
