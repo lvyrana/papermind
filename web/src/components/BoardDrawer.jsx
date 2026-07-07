@@ -30,6 +30,12 @@ export const CARD_SECTION_MAP = {
   transfer: 'implications',
 }
 
+// pub_date 格式不定（"2026-09" / "09/2026" / "Sep 2026"），统一正则提取四位年份
+function yearOf(pubDate) {
+  const m = /\b(19|20)\d{2}\b/.exec(String(pubDate || ''))
+  return m ? m[0] : ''
+}
+
 function countBySection(items) {
   const m = {}
   for (const it of items) m[it.section] = (m[it.section] || 0) + 1
@@ -206,7 +212,7 @@ export default function BoardDrawer({ paper, board, open, onClose, onRefresh, on
           <p className="m-0 text-[13px] text-navy leading-snug">{paper?.title}</p>
           <p className="m-0 mt-1 text-[11.5px] text-warm-gray">{paper?.authors}</p>
           <p className="m-0 mt-0.5 text-[11px] text-warm-gray/70">
-            {paper?.journal}{paper?.pub_date ? ` · ${String(paper.pub_date).slice(0, 4)}` : ''}{paper?.doi ? ` · ${paper.doi}` : ''}
+            {paper?.journal}{yearOf(paper?.pub_date) ? ` · ${yearOf(paper.pub_date)}` : ''}{paper?.doi ? ` · ${paper.doi}` : ''}
           </p>
           <div className="mt-2 text-[11.5px] leading-relaxed">
             <span className="text-warm-gray/70">为什么读这篇：</span>

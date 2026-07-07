@@ -1481,7 +1481,9 @@ def api_export_board_marp(paper_rowid: int, request: Request):
     def esc(s: str) -> str:
         return (s or "").replace("\r", "").strip()
 
-    year = (paper.get("pub_date") or "")[:4]
+    # pub_date 格式不定（"2026-09" / "09/2026"），正则提取四位年份
+    year_m = re.search(r"\b(19|20)\d{2}\b", paper.get("pub_date") or "")
+    year = year_m.group(0) if year_m else ""
     lines = [
         "---",
         "marp: true",

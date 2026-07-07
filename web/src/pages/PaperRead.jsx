@@ -12,6 +12,7 @@ import { useSpeechInput } from '../hooks/useSpeechInput'
 import TourBubble from '../components/TourBubble'
 import PdfViewer from '../components/PdfViewer'
 import CardDrawer from '../components/CardDrawer'
+import BoardDrawer, { BoardRail, BoardSectionPicker, CARD_SECTION_MAP, downloadBoardMarp } from '../components/BoardDrawer'
 
 /* ─────────────────────────────────────────────────────────────
    PaperRead — 三栏版 (PDF + 记忆通道)
@@ -171,6 +172,13 @@ export default function PaperRead() {
   const [cards, setCards] = useState([])
   const [cardSeed, setCardSeed] = useState(null)  // {quote, page, question, answer} → CardDrawer composer
 
+  // — 组会汇报板 —
+  const [board, setBoard] = useState(null)         // {sections, items, whyReading, paperRowid}
+  const [boardOpen, setBoardOpen] = useState(false)
+  const [boardSeed, setBoardSeed] = useState(null) // {content, quote, page, source, defaultSection?} → 板块选单
+  const [boardSending, setBoardSending] = useState(false)
+  const [boardExporting, setBoardExporting] = useState(false)
+
   // — refs —
   const chatEndRef = useRef(null)
   const chatInputRef = useRef(null)
@@ -317,7 +325,59 @@ export default function PaperRead() {
     apiGet(`/quotes/${savedRowId}`)
       .then(data => setStructuredQuotes(data.quotes || []))
       .catch(() => {})
+    refreshBoard(savedRowId)
   }, [savedRowId])
+
+  // ── 组会汇报板：加载 / 投递 / 导出 ──
+  const refreshBoard = (rowId) => {
+    const rid = rowId || savedRowId
+    if (!rid) return
+    apiGet(`/board/${rid}`)
+      .then(d => {
+        if (!d.ok) return
+        setBoard({ sections: d.sections, items: d.items, whyReading: d.why_reading, paperRowid: rid })
+      })
+      .catch(() => {})
+  }
+
+  // 各入口（划词/带读/卡片/对话）调用：塞 seed → 弹板块选单
+  // 未收藏时先自动收藏（board 惰性创建依赖 rowId），选单等 board 加载后出现
+  const sendToBoard = async (seed) => {
+    setBoardSeed(seed)
+    if (!board) {
+      const rowId = await ensureSaved()
+      if (rowId) refreshBoard(rowId)
+      else setBoardSeed(null)
+    }
+  }
+
+  const pickBoardSection = async (sectionKey) => {
+    if (!boardSeed || boardSending) return
+    setBoardSending(true)
+    try {
+      const rowId = await ensureSaved()
+      if (!rowId) return
+      const d = await apiPost(`/board/${rowId}/items`, {
+        section: sectionKey,
+        content: (boardSeed.content || '').slice(0, 8000),
+        quote: (boardSeed.quote || '').slice(0, 4000),
+        page: boardSeed.page ?? null,
+        source: boardSeed.source || 'manual',
+      })
+      if (d?.ok) {
+        setBoardSeed(null)
+        refreshBoard(rowId)
+      }
+    } catch { /* ignore */ }
+    finally { setBoardSending(false) }
+  }
+
+  const exportBoard = async () => {
+    if (!board?.paperRowid || boardExporting) return
+    setBoardExporting(true)
+    try { await downloadBoardMarp(board.paperRowid, paper?.title) } catch { /* ignore */ }
+    setBoardExporting(false)
+  }
 
   // notes autosave
   useEffect(() => {
@@ -1073,9 +1133,30 @@ export default function PaperRead() {
             onDeleteNote={deleteSavedNote}
             notesOpen={notesOpen}
             setNotesOpen={setNotesOpen}
+            board={board}
+            onOpenBoard={() => setBoardOpen(true)}
+            onExportBoard={exportBoard}
+            boardExporting={boardExporting}
           />
         </aside>
       </div>
+
+      {/* ─── 组会汇报板：全览抽屉 + 板块选单 ─── */}
+      <BoardDrawer
+        paper={paper}
+        board={board}
+        open={boardOpen}
+        onClose={() => setBoardOpen(false)}
+        onRefresh={() => refreshBoard()}
+        onJumpToPage={jumpToPage}
+      />
+      <BoardSectionPicker
+        board={board}
+        seed={boardSeed}
+        onPick={pickBoardSection}
+        onCancel={() => setBoardSeed(null)}
+        sending={boardSending}
+      />
 
       {/* ─── tour ─── */}
       {paperTourStep === 1 && <TourBubble targetRef={bookmarkBtnRef} text="点击收藏，笔记和对话都会永久保存" step={1} total={3} placement="bottom" onNext={advancePaperTour}/>}
@@ -1215,6 +1296,7 @@ function MemoryChannel(props) {
     seedCardFromChat, jumpToPage,
     currentPage, currentPageText, deepReadGuide, deepReadSource,
     deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
+    board, onOpenBoard, onExportBoard, boardExporting,
   } = props
 
   return (
@@ -1291,6 +1373,14 @@ function MemoryChannel(props) {
         seed={cardSeed}
         clearSeed={() => setCardSeed(null)}
         onJumpToPage={jumpToPage}
+      />
+
+      {/* ★ PRESENTATION BOARD（组会汇报板） */}
+      <BoardRail
+        board={board}
+        onOpen={onOpenBoard}
+        onExport={onExportBoard}
+        exporting={boardExporting}
       />
 
       {/* ★ YOUR QUOTES */}
