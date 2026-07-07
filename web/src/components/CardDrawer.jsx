@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Loader2, Sparkles, Pencil, Trash2, X, Layers } from 'lucide-react'
+import { Plus, Loader2, Sparkles, Pencil, Trash2, X, Layers, Presentation } from 'lucide-react'
 import { apiPost, apiPatch, apiDelete } from '../api'
 
 /* ─────────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ const CARD_TYPES = [
 const typeOf = (key) => CARD_TYPES.find(t => t.key === key) || CARD_TYPES[0]
 
 export default function CardDrawer({
-  paper, cards, setCards, ensureSaved, seed, clearSeed, onJumpToPage,
+  paper, cards, setCards, ensureSaved, seed, clearSeed, onJumpToPage, onSendToBoard,
 }) {
   const [composerOpen, setComposerOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)   // null = 新建
@@ -173,7 +173,8 @@ export default function CardDrawer({
         <ReadingCard key={card.id} card={card}
           onEdit={() => openEdit(card)}
           onDelete={() => handleDelete(card.id)}
-          onJump={() => card.page && onJumpToPage?.(card.page)}/>
+          onJump={() => card.page && onJumpToPage?.(card.page)}
+          onSendToBoard={onSendToBoard ? () => onSendToBoard(card) : null}/>
       ))}
 
       {/* composer */}
@@ -235,7 +236,7 @@ export default function CardDrawer({
   )
 }
 
-function ReadingCard({ card, onEdit, onDelete, onJump }) {
+function ReadingCard({ card, onEdit, onDelete, onJump, onSendToBoard }) {
   const t = typeOf(card.card_type)
   return (
     <div className="bg-warm-white border border-navy/8 rounded-xl px-3.5 py-3 mb-2.5 group relative hover:border-coral/30 transition-all">
@@ -248,6 +249,10 @@ function ReadingCard({ card, onEdit, onDelete, onJump }) {
           </button>
         )}
         <span className="ml-auto flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {onSendToBoard && (
+            <button onClick={onSendToBoard} title="入汇报"
+              className="p-1 text-warm-gray hover:text-mint-deep"><Presentation size={11}/></button>
+          )}
           <button onClick={onEdit} className="p-1 text-warm-gray hover:text-navy"><Pencil size={11}/></button>
           <button onClick={onDelete} className="p-1 text-warm-gray hover:text-coral"><Trash2 size={11}/></button>
         </span>

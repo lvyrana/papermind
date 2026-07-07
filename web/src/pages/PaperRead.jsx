@@ -614,6 +614,17 @@ export default function PaperRead() {
     sendToBoard({ content: m.content, source: 'chat' })
   }
 
+  // ── 卡片 → 入汇报（卡片类型 → 板块默认映射，可在选单改投） ──
+  const sendCardToBoard = (card) => {
+    sendToBoard({
+      content: card.title ? `${card.title}\n${card.content}` : card.content,
+      quote: card.quote || '',
+      page: card.page ?? null,
+      source: 'card',
+      defaultSection: CARD_SECTION_MAP[card.card_type],
+    })
+  }
+
   const deepReadSelection = () => {
     if (!selection) return
     const selected = selection
@@ -1157,6 +1168,7 @@ export default function PaperRead() {
             onSaveDeepRead={saveDeepReadAsNote}
             onSendDeepReadToBoard={sendDeepReadToBoard}
             onSendChatToBoard={sendChatToBoard}
+            onSendCardToBoard={sendCardToBoard}
             // bookmark + project picker passthrough
             bookmarked={bookmarked}
             onToggleBookmark={toggleBookmark}
@@ -1336,7 +1348,7 @@ function MemoryChannel(props) {
     currentPage, currentPageText, deepReadGuide, deepReadSource,
     deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
     board, onOpenBoard, onExportBoard, boardExporting,
-    onSendDeepReadToBoard, onSendChatToBoard,
+    onSendDeepReadToBoard, onSendChatToBoard, onSendCardToBoard,
   } = props
 
   return (
@@ -1414,6 +1426,7 @@ function MemoryChannel(props) {
         seed={cardSeed}
         clearSeed={() => setCardSeed(null)}
         onJumpToPage={jumpToPage}
+        onSendToBoard={onSendCardToBoard}
       />
 
       {/* ★ PRESENTATION BOARD（组会汇报板） */}

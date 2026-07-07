@@ -1511,10 +1511,16 @@ def api_export_board_marp(paper_rowid: int, request: Request):
             lines.append("（待填入）")
             continue
         for it in sec_items:
-            lines.append(f"- {esc(it['content'])}")
-            if it.get("quote"):
+            # bullet 内换行需两空格缩进续行，否则破坏 Markdown 列表结构
+            content = esc(it["content"]).replace("\n", "\n  ")
+            lines.append(f"- {content}")
+            quote = esc(it.get("quote") or "")
+            # 划词条目 quote 即 content，重复输出没有信息量，只留页码
+            if quote and quote != esc(it["content"]):
                 page_tag = f"（P.{it['page']}）" if it.get("page") else ""
-                lines.append(f"  > {esc(it['quote'])[:300]}{page_tag}")
+                lines.append(f"  > {quote[:300]}{page_tag}")
+            elif it.get("page"):
+                lines.append(f"  > P.{it['page']}")
     md = "\n".join(lines) + "\n"
     return PlainTextResponse(
         md,
