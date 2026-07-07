@@ -4,7 +4,7 @@ import {
   ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2,
   FileText, Download, ExternalLink, Mic, MicOff,
   ChevronDown, ChevronUp, MessageSquare, Quote as QuoteIcon, X, Layers,
-  GripVertical, PanelLeftClose, PanelLeftOpen,
+  GripVertical, PanelLeftClose, PanelLeftOpen, Presentation,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, apiPatch, API_BASE, getUserId } from '../api'
@@ -583,6 +583,19 @@ export default function PaperRead() {
     setMobileTab('chat')
   }
 
+  // ── selection bubble → 送到汇报（板块选单在 pickBoardSection 落库） ──
+  const sendSelectionToBoard = () => {
+    if (!selection) return
+    sendToBoard({
+      content: selection.text,
+      quote: selection.text,
+      page: selection.page,
+      source: 'selection',
+    })
+    setSelection(null)
+    window.getSelection()?.removeAllRanges()
+  }
+
   const deepReadSelection = () => {
     if (!selection) return
     const selected = selection
@@ -1037,6 +1050,12 @@ export default function PaperRead() {
                   className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-coral text-warm-white text-sm font-medium shadow-[0_6px_22px_-6px_rgba(224,122,95,.5)] hover:bg-coral-deep transition-all">
                   <Layers size={13}/>
                   存为卡片
+                </button>
+                <button
+                  onClick={sendSelectionToBoard}
+                  className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-warm-white text-navy text-sm font-medium border border-navy/10 shadow-[0_6px_22px_-10px_rgba(30,58,95,.28)] hover:border-mint-deep/50 hover:text-mint-deep transition-all">
+                  <Presentation size={13}/>
+                  送到汇报
                 </button>
               </div>
             )}
