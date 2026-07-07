@@ -185,6 +185,12 @@ def _ensure_db():
         )
     """)
 
+    # 迁移：给 board_items 加 image 列（图表截图文件名）
+    try:
+        conn.execute("ALTER TABLE board_items ADD COLUMN image TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+
     # 迁移：给 saved_papers 加 project_id 列
     try:
         conn.execute("ALTER TABLE saved_papers ADD COLUMN project_id INTEGER REFERENCES projects(id)")
@@ -795,7 +801,7 @@ DEFAULT_BOARD_SECTIONS = [
     {"key": "discussion", "title": "讨论问题"},
 ]
 
-BOARD_ITEM_SOURCES = ("selection", "deep_read", "card", "chat", "manual")
+BOARD_ITEM_SOURCES = ("selection", "deep_read", "card", "chat", "manual", "figure")
 
 
 def get_or_create_board(paper_rowid: int, why_reading: str = "") -> dict:
@@ -842,7 +848,7 @@ def update_board(paper_rowid: int, sections: list = None, why_reading: str = Non
 
 
 def add_board_item(paper_rowid: int, section: str, content: str, quote: str = "",
-                   page: int = None, source: str = "selection") -> dict:
+                   page: int = None, source: str = "selection", image: str = "") -> dict:
     if source not in BOARD_ITEM_SOURCES:
         source = "manual"
     conn = _ensure_db()
@@ -852,14 +858,21 @@ def add_board_item(paper_rowid: int, section: str, content: str, quote: str = ""
         (paper_rowid, section)
     ).fetchone()[0]
     cursor = conn.execute(
-        """INSERT INTO board_items (paper_rowid, section, content, quote, page, source, sort_order, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (paper_rowid, section, content, quote or "", page, source, max_order + 1, now, now)
+        """INSERT INTO board_items (paper_rowid, section, content, quote, page, source, sort_order, image, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (paper_rowid, section, content, quote or "", page, source, max_order + 1, image or "", now, now)
     )
     row = conn.execute("SELECT * FROM board_items WHERE id = ?", (cursor.lastrowid,)).fetchone()
     conn.commit()
     conn.close()
     return dict(row)
+
+
+def get_board_item(item_id: int) -> Optional[dict]:
+    conn = _ensure_db()
+    row = conn.execute("SELECT * FROM board_items WHERE id = ?", (item_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def get_board_items(paper_rowid: int) -> list[dict]:

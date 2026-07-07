@@ -357,19 +357,45 @@ export default function PaperRead() {
     try {
       const rowId = await ensureSaved()
       if (!rowId) return
-      const d = await apiPost(`/board/${rowId}/items`, {
-        section: sectionKey,
-        content: (boardSeed.content || '').slice(0, 8000),
-        quote: (boardSeed.quote || '').slice(0, 4000),
-        page: boardSeed.page ?? null,
-        source: boardSeed.source || 'manual',
-      })
-      if (d?.ok) {
+      let ok = false
+      if (boardSeed.imageBlob) {
+        // 图表截图走 multipart，后端存图 + 建 source=figure 条目
+        const fd = new FormData()
+        fd.append('file', boardSeed.imageBlob, 'figure.png')
+        fd.append('section', sectionKey)
+        if (boardSeed.page) fd.append('page', String(boardSeed.page))
+        const res = await fetch(`${API_BASE}/board/${rowId}/figures`, {
+          method: 'POST', headers: { 'X-User-ID': getUserId() }, body: fd,
+        })
+        ok = (await res.json())?.ok
+      } else {
+        const d = await apiPost(`/board/${rowId}/items`, {
+          section: sectionKey,
+          content: (boardSeed.content || '').slice(0, 8000),
+          quote: (boardSeed.quote || '').slice(0, 4000),
+          page: boardSeed.page ?? null,
+          source: boardSeed.source || 'manual',
+        })
+        ok = d?.ok
+      }
+      if (ok) {
+        if (boardSeed.imageUrl) URL.revokeObjectURL(boardSeed.imageUrl)
         setBoardSeed(null)
         refreshBoard(rowId)
       }
     } catch { /* ignore */ }
     finally { setBoardSending(false) }
+  }
+
+  // ── PDF 框选截图 → 送到汇报 ──
+  const handleSnip = ({ blob, page, url }) => {
+    sendToBoard({
+      imageBlob: blob,
+      imageUrl: url,
+      content: `图表（P.${page}）`,
+      page,
+      source: 'figure',
+    })
   }
 
   const exportBoard = async () => {
@@ -1030,6 +1056,7 @@ export default function PaperRead() {
                 url={pdfUrl}
                 originalUrl={pdfOriginalUrl}
                 onSelection={setSelection}
+                onSnip={handleSnip}
                 onPageChange={setCurrentPage}
                 onTextReady={handlePdfTextReady}
                 onUploadLocalPdf={handleUploadPdf}

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 import json
+import base64
 import httpx
 import threading
 import re
@@ -17,7 +18,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-from fastapi import FastAPI, Query, Request, UploadFile, File, HTTPException as FastAPIHTTPException
+from fastapi import FastAPI, Query, Request, UploadFile, File, Form, HTTPException as FastAPIHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +28,9 @@ from pydantic import BaseModel, Field
 PDF_DIR = Path(__file__).parent / "data" / "pdfs"
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 PDF_SIZE_LIMIT = 50 * 1024 * 1024  # 50 MB
+FIGURES_DIR = Path(__file__).parent / "data" / "figures"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+FIGURE_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
 
 from src.database import (
     init_db, save_paper, get_saved_papers, get_saved_paper,
@@ -43,7 +47,7 @@ from src.database import (
     save_card, get_cards, update_card, delete_card, get_card_owner, CARD_TYPES,
     save_quote, get_quotes, delete_quote, get_quote_owner,
     get_or_create_board, update_board, add_board_item, get_board_items,
-    update_board_item, get_board_item_owner, delete_board_item,
+    update_board_item, get_board_item_owner, delete_board_item, get_board_item,
 )
 from src.config_store import (
     get_custom_provider, save_custom_provider, get_custom_provider_safe,
@@ -1201,12 +1205,18 @@ def api_get_library_paper(paper_id: int, request: Request):
 
 @app.delete("/api/library/{paper_id}")
 def api_delete_from_library(paper_id: int, request: Request):
-    """取消收藏（需验证归属）"""
+    """取消收藏（需验证归属）；同步清理 PDF 与图表文件"""
     uid = _get_user_id(request)
     paper = _get_owned_paper_or_none(paper_id, uid)
     if not paper:
         return {"ok": False, "error": "not found"}
     delete_saved_paper(paper_id)
+    try:
+        (PDF_DIR / f"{paper_id}.pdf").unlink(missing_ok=True)
+        for f in FIGURES_DIR.glob(f"{paper_id}-*"):
+            f.unlink(missing_ok=True)
+    except OSError:
+        pass
     return {"ok": True}
 
 
@@ -1461,8 +1471,64 @@ def api_delete_board_item(item_id: int, request: Request):
     uid = _get_user_id(request)
     if get_board_item_owner(item_id) != uid:
         return {"ok": False, "error": "not found"}
+    item = get_board_item(item_id)
     delete_board_item(item_id)
+    # 图表条目同步删除图片文件
+    if item and item.get("image"):
+        try:
+            (FIGURES_DIR / item["image"]).unlink(missing_ok=True)
+        except OSError:
+            pass
     return {"ok": True}
+
+
+@app.post("/api/board/{paper_rowid}/figures")
+async def api_add_board_figure(
+    paper_rowid: int, request: Request,
+    file: UploadFile = File(...),
+    section: str = Form(...),
+    page: Optional[int] = Form(None),
+    caption: str = Form(""),
+):
+    """图表截图入板：保存 PNG + 创建 source=figure 的条目"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_rowid, uid)
+    if not paper:
+        return {"ok": False, "error": "not found"}
+    content = await file.read()
+    if len(content) > FIGURE_SIZE_LIMIT:
+        return {"ok": False, "error": "图片超过 10MB"}
+    if not content[:8] == b"\x89PNG\r\n\x1a\n" and not content[:3] == b"\xff\xd8\xff":
+        return {"ok": False, "error": "仅支持 PNG/JPEG"}
+    ext = "png" if content[:8] == b"\x89PNG\r\n\x1a\n" else "jpg"
+    name = f"{paper_rowid}-{datetime.now().strftime('%Y%m%d%H%M%S%f')}.{ext}"
+    (FIGURES_DIR / name).write_bytes(content)
+    get_or_create_board(paper_rowid, why_reading=paper.get("relevance") or "")
+    item = add_board_item(
+        paper_rowid, section,
+        content=caption or (f"图表（P.{page}）" if page else "图表"),
+        page=page, source="figure", image=name,
+    )
+    increment_recent_events(uid)
+    return {"ok": True, "item": item}
+
+
+@app.get("/api/board/{paper_rowid}/figures/{name}")
+def api_get_board_figure(paper_rowid: int, name: str, request: Request, uid: str = Query("")):
+    """图表图片；<img> 无法带 header，允许 ?uid= 查询参数鉴权（沿用深链模式）"""
+    user = _get_user_id(request)
+    if user == "anonymous" and uid:
+        user = uid
+    if not _get_owned_paper_or_none(paper_rowid, user):
+        return PlainTextResponse("not found", status_code=404)
+    # 防路径穿越 + 校验归属前缀
+    if not re.fullmatch(r"[\w.-]+", name) or not name.startswith(f"{paper_rowid}-"):
+        return PlainTextResponse("not found", status_code=404)
+    path = FIGURES_DIR / name
+    if not path.exists():
+        return PlainTextResponse("not found", status_code=404)
+    media = "image/png" if name.endswith(".png") else "image/jpeg"
+    return FileResponse(path, media_type=media)
 
 
 @app.get("/api/board/{paper_rowid}/export/marp")
@@ -1511,6 +1577,16 @@ def api_export_board_marp(paper_rowid: int, request: Request):
             lines.append("（待填入）")
             continue
         for it in sec_items:
+            # 图表条目：base64 内联进 md，导出文件单独可用（Marp 支持 data URI）
+            if it.get("image"):
+                fig_path = FIGURES_DIR / it["image"]
+                if fig_path.exists():
+                    mime = "image/png" if it["image"].endswith(".png") else "image/jpeg"
+                    b64 = base64.b64encode(fig_path.read_bytes()).decode()
+                    lines.append(f"![h:420](data:{mime};base64,{b64})")
+                    lines.append("")
+                    lines.append(esc(it["content"]))
+                    continue
             # bullet 内换行需两空格缩进续行，否则破坏 Markdown 列表结构
             content = esc(it["content"]).replace("\n", "\n  ")
             lines.append(f"- {content}")

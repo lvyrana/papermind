@@ -20,6 +20,12 @@ export const SOURCE_LABELS = {
   card: '卡片',
   chat: '对话',
   manual: '手动',
+  figure: '图表',
+}
+
+// <img> 无法带 X-User-ID header，图片地址用 ?uid= 鉴权（沿用深链模式）
+export function figureUrl(paperRowid, name) {
+  return `${API_BASE}/board/${paperRowid}/figures/${name}?uid=${encodeURIComponent(getUserId())}`
 }
 
 // 卡片类型 → 默认板块映射（可在选单里改投）
@@ -113,9 +119,14 @@ export function BoardSectionPicker({ board, seed, onPick, onCancel, sending }) {
           <p className="m-0 font-mono text-[10.5px] tracking-widest uppercase text-coral">送到哪个板块？</p>
           <button onClick={onCancel} className="text-warm-gray/60 hover:text-navy"><X size={14}/></button>
         </div>
-        <p className="text-[11px] text-warm-gray/70 leading-snug mb-3 line-clamp-2">
-          {(seed.content || '').slice(0, 80)}
-        </p>
+        {seed.imageUrl ? (
+          <img src={seed.imageUrl} alt="图表截图"
+            className="w-full max-h-40 object-contain rounded-lg border border-navy/10 bg-white mb-3"/>
+        ) : (
+          <p className="text-[11px] text-warm-gray/70 leading-snug mb-3 line-clamp-2">
+            {(seed.content || '').slice(0, 80)}
+          </p>
+        )}
         <div className="space-y-1">
           {(board.sections || []).map(s => (
             <button key={s.key} disabled={sending}
@@ -263,6 +274,10 @@ export default function BoardDrawer({ paper, board, open, onClose, onRefresh, on
                       <button onClick={() => removeItem(it.id)} className="hover:text-coral"><Trash2 size={10}/></button>
                     </span>
                   </div>
+                  {it.image && (
+                    <img src={figureUrl(paperRowid, it.image)} alt={it.content}
+                      className="w-full max-h-64 object-contain rounded-lg border border-navy/8 bg-white mb-1.5"/>
+                  )}
                   {editingId === it.id ? (
                     <div>
                       <textarea value={editText} onChange={e => setEditText(e.target.value)} rows={3}

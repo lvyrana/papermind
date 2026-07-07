@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from 'react'
-import { ChevronLeft, ChevronRight, Loader2, ZoomIn, ZoomOut, AlertCircle, Download } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Loader2, ZoomIn, ZoomOut, AlertCircle, Download, Crop } from 'lucide-react'
 
 /* ─────────────────────────────────────────────────────────────
    PdfViewer · 基于 pdfjs-dist 的轻量 PDF 渲染器
@@ -48,6 +48,7 @@ const PdfViewer = forwardRef(function PdfViewer(
   {
     url, originalUrl, onSelection, onPageChange, onTextReady, sectionHint,
     headerLeft, headerRight, onUploadLocalPdf, uploadingLocalPdf, highlights = [],
+    onSnip,
   },
   ref,
 ) {
@@ -61,6 +62,74 @@ const PdfViewer = forwardRef(function PdfViewer(
   const [scale, setScale] = useState(DEFAULT_SCALE)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [snipping, setSnipping] = useState(false)   // 图表截取模式
+  const [snipBox, setSnipBox] = useState(null)      // 拖拽中的选框（视口坐标）
+  const snipStartRef = useRef(null)
+
+  // ── 图表截取：接管鼠标，框选 → 从页 canvas 裁剪出 PNG ──
+  useEffect(() => {
+    const container = containerRef.current
+    if (!snipping || !container) return
+    container.style.cursor = 'crosshair'
+    const layers = container.querySelectorAll('.textLayer')
+    layers.forEach(l => { l.style.pointerEvents = 'none' })
+
+    const onDown = (e) => {
+      if (e.button !== 0) return
+      e.preventDefault()
+      snipStartRef.current = { x: e.clientX, y: e.clientY }
+      setSnipBox({ x1: e.clientX, y1: e.clientY, x2: e.clientX, y2: e.clientY })
+    }
+    const onMove = (e) => {
+      if (!snipStartRef.current) return
+      setSnipBox({ x1: snipStartRef.current.x, y1: snipStartRef.current.y, x2: e.clientX, y2: e.clientY })
+    }
+    const onUp = (e) => {
+      if (!snipStartRef.current) return
+      const s = snipStartRef.current
+      snipStartRef.current = null
+      setSnipBox(null)
+      const rect = {
+        left: Math.min(s.x, e.clientX), top: Math.min(s.y, e.clientY),
+        right: Math.max(s.x, e.clientX), bottom: Math.max(s.y, e.clientY),
+      }
+      if (rect.right - rect.left < 15 || rect.bottom - rect.top < 15) return
+      // 选框中心落在哪一页的 canvas 上，就在那页裁剪（canvas 背景存储 = CSS 像素，1:1）
+      const cx = (rect.left + rect.right) / 2, cy = (rect.top + rect.bottom) / 2
+      for (const [pageNum, info] of Object.entries(pageRefs.current)) {
+        const cRect = info?.canvas?.getBoundingClientRect()
+        if (!cRect || cx < cRect.left || cx > cRect.right || cy < cRect.top || cy > cRect.bottom) continue
+        const sx = Math.max(rect.left, cRect.left) - cRect.left
+        const sy = Math.max(rect.top, cRect.top) - cRect.top
+        const sw = Math.min(rect.right, cRect.right) - cRect.left - sx
+        const sh = Math.min(rect.bottom, cRect.bottom) - cRect.top - sy
+        if (sw < 10 || sh < 10) break
+        const out = document.createElement('canvas')
+        out.width = Math.round(sw); out.height = Math.round(sh)
+        out.getContext('2d').drawImage(info.canvas, sx, sy, sw, sh, 0, 0, sw, sh)
+        out.toBlob(blob => {
+          if (blob) onSnip?.({ blob, page: Number(pageNum), url: URL.createObjectURL(blob) })
+        }, 'image/png')
+        break
+      }
+      setSnipping(false)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') setSnipping(false) }
+    container.addEventListener('mousedown', onDown)
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      container.style.cursor = ''
+      layers.forEach(l => { l.style.pointerEvents = '' })
+      container.removeEventListener('mousedown', onDown)
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.removeEventListener('keydown', onKey)
+      snipStartRef.current = null
+      setSnipBox(null)
+    }
+  }, [snipping, onSnip])
 
   const getHighlightAnchor = useCallback((highlight) => {
     if (!highlight) return {}
@@ -527,6 +596,22 @@ const PdfViewer = forwardRef(function PdfViewer(
           <ZoomIn size={14}/>
         </button>
 
+        {onSnip && (
+          <>
+            <span className="w-px h-4 bg-navy/10"/>
+            <button
+              onClick={() => setSnipping(s => !s)}
+              disabled={loading}
+              className={`p-1 rounded disabled:opacity-30 inline-flex items-center gap-1 ${
+                snipping ? 'bg-coral/15 text-coral' : 'hover:bg-navy/5'
+              }`}
+              title={snipping ? '退出截取（Esc）' : '截取图表：框选 PDF 上的图/表'}>
+              <Crop size={14}/>
+              {snipping && <span className="text-[10px]">框选图表</span>}
+            </button>
+          </>
+        )}
+
         {sectionHint && (
           <>
             <span className="w-px h-4 bg-navy/10"/>
@@ -540,6 +625,16 @@ const PdfViewer = forwardRef(function PdfViewer(
       </div>
 
       {/* page area (scrollable) */}
+      {/* 截取模式：拖拽中的选框（视口坐标 fixed 定位） */}
+      {snipBox && (
+        <div className="fixed z-[80] border-2 border-coral bg-coral/10 pointer-events-none rounded-sm"
+          style={{
+            left: Math.min(snipBox.x1, snipBox.x2),
+            top: Math.min(snipBox.y1, snipBox.y2),
+            width: Math.abs(snipBox.x2 - snipBox.x1),
+            height: Math.abs(snipBox.y2 - snipBox.y1),
+          }}/>
+      )}
       <div ref={containerRef} className="flex-1 overflow-y-auto py-6 px-4 relative">
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
