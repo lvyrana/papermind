@@ -104,9 +104,12 @@ const PdfViewer = forwardRef(function PdfViewer(
         const sw = Math.min(rect.right, cRect.right) - cRect.left - sx
         const sh = Math.min(rect.bottom, cRect.bottom) - cRect.top - sy
         if (sw < 10 || sh < 10) break
+        // canvas 背景存储 = CSS 像素 × outputScale（Retina 下为 2）：
+        // 源坐标必须同乘，否则裁到错位区域；输出按背景分辨率导出更清晰
+        const os = info.outputScale || 1
         const out = document.createElement('canvas')
-        out.width = Math.round(sw); out.height = Math.round(sh)
-        out.getContext('2d').drawImage(info.canvas, sx, sy, sw, sh, 0, 0, sw, sh)
+        out.width = Math.round(sw * os); out.height = Math.round(sh * os)
+        out.getContext('2d').drawImage(info.canvas, sx * os, sy * os, sw * os, sh * os, 0, 0, sw * os, sh * os)
         out.toBlob(blob => {
           if (blob) onSnip?.({ blob, page: Number(pageNum), url: URL.createObjectURL(blob) })
         }, 'image/png')
@@ -230,6 +233,63 @@ const PdfViewer = forwardRef(function PdfViewer(
     } catch { return [] }
   }, [])
 
+  // Zotero 同款：直接用 PDF 内部字形坐标计算高亮矩形。
+  // DOM 文字层是"浏览器字体 + 横向拉伸"对 PDF 字形的近似，两端对齐排版下
+  // 行内误差可达几十像素（行末过冲、词位漂移）；textContent.items 携带每段
+  // 文字的 PDF 空间 transform/width/height，据此换算的矩形与打印字形严格一致。
+  const locatePdfRects = useCallback((pageInfo, text) => {
+    const items = pageInfo?.textItems
+    const viewport = pageInfo?.viewport
+    if (!items?.length || !viewport || !text) return []
+    const needle = String(text).replace(/\s+/g, ' ').trim().toLowerCase()
+    if (needle.length < 4) return []
+    // 与 DOM 文字层同序拼接 item 文本，规范化后匹配，保留索引映射
+    let full = ''
+    const spans = []
+    for (const it of items) {
+      if (!it.str) continue
+      spans.push({ it, start: full.length, len: it.str.length })
+      full += it.str
+    }
+    const map = []
+    let normStr = ''
+    let prevSpace = true
+    for (let i = 0; i < full.length; i++) {
+      const ch = full[i]
+      if (/\s/.test(ch)) {
+        if (!prevSpace) { normStr += ' '; map.push(i) }
+        prevSpace = true
+      } else {
+        normStr += ch.toLowerCase(); map.push(i)
+        prevSpace = false
+      }
+    }
+    const idx = normStr.indexOf(needle)
+    if (idx < 0) return []
+    const rawStart = map[idx]
+    const rawEnd = map[idx + needle.length - 1] + 1
+    const rects = []
+    for (const s of spans) {
+      const iStart = Math.max(rawStart, s.start)
+      const iEnd = Math.min(rawEnd, s.start + s.len)
+      if (iStart >= iEnd) continue
+      const t = s.it.transform // [sx, skewY, skewX, sy, tx, ty]，水平文本 skew≈0
+      const fontH = s.it.height || Math.abs(t[3]) || 10
+      // item 内按字符占比插值起止 x（首尾 item 局部选中时）
+      const f0 = (iStart - s.start) / s.len
+      const f1 = (iEnd - s.start) / s.len
+      const x0 = t[4] + s.it.width * f0
+      const x1 = t[4] + s.it.width * f1
+      // PDF y 轴向上，ty 是基线：上沿 = 基线 + ascent(~0.8em)，下沿 = 基线 - descent(~0.2em)
+      const [vx0, vy0, vx1, vy1] = viewport.convertToViewportRectangle([
+        x0, t[5] - fontH * 0.22, x1, t[5] + fontH * 0.8,
+      ])
+      const left = Math.min(vx0, vx1), top = Math.min(vy0, vy1)
+      rects.push({ x: left, y: top, width: Math.abs(vx1 - vx0), height: Math.abs(vy1 - vy0) })
+    }
+    return rects
+  }, [])
+
   const paintPageHighlights = useCallback((pageNum) => {
     const pageInfo = pageRefs.current[pageNum]
     if (!pageInfo?.highlightLayer) return
@@ -239,10 +299,24 @@ const PdfViewer = forwardRef(function PdfViewer(
 
     for (const h of pageHighlights) {
       const anchor = getHighlightAnchor(h)
-      // 文本重定位优先（矩形来自当前渲染，ratio=1）；失败退回快照×缩放比
+      // 横向用 DOM 文字层（行宽被 pdf.js 拉伸校准，两端对齐排版下比
+      // item.width 可靠——后者不含 TJ 词距位移）；纵向用 PDF 字形坐标
+      // （基线 + 字高，比 DOM 行盒贴字）。两组矩形按行配对杂交。
       let ratio = 1
-      let rects = mergeLineRects(locateTextRects(pageInfo, h.text))
+      let glyphExact = true
+      const domRects = mergeLineRects(locateTextRects(pageInfo, h.text))
+      const pdfRects = mergeLineRects(locatePdfRects(pageInfo, h.text))
+      let rects = domRects.map(d => {
+        const g = pdfRects.find(p =>
+          (p.y + p.height / 2) > d.y && (p.y + p.height / 2) < d.y + d.height)
+        return g ? { x: d.x, width: d.width, y: g.y, height: g.height } : null
+      }).filter(Boolean)
+      if (!rects.length && domRects.length) {
+        glyphExact = false
+        rects = domRects
+      }
       if (!rects.length) {
+        glyphExact = false
         rects = mergeLineRects(Array.isArray(anchor.rects) ? anchor.rects : [])
         const sourceScale = Number(anchor.scale) || pageInfo.scale || 1
         ratio = (pageInfo.scale || 1) / sourceScale
@@ -254,8 +328,8 @@ const PdfViewer = forwardRef(function PdfViewer(
         const width = Number(rect.width) * ratio
         const height = Number(rect.height) * ratio
         if (!Number.isFinite(width) || !Number.isFinite(height) || width < 2 || height < 2) continue
-        // 行框高度含行距，上下各收 10% 贴近文字本体（Zotero 观感）
-        const inset = height * 0.1
+        // 字形坐标已经贴住文字本体，不再收缩；DOM/快照来源是行盒，上下各收 10%
+        const inset = glyphExact ? 0 : height * 0.1
         const marker = document.createElement('div')
         marker.className = 'pdf-quote-highlight'
         marker.dataset.quoteHighlight = id
@@ -274,7 +348,7 @@ const PdfViewer = forwardRef(function PdfViewer(
         pageInfo.highlightLayer.appendChild(marker)
       }
     }
-  }, [getHighlightAnchor, mergeLineRects, locateTextRects])
+  }, [getHighlightAnchor, mergeLineRects, locateTextRects, locatePdfRects])
 
   // ── load PDF ──
   useEffect(() => {
@@ -393,7 +467,11 @@ const PdfViewer = forwardRef(function PdfViewer(
         }).promise.catch(() => {})
       }
 
-      pageRefs.current[pageNum] = { wrapEl: pageWrap, canvas, highlightLayer, textLayer, viewport, scale: theScale, outputScale }
+      pageRefs.current[pageNum] = {
+        wrapEl: pageWrap, canvas, highlightLayer, textLayer, viewport, scale: theScale, outputScale,
+        // PDF 空间文字条目（transform/width/height），高亮按真实字形坐标绘制用
+        textItems: textContent.items,
+      }
       paintPageHighlights(pageNum)
       onTextReady?.(pageNum, textContent)
     } catch (err) {
