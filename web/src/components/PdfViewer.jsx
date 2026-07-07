@@ -71,6 +71,96 @@ const PdfViewer = forwardRef(function PdfViewer(
     return {}
   }, [])
 
+  // Zotero 式高亮修正：浏览器 getClientRects 会给出大量重叠/重复矩形
+  // （span 框 + 文本节点框、跨行整行框），直接绘制会叠色成深浅不一的色块。
+  // 先丢弃被更大矩形包含的重复项，再按行合并成每行一条干净的带状矩形。
+  const mergeLineRects = useCallback((rects) => {
+    const rs = (rects || []).filter(r => Number(r.width) >= 2 && Number(r.height) >= 2)
+    if (!rs.length) return []
+    const kept = rs.filter((a, i) => !rs.some((b, j) => j !== i
+      && b.x <= a.x + 1 && b.y <= a.y + 1
+      && b.x + b.width >= a.x + a.width - 1
+      && b.y + b.height >= a.y + a.height - 1
+      && b.width * b.height > a.width * a.height))
+    const lines = []
+    for (const r of kept.sort((p, q) => (p.y + p.height / 2) - (q.y + q.height / 2))) {
+      const cy = r.y + r.height / 2
+      const line = lines.find(L => Math.abs(L.cy - cy) < Math.max(L.h, r.height) * 0.6)
+      if (line) {
+        line.x1 = Math.min(line.x1, r.x); line.x2 = Math.max(line.x2, r.x + r.width)
+        line.y1 = Math.min(line.y1, r.y); line.y2 = Math.max(line.y2, r.y + r.height)
+        line.cy = (line.y1 + line.y2) / 2; line.h = line.y2 - line.y1
+      } else {
+        lines.push({ x1: r.x, x2: r.x + r.width, y1: r.y, y2: r.y + r.height, cy, h: r.height })
+      }
+    }
+    return lines.map(L => ({
+      x: +L.x1.toFixed(2), y: +L.y1.toFixed(2),
+      width: +(L.x2 - L.x1).toFixed(2), height: +(L.y2 - L.y1).toFixed(2),
+    }))
+  }, [])
+
+  // 第一性原理：高亮锚定的是文本而不是像素。绘制时优先在当前文字层里
+  // 重新定位 quote 原文，从真实 span 几何推导矩形——任何缩放下都精确贴字
+  // （Zotero 的做法）；文字层不可用或文本找不到时，退回存储的矩形快照。
+  const locateTextRects = useCallback((pageInfo, text) => {
+    const layer = pageInfo?.textLayer
+    const wrap = pageInfo?.wrapEl
+    if (!layer || !wrap || !text) return []
+    const needle = String(text).replace(/\s+/g, ' ').trim().toLowerCase()
+    if (needle.length < 4) return []
+    // 收集文字层全部文本节点与累计偏移
+    const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT)
+    const nodes = []
+    let full = ''
+    while (walker.nextNode()) {
+      const node = walker.currentNode
+      const raw = node.textContent || ''
+      if (!raw) continue
+      nodes.push({ node, start: full.length, raw })
+      full += raw
+    }
+    if (!nodes.length) return []
+    // 规范化（折叠空白/小写）后匹配，并保留规范化索引 → 原始索引映射
+    const map = []
+    let normStr = ''
+    let prevSpace = true
+    for (let i = 0; i < full.length; i++) {
+      const ch = full[i]
+      if (/\s/.test(ch)) {
+        if (!prevSpace) { normStr += ' '; map.push(i) }
+        prevSpace = true
+      } else {
+        normStr += ch.toLowerCase(); map.push(i)
+        prevSpace = false
+      }
+    }
+    const idx = normStr.indexOf(needle)
+    if (idx < 0) return []
+    const rawStart = map[idx]
+    const rawEnd = map[idx + needle.length - 1] + 1
+    const findPos = (rawIdx) => {
+      for (const n of nodes) {
+        if (rawIdx <= n.start + n.raw.length) {
+          return { node: n.node, offset: Math.max(0, rawIdx - n.start) }
+        }
+      }
+      const last = nodes[nodes.length - 1]
+      return { node: last.node, offset: last.raw.length }
+    }
+    try {
+      const s = findPos(rawStart)
+      const e = findPos(rawEnd)
+      const range = document.createRange()
+      range.setStart(s.node, s.offset)
+      range.setEnd(e.node, e.offset)
+      const wrapRect = wrap.getBoundingClientRect()
+      return Array.from(range.getClientRects()).map(r => ({
+        x: r.left - wrapRect.left, y: r.top - wrapRect.top, width: r.width, height: r.height,
+      }))
+    } catch { return [] }
+  }, [])
+
   const paintPageHighlights = useCallback((pageNum) => {
     const pageInfo = pageRefs.current[pageNum]
     if (!pageInfo?.highlightLayer) return
@@ -80,16 +170,23 @@ const PdfViewer = forwardRef(function PdfViewer(
 
     for (const h of pageHighlights) {
       const anchor = getHighlightAnchor(h)
-      const rects = Array.isArray(anchor.rects) ? anchor.rects : []
+      // 文本重定位优先（矩形来自当前渲染，ratio=1）；失败退回快照×缩放比
+      let ratio = 1
+      let rects = mergeLineRects(locateTextRects(pageInfo, h.text))
+      if (!rects.length) {
+        rects = mergeLineRects(Array.isArray(anchor.rects) ? anchor.rects : [])
+        const sourceScale = Number(anchor.scale) || pageInfo.scale || 1
+        ratio = (pageInfo.scale || 1) / sourceScale
+      }
       if (!rects.length) continue
-      const sourceScale = Number(anchor.scale) || pageInfo.scale || 1
-      const ratio = (pageInfo.scale || 1) / sourceScale
       const id = String(h.id || h.created_at || `${pageNum}-${h.text?.slice(0, 24)}`)
 
       for (const rect of rects) {
         const width = Number(rect.width) * ratio
         const height = Number(rect.height) * ratio
         if (!Number.isFinite(width) || !Number.isFinite(height) || width < 2 || height < 2) continue
+        // 行框高度含行距，上下各收 10% 贴近文字本体（Zotero 观感）
+        const inset = height * 0.1
         const marker = document.createElement('div')
         marker.className = 'pdf-quote-highlight'
         marker.dataset.quoteHighlight = id
@@ -97,19 +194,18 @@ const PdfViewer = forwardRef(function PdfViewer(
         marker.style.cssText = `
           position:absolute;
           left:${Number(rect.x) * ratio}px;
-          top:${Number(rect.y) * ratio}px;
+          top:${Number(rect.y) * ratio + inset}px;
           width:${width}px;
-          height:${Math.max(height, 4)}px;
-          border-radius:3px;
-          background:rgba(224,122,95,.24);
-          box-shadow:0 0 0 1px rgba(224,122,95,.12);
+          height:${Math.max(height - inset * 2, 4)}px;
+          border-radius:2px;
+          background:rgba(224,122,95,.15);
           mix-blend-mode:multiply;
           transition:background-color .28s ease, box-shadow .28s ease;
         `
         pageInfo.highlightLayer.appendChild(marker)
       }
     }
-  }, [getHighlightAnchor])
+  }, [getHighlightAnchor, mergeLineRects, locateTextRects])
 
   // ── load PDF ──
   useEffect(() => {
@@ -307,14 +403,13 @@ const PdfViewer = forwardRef(function PdfViewer(
       const pageNum = wrap ? parseInt(wrap.dataset.pageNum, 10) : currentPage
       const wrapRect = wrap?.getBoundingClientRect()
       const selectedRects = wrapRect
-        ? Array.from(range.getClientRects())
+        ? mergeLineRects(Array.from(range.getClientRects())
             .map(r => ({
               x: +(r.left - wrapRect.left).toFixed(2),
               y: +(r.top - wrapRect.top).toFixed(2),
               width: +r.width.toFixed(2),
               height: +r.height.toFixed(2),
-            }))
-            .filter(r => r.width >= 2 && r.height >= 2)
+            })))
         : []
       const pageInfo = pageRefs.current[pageNum]
 

@@ -614,6 +614,13 @@ export default function PaperRead() {
     sendToBoard({ content: m.content, source: 'chat' })
   }
 
+  // ── 删除结构化 quote：卡片消失 + PDF 高亮同步擦除（highlights 由 quotes 派生） ──
+  const deleteStructuredQuote = async (q) => {
+    if (!q?.id || String(q.id).startsWith('local-')) return
+    const d = await apiDelete(`/quotes/${q.id}`).catch(() => null)
+    if (d?.ok) setStructuredQuotes(prev => prev.filter(x => x.id !== q.id))
+  }
+
   // ── 卡片 → 入汇报（卡片类型 → 板块默认映射，可在选单改投） ──
   const sendCardToBoard = (card) => {
     sendToBoard({
@@ -1169,6 +1176,7 @@ export default function PaperRead() {
             onSendDeepReadToBoard={sendDeepReadToBoard}
             onSendChatToBoard={sendChatToBoard}
             onSendCardToBoard={sendCardToBoard}
+            onDeleteQuote={deleteStructuredQuote}
             // bookmark + project picker passthrough
             bookmarked={bookmarked}
             onToggleBookmark={toggleBookmark}
@@ -1348,7 +1356,7 @@ function MemoryChannel(props) {
     currentPage, currentPageText, deepReadGuide, deepReadSource,
     deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
     board, onOpenBoard, onExportBoard, boardExporting,
-    onSendDeepReadToBoard, onSendChatToBoard, onSendCardToBoard,
+    onSendDeepReadToBoard, onSendChatToBoard, onSendCardToBoard, onDeleteQuote,
   } = props
 
   return (
@@ -1445,7 +1453,8 @@ function MemoryChannel(props) {
             right={`${quotes.length} 段`}
             accent="coral"/>
           {quotes.map(q => (
-            <QuoteCard key={q.n} quote={q} onJump={() => jumpToQuote(q)}/>
+            <QuoteCard key={q.n} quote={q} onJump={() => jumpToQuote(q)}
+              onDelete={!String(q.id).startsWith('local-') ? () => onDeleteQuote(q) : null}/>
           ))}
         </section>
       )}
@@ -1608,9 +1617,23 @@ function DeepReadPanel({
 }) {
   const hasAbstract = !!paper?.abstract
   const hasPageText = currentPageText.trim().length > 80
+  const rootRef = useRef(null)
+  const [justArrived, setJustArrived] = useState(false)
+
+  // 动作发生在 PDF 中间、反馈出现在右栏——没有视线引导用户会找不到结果。
+  // 生成开始就把工作台滚进视野（能看到 loading），结果到达再闪一下。
+  useEffect(() => {
+    if (loading) rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [loading])
+  useEffect(() => {
+    if (!guide || loading) return
+    setJustArrived(true)
+    const t = setTimeout(() => setJustArrived(false), 1600)
+    return () => clearTimeout(t)
+  }, [guide, loading])
 
   return (
-    <section className="px-6 py-4 border-b border-navy/5 bg-gradient-to-b from-warm-white/60 to-transparent">
+    <section ref={rootRef} className="px-6 py-4 border-b border-navy/5 bg-gradient-to-b from-warm-white/60 to-transparent">
       <SectionHeader
         left={<><Sparkles size={11}/> 精读工作台</>}
         right={hasPageText ? `P.${currentPage}` : '摘要'}
@@ -1666,7 +1689,7 @@ function DeepReadPanel({
         {error && <p className="px-3.5 py-3 text-[12px] text-coral leading-relaxed">{error}</p>}
 
         {guide && (
-          <div>
+          <div className={`rounded-xl transition-shadow duration-700 ${justArrived ? 'ring-2 ring-coral/45' : 'ring-0 ring-transparent'}`}>
             <div className="px-3.5 py-2.5 border-b border-navy/6 bg-cream/35 flex items-center justify-between gap-2">
               <p className="m-0 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/65">
                 {source || formatDeepReadSource(mode, currentPage)}
@@ -1778,13 +1801,21 @@ function SectionHeader({ left, right, accent }) {
   )
 }
 
-function QuoteCard({ quote, onJump }) {
+function QuoteCard({ quote, onJump, onDelete }) {
   return (
-    <div className="bg-warm-white border border-navy/8 rounded-xl px-3.5 py-3 mb-2.5 cursor-pointer hover:border-coral/35 hover:-translate-y-px transition-all relative"
+    <div className="bg-warm-white border border-navy/8 rounded-xl px-3.5 py-3 mb-2.5 cursor-pointer hover:border-coral/35 hover:-translate-y-px transition-all relative group"
       onClick={onJump}>
-      <span className="absolute top-2.5 right-3 font-mono text-[9.5px] tracking-wider text-coral bg-coral/10 px-1.5 rounded">
+      <span className="absolute top-2.5 right-3 font-mono text-[9.5px] tracking-wider text-coral bg-coral/10 px-1.5 rounded group-hover:opacity-0 transition-opacity">
         #{quote.n}
       </span>
+      {onDelete && (
+        <button
+          onClick={e => { e.stopPropagation(); onDelete() }}
+          title="删除引用（同时移除 PDF 上的高亮）"
+          className="absolute top-2 right-2.5 p-1 text-warm-gray/50 hover:text-coral opacity-0 group-hover:opacity-100 transition-opacity">
+          <X size={12}/>
+        </button>
+      )}
       <p className="border-l-2 border-coral pl-2.5 italic text-[12.5px] leading-snug text-navy/78 mr-8 mb-2"
         style={{ fontFamily: '"Source Serif Pro", Georgia, serif' }}>
         &ldquo;{quote.text.length > 220 ? quote.text.slice(0, 220) + '…' : quote.text}&rdquo;
