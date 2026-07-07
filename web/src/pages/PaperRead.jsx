@@ -596,6 +596,24 @@ export default function PaperRead() {
     window.getSelection()?.removeAllRanges()
   }
 
+  // ── 带读结果 → 送到汇报 ──
+  const sendDeepReadToBoard = () => {
+    if (!deepReadGuide) return
+    sendToBoard({
+      content: deepReadGuide,
+      quote: deepReadSource || '',
+      page: deepReadMode === 'page' ? currentPage : null,
+      source: 'deep_read',
+    })
+  }
+
+  // ── AI 回复 → 送到汇报 ──
+  const sendChatToBoard = (idx) => {
+    const m = chatMessages[idx]
+    if (!m || m.role !== 'assistant') return
+    sendToBoard({ content: m.content, source: 'chat' })
+  }
+
   const deepReadSelection = () => {
     if (!selection) return
     const selected = selection
@@ -1137,6 +1155,8 @@ export default function PaperRead() {
             deepReadSaved={deepReadSaved}
             onRunDeepRead={runDeepRead}
             onSaveDeepRead={saveDeepReadAsNote}
+            onSendDeepReadToBoard={sendDeepReadToBoard}
+            onSendChatToBoard={sendChatToBoard}
             // bookmark + project picker passthrough
             bookmarked={bookmarked}
             onToggleBookmark={toggleBookmark}
@@ -1316,6 +1336,7 @@ function MemoryChannel(props) {
     currentPage, currentPageText, deepReadGuide, deepReadSource,
     deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
     board, onOpenBoard, onExportBoard, boardExporting,
+    onSendDeepReadToBoard, onSendChatToBoard,
   } = props
 
   return (
@@ -1381,6 +1402,7 @@ function MemoryChannel(props) {
         saved={deepReadSaved}
         onRun={onRunDeepRead}
         onSave={onSaveDeepRead}
+        onSendToBoard={onSendDeepReadToBoard}
       />
 
       {/* ★ READING CARDS */}
@@ -1485,10 +1507,16 @@ function MemoryChannel(props) {
                           ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
                           ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
                         }}>{m.content}</ReactMarkdown>
-                        <button onClick={() => seedCardFromChat(i)}
-                          className="mt-1.5 inline-flex items-center gap-1 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/70 hover:text-coral transition-colors">
-                          <Layers size={10}/> 归卡
-                        </button>
+                        <span className="mt-1.5 inline-flex items-center gap-3">
+                          <button onClick={() => seedCardFromChat(i)}
+                            className="inline-flex items-center gap-1 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/70 hover:text-coral transition-colors">
+                            <Layers size={10}/> 归卡
+                          </button>
+                          <button onClick={() => onSendChatToBoard(i)}
+                            className="inline-flex items-center gap-1 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/70 hover:text-mint-deep transition-colors">
+                            <Presentation size={10}/> 送到汇报
+                          </button>
+                        </span>
                       </>
                     ) : m.content}
                   </div>
@@ -1563,6 +1591,7 @@ function MemoryChannel(props) {
 
 function DeepReadPanel({
   paper, currentPage, currentPageText, guide, source, mode, loading, error, saved, onRun, onSave,
+  onSendToBoard,
 }) {
   const hasAbstract = !!paper?.abstract
   const hasPageText = currentPageText.trim().length > 80
@@ -1629,13 +1658,20 @@ function DeepReadPanel({
               <p className="m-0 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/65">
                 {source || formatDeepReadSource(mode, currentPage)}
               </p>
-              <button onClick={onSave} disabled={saved}
-                className={`shrink-0 inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium ${
-                  saved ? 'bg-mint/20 text-navy' : 'border border-coral/30 text-coral hover:bg-coral/5'
-                }`}>
-                <FileText size={10}/>
-                {saved ? '已保存' : '存笔记'}
-              </button>
+              <span className="shrink-0 inline-flex items-center gap-1.5">
+                <button onClick={onSendToBoard}
+                  className="inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium border border-navy/15 text-navy hover:border-mint-deep/50 hover:text-mint-deep">
+                  <Presentation size={10}/>
+                  送到汇报
+                </button>
+                <button onClick={onSave} disabled={saved}
+                  className={`inline-flex items-center justify-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium ${
+                    saved ? 'bg-mint/20 text-navy' : 'border border-coral/30 text-coral hover:bg-coral/5'
+                  }`}>
+                  <FileText size={10}/>
+                  {saved ? '已保存' : '存笔记'}
+                </button>
+              </span>
             </div>
             <div className="text-[12.5px] leading-relaxed text-navy/84 max-h-[430px] overflow-y-auto px-3.5 py-3.5">
               <ReactMarkdown components={{
