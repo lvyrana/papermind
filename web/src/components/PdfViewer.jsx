@@ -427,6 +427,10 @@ const PdfViewer = forwardRef(function PdfViewer(
       // pdf_viewer.css 里文字 span 的定位全部乘以 --scale-factor；
       // 不设置时按 1 倍铺文字层、画布却按实际缩放渲染，选区整体错位
       textLayer.style.setProperty('--scale-factor', String(theScale))
+      // pdf.js 5.x 改名 --total-scale-factor：span 字号 = 它 × --font-height。
+      // 不设则 calc 失效、字号回退浏览器默认 16px——透明文字比画布字形高一截，
+      // 原生选区变胖、鼠标命中测试跳行（"划词不精准"的真正根因）
+      textLayer.style.setProperty('--total-scale-factor', String(theScale))
 
       const highlightLayer = document.createElement('div')
       highlightLayer.className = 'quoteHighlightLayer'
