@@ -25,6 +25,28 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.pdf-viewer-root .textLayer::selection,
+.pdf-viewer-root .textLayer ::selection,
+.pdf-viewer-root .textLayer *::selection {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.pdf-viewer-root .textLayer::-moz-selection,
+.pdf-viewer-root .textLayer ::-moz-selection,
+.pdf-viewer-root .textLayer *::-moz-selection {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+.pdf-active-selection {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 2px;
+  background: rgba(92, 153, 255, 0.32);
+  mix-blend-mode: multiply;
+}
+
 .pm-page-title {
   font-family: "Songti SC", "Noto Serif SC", "Source Han Serif SC", STSong, Georgia, serif;
   font-weight: 400;

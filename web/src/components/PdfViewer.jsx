@@ -172,6 +172,97 @@ const PdfViewer = forwardRef(function PdfViewer(
     }))
   }, [])
 
+  const clearActiveSelectionPaint = useCallback(() => {
+    Object.values(pageRefs.current).forEach(info => {
+      if (info?.selectionLayer) info.selectionLayer.innerHTML = ''
+    })
+  }, [])
+
+  const collectTextLayerRects = useCallback((pageInfo) => {
+    if (Array.isArray(pageInfo?.textLayerWordRects)) return pageInfo.textLayerWordRects
+    const layer = pageInfo?.textLayer
+    const wrap = pageInfo?.wrapEl
+    if (!layer || !wrap) return []
+    const wrapRect = wrap.getBoundingClientRect()
+    const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT)
+    const rects = []
+    while (walker.nextNode()) {
+      const node = walker.currentNode
+      if (!node.textContent?.trim()) continue
+      const range = document.createRange()
+      try {
+        const chunks = Array.from(node.textContent.matchAll(/\S+/g))
+        for (const chunk of chunks) {
+          const start = chunk.index || 0
+          const end = start + chunk[0].length
+          range.setStart(node, start)
+          range.setEnd(node, end)
+          for (const r of Array.from(range.getClientRects())) {
+            if (r.width < 1 || r.height < 1) continue
+            rects.push({
+              x: r.left - wrapRect.left,
+              y: r.top - wrapRect.top,
+              width: r.width,
+              height: r.height,
+            })
+          }
+        }
+      } finally {
+        range.detach?.()
+      }
+    }
+    pageInfo.textLayerWordRects = rects
+    return rects
+  }, [])
+
+  const clampSelectionLineToText = useCallback((line, textRects) => {
+    const x = Number(line.x)
+    const y = Number(line.y)
+    const width = Number(line.width)
+    const height = Number(line.height)
+    if (!Number.isFinite(x + y + width + height) || width < 2 || height < 2) return null
+
+    const lineTop = y
+    const lineBottom = y + height
+    const lineCenter = y + height / 2
+    const candidates = (textRects || []).filter(r => {
+      const ry = Number(r.y)
+      const rh = Number(r.height)
+      if (!Number.isFinite(ry + rh) || rh < 1) return false
+      const overlap = Math.min(lineBottom, ry + rh) - Math.max(lineTop, ry)
+      const centerDistance = Math.abs((ry + rh / 2) - lineCenter)
+      return overlap > Math.min(height, rh) * 0.25 || centerDistance < Math.max(height, rh) * 0.55
+    })
+    if (!candidates.length) return line
+
+    const textLeft = Math.min(...candidates.map(r => r.x))
+    const textRight = Math.max(...candidates.map(r => r.x + r.width))
+    const paddedLeft = textLeft - 1.5
+    const paddedRight = textRight + 1.5
+    const left = Math.max(x, paddedLeft)
+    const right = Math.min(x + width, paddedRight)
+    if (right - left < 2) return null
+    return { ...line, x: +left.toFixed(2), width: +(right - left).toFixed(2) }
+  }, [])
+
+  const paintSelectionRects = useCallback((pageInfo, rects) => {
+    if (!pageInfo?.selectionLayer) return
+    pageInfo.selectionLayer.innerHTML = ''
+    for (const rect of rects || []) {
+      const height = Number(rect.height)
+      const inset = Math.min(4, Math.max(2, height * 0.16))
+      const marker = document.createElement('div')
+      marker.className = 'pdf-active-selection'
+      marker.style.cssText = `
+        left:${Number(rect.x)}px;
+        top:${Number(rect.y) + inset}px;
+        width:${Number(rect.width)}px;
+        height:${Math.max(height - inset * 2, 4)}px;
+      `
+      pageInfo.selectionLayer.appendChild(marker)
+    }
+  }, [])
+
   // 第一性原理：高亮锚定的是文本而不是像素。绘制时优先在当前文字层里
   // 重新定位 quote 原文，从真实 span 几何推导矩形——任何缩放下都精确贴字
   // （Zotero 的做法）；文字层不可用或文本找不到时，退回存储的矩形快照。
@@ -355,7 +446,6 @@ const PdfViewer = forwardRef(function PdfViewer(
     if (!url) return
     let cancelled = false
     // pdfjs loading is an external task lifecycle; reset UI state when the source changes.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
     setError(null)
     pageRefs.current = {}
@@ -437,9 +527,19 @@ const PdfViewer = forwardRef(function PdfViewer(
         z-index:1;
       `
 
+      const selectionLayer = document.createElement('div')
+      selectionLayer.className = 'pdfSelectionLayer'
+      selectionLayer.style.cssText = `
+        position:absolute; inset:0;
+        width:${viewport.width}px; height:${viewport.height}px;
+        pointer-events:none;
+        z-index:3;
+      `
+
       pageWrap.appendChild(canvas)
       pageWrap.appendChild(highlightLayer)
       pageWrap.appendChild(textLayer)
+      pageWrap.appendChild(selectionLayer)
       pagesContainerRef.current?.appendChild(pageWrap)
 
       const ctx = canvas.getContext('2d')
@@ -468,7 +568,7 @@ const PdfViewer = forwardRef(function PdfViewer(
       }
 
       pageRefs.current[pageNum] = {
-        wrapEl: pageWrap, canvas, highlightLayer, textLayer, viewport, scale: theScale, outputScale,
+        wrapEl: pageWrap, canvas, highlightLayer, selectionLayer, textLayer, viewport, scale: theScale, outputScale,
         // PDF 空间文字条目（transform/width/height），高亮按真实字形坐标绘制用
         textItems: textContent.items,
       }
@@ -530,6 +630,7 @@ const PdfViewer = forwardRef(function PdfViewer(
       const sel = window.getSelection()
       const text = sel?.toString().trim()
       if (!text || text.length < 8) {
+        clearActiveSelectionPaint()
         onSelection(null)
         return
       }
@@ -540,6 +641,7 @@ const PdfViewer = forwardRef(function PdfViewer(
         node = node.parentNode
       }
       if (!node || node === containerRef.current) {
+        clearActiveSelectionPaint()
         onSelection(null)
         return
       }
@@ -549,7 +651,8 @@ const PdfViewer = forwardRef(function PdfViewer(
       const wrap = node.closest('.pdf-page-wrap')
       const pageNum = wrap ? parseInt(wrap.dataset.pageNum, 10) : currentPage
       const wrapRect = wrap?.getBoundingClientRect()
-      const selectedRects = wrapRect
+      const pageInfo = pageRefs.current[pageNum]
+      const rawSelectedRects = wrapRect
         ? mergeLineRects(Array.from(range.getClientRects())
             .map(r => ({
               x: +(r.left - wrapRect.left).toFixed(2),
@@ -558,7 +661,20 @@ const PdfViewer = forwardRef(function PdfViewer(
               height: +r.height.toFixed(2),
             })))
         : []
-      const pageInfo = pageRefs.current[pageNum]
+      const domRects = mergeLineRects(locateTextRects(pageInfo, text))
+      const pdfRects = mergeLineRects(locatePdfRects(pageInfo, text))
+      let selectedRects = domRects.map(d => {
+        const g = pdfRects.find(p =>
+          (p.y + p.height / 2) > d.y && (p.y + p.height / 2) < d.y + d.height)
+        return g ? { x: d.x, width: d.width, y: g.y, height: g.height } : d
+      }).filter(Boolean)
+      if (!selectedRects.length) {
+        const textRects = collectTextLayerRects(pageInfo)
+        selectedRects = rawSelectedRects
+          .map(line => clampSelectionLineToText(line, textRects))
+          .filter(Boolean)
+      }
+      paintSelectionRects(pageInfo, selectedRects)
 
       onSelection({
         text,
@@ -587,7 +703,10 @@ const PdfViewer = forwardRef(function PdfViewer(
       document.removeEventListener('mouseup', handler)
       scroller?.removeEventListener('scroll', onScroll)
     }
-  }, [currentPage, onSelection, scale])
+  }, [
+    clampSelectionLineToText, clearActiveSelectionPaint, collectTextLayerRects, currentPage,
+    locatePdfRects, locateTextRects, mergeLineRects, onSelection, paintSelectionRects, scale,
+  ])
 
   // ── repaint persisted quote highlights whenever backend quotes change ──
   useEffect(() => {
