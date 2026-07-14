@@ -33,7 +33,7 @@ FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 FIGURE_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
 
 from src.database import (
-    init_db, save_paper, get_saved_papers, get_saved_paper,
+    init_db, save_paper, get_saved_papers, get_saved_paper, touch_last_read,
     delete_saved_paper, update_paper_enrichment, save_note, delete_note, get_note_owner, get_notes, save_chat_message,
     get_saved_categories,
     get_chat_history, record_reading, get_reading_history,
@@ -1199,6 +1199,7 @@ def api_get_library_paper(paper_id: int, request: Request):
     paper = _get_owned_paper_or_none(paper_id, uid)
     if not paper:
         return {"error": "not found"}
+    touch_last_read(paper_id)  # 记录本次打开，供首页「在读状态」判定
     notes = get_notes(paper_id)
     chats = get_chat_history(paper_id)
     return {"paper": paper, "notes": notes, "chats": chats}
