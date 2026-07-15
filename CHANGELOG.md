@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.12.5 - 2026-07-14
+## v0.12.5 - 2026-07-14 ~ 07-15
 
 ### 首页改版：W2 单栏「精读工作台」——从发现流转向精读闭环
 
@@ -12,6 +12,13 @@
   - `/library` 每篇新增 `card_count`（COUNT reading_cards）、`has_export`（EXISTS presentation_boards＝组会汇报板）
   - 打开精读详情时 `touch_last_read` 更新 `last_read_at` → 首页「在读/读过」据此判定（近 14 天内为在读）
 - 清理被 W2 取代的旧地形 Hero 依赖（Terrain/hills/trails/focusTags/formatSearchRange 等）
+
+#### 首轮反馈修复（07-15）
+
+- **精读工程点进旧详情页**（根因）：工程行原链到 `/library/:id`（老的收藏详情页 `LibraryDetail`），改为 `/paper/:id?library=1`（真精读台 `PaperRead`），与 PDF 上传 / lookup 入口一致，同一篇的卡片/笔记/对话/汇报板正确带入
+- **问候字太细**（根因）：Noto Serif SC 只加载了 400/600/700，`font-medium`(500) 回退成细的 400；改用 `pm-page-title`（Songti SC）+ `text-navy` + 40px，与收藏页标题同款，明显变实
+- **memory_recent 被截断**：原 `line-clamp-2` 硬截，超过 42 字新增「展开 / 收起」按钮
+- **放入论文 / 继续精读两框适度放大**：gap-6、p-7、图标 w-12、输入 h-12、标题 16px
 
 ---
 
