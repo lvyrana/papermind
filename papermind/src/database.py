@@ -555,13 +555,26 @@ def get_saved_papers(user_id: str = "") -> list[dict]:
     rows = conn.execute("""
         SELECT sp.*,
                (SELECT COUNT(*) FROM paper_notes WHERE paper_rowid = sp.id) as note_count,
-               (SELECT COUNT(*) FROM paper_chats WHERE paper_rowid = sp.id) as chat_count
+               (SELECT COUNT(*) FROM paper_chats WHERE paper_rowid = sp.id) as chat_count,
+               (SELECT COUNT(*) FROM reading_cards WHERE paper_rowid = sp.id) as card_count,
+               EXISTS(SELECT 1 FROM presentation_boards WHERE paper_rowid = sp.id) as has_export
         FROM saved_papers sp
         WHERE sp.user_id = ?
         ORDER BY sp.saved_at DESC
     """, (user_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def touch_last_read(paper_id: int):
+    """记录一次「打开精读」，让首页「在读状态」真实反映最近阅读。"""
+    conn = _ensure_db()
+    conn.execute(
+        "UPDATE saved_papers SET last_read_at = ? WHERE id = ?",
+        (datetime.now().isoformat(), paper_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_saved_paper(paper_id: int) -> Optional[dict]:

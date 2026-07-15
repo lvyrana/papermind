@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.12.5 - 2026-07-14
+
+### 首页改版：W2 单栏「精读工作台」——从发现流转向精读闭环
+
+- 桌面首页从「研究地形版发现流」改为单栏精读工作台（对齐设计稿 `Home 精读工作台` 的 W2 方案）。结构：日期＋问候＋一行「papermind 还记得」(memory_recent) → 放入论文大入口 ｜ 继续上次精读 → 最近的精读工程列表
+- **放入论文入口**：复用原有 lookup（PMID/DOI/标题）+ 上传 PDF 逻辑，重塑为 drop-zone 外观，并支持直接把 PDF 拖入
+- **精读工程列表**：接 `/library`，映射 分类→标签、笔记/对话/卡片计数、最近动过时间；命中「继续上次精读」时带出卡片/笔记数
+- **发现流去留**：桌面「for you」推荐流暂时下线，代码以 `SHOW_LEGACY_FEED` 旗标保留（置 true 即恢复）；移动端 `MobileHome` 保持不变，仍是推荐流首页
+- 后端补齐工作台所需字段（诚实信号，非造假列）：
+  - `/library` 每篇新增 `card_count`（COUNT reading_cards）、`has_export`（EXISTS presentation_boards＝组会汇报板）
+  - 打开精读详情时 `touch_last_read` 更新 `last_read_at` → 首页「在读/读过」据此判定（近 14 天内为在读）
+- 清理被 W2 取代的旧地形 Hero 依赖（Terrain/hills/trails/focusTags/formatSearchRange 等）
+
+---
+
 ## v0.12.4 - 2026-07-08
 
 ### 划词不精准的真正根因：一个 CSS 变量名

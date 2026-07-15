@@ -7,7 +7,6 @@ import {
 import Navbar from '../components/Navbar'
 import TourBubble from '../components/TourBubble'
 import { apiGet, apiPost, API_BASE, getUserId } from '../api'
-import Terrain, { buildHills, buildTrails } from '../components/Terrain'
 
 /* ─────────────────────────────────────────────────────────────
    HOME — 研究地形版 · "papermind 还记得"
@@ -19,6 +18,18 @@ import Terrain, { buildHills, buildTrails } from '../components/Terrain'
    4. 新增「papermind 还在替你 hold」线索区（lastReading 派生）
    5. 地形组件复用（与 Profile.jsx 共享同一套几何，先内联，稳定后抽 src/components/Terrain.jsx）
    ───────────────────────────────────────────────────────────── */
+
+// W2 工作台上线后，桌面「for you」发现流暂时下线（代码保留，置 true 即可恢复）。
+const SHOW_LEGACY_FEED = false
+
+// last_read_at（缺则 saved_at）在近 14 天内视为「在读」，否则「读过」。
+const READING_WINDOW_DAYS = 14
+function deriveReadStatus(p) {
+  const ts = p?.last_read_at || p?.saved_at
+  if (!ts) return '读过'
+  const days = (Date.now() - new Date(ts).getTime()) / 86400000
+  return days <= READING_WINDOW_DAYS ? '在读' : '读过'
+}
 
 function loadCachedJson(key, fallback) {
   try {
@@ -62,16 +73,19 @@ export default function Home() {
   const [profileFilled, setProfileFilled] = useState(true)
   const [needsProfile, setNeedsProfile] = useState(false)
   const [memoryRecent, setMemoryRecent] = useState('')
-  const [memoryCore, setMemoryCore] = useState('')
-  const [focusAreas, setFocusAreas] = useState('')
-  const [methodInterests, setMethodInterests] = useState('')
-  const [trackingDays, setTrackingDays] = useState('90')
   const [quickQuery, setQuickQuery] = useState('')
   const [quickResults, setQuickResults] = useState(null)
   const [quickSearching, setQuickSearching] = useState(false)
   const [quickSaving, setQuickSaving] = useState('')
   const [quickUploading, setQuickUploading] = useState(false)
   const [quickError, setQuickError] = useState('')
+
+  // ── 精读工程（书架）— 供 W2 工作台列表 ──────────────────────────────────────
+  const [libraryPapers, setLibraryPapers] = useState(() => loadCachedJson('cached-library-papers', []))
+  const [libraryLoading, setLibraryLoading] = useState(() => {
+    try { return !localStorage.getItem('cached-library-papers') } catch { return true }
+  })
+  const [memoryExpanded, setMemoryExpanded] = useState(false)
 
   // ── Home tour (unchanged) ─────────────────────────────────────────────────
   const [homeTourStep, setHomeTourStep] = useState(0)
@@ -110,13 +124,21 @@ export default function Home() {
         const filled = !!(data.focus_areas || data.method_interests || data.background || data.current_goal)
         setProfileFilled(filled)
         setMemoryRecent(data.memory_recent || '')
-        setMemoryCore(data.memory_core || '')
-        setFocusAreas(data.focus_areas || '')
-        setMethodInterests(data.method_interests || '')
-        setTrackingDays(data.tracking_days || '90')
       })
       .catch(() => {})
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── load library（精读工程列表）────────────────────────────────────────────
+  useEffect(() => {
+    apiGet('/library')
+      .then(data => {
+        const next = data.papers || []
+        setLibraryPapers(next)
+        try { localStorage.setItem('cached-library-papers', JSON.stringify(next)) } catch { /* ignore */ }
+      })
+      .catch(() => {})
+      .finally(() => setLibraryLoading(false))
+  }, [])
 
   // ── no blocking onboarding ────────────────────────────────────────────────
   // 精读入口不再要求先填写画像；画像只影响推荐质量。
@@ -303,19 +325,12 @@ export default function Home() {
   }, [])
 
   // ── derived ───────────────────────────────────────────────────────────────
-  const focusTags = useMemo(() => splitTags(focusAreas), [focusAreas])
-  const memoryText = `${memoryRecent || ''} ${memoryCore || ''}`
-
-  // memory_recent 第一句 = 主推文案
+  // memory_recent 第一句 = 主推文案（移动端仍在用）
   const memoryHighlight = useMemo(() => {
     if (!memoryRecent) return ''
     const match = memoryRecent.match(/^[^。！？\n]+[。！？]/)
     return match ? match[0].trim() : memoryRecent.slice(0, 90)
   }, [memoryRecent])
-
-  // 地形 hills
-  const hills = useMemo(() => buildHills(focusAreas, memoryText, 'mini'), [focusAreas, memoryText])
-  const trails = useMemo(() => buildTrails(hills, methodInterests), [hills, methodInterests])
 
   // threads（papermind 还在 hold 的线索）— 从现有缓存派生
   // TODO(backend): /home/threads → 真实线索（低 dwell、问一句就停、收藏未读、冷却中）
@@ -335,94 +350,95 @@ export default function Home() {
     return out
   }, [lastReading])
 
+  // 精读工程：按最近动过（last_read_at→saved_at）排序，首页只露最近 6 条
+  const workbenchProjects = useMemo(() => {
+    return [...libraryPapers]
+      .sort((a, b) => new Date(b.last_read_at || b.saved_at || 0) - new Date(a.last_read_at || a.saved_at || 0))
+      .slice(0, 6)
+  }, [libraryPapers])
+  const readingCount = useMemo(
+    () => libraryPapers.filter(p => deriveReadStatus(p) === '在读').length,
+    [libraryPapers],
+  )
+  const doneCount = libraryPapers.length - readingCount
+  // 「继续上次精读」补充精读计数：lastReading.index 命中书架时带上卡片/笔记数
+  const resumeMeta = useMemo(() => {
+    if (!lastReading) return null
+    return libraryPapers.find(p => String(p.id) === String(lastReading.index ?? lastReading._cache_index)) || null
+  }, [lastReading, libraryPapers])
+
   return (
     <div className="min-h-screen pb-24 lg:pb-0">
 
       {/* ═══ DESKTOP ═══ */}
-      <div className="hidden lg:block max-w-[1280px] mx-auto px-10 pt-24 pb-12">
+      <div className="hidden lg:block max-w-[980px] mx-auto px-10 pt-24 pb-12">
 
-        {/* ─── HERO ─── */}
-        <section className="grid grid-cols-[1.4fr_1fr] gap-9 items-stretch mb-12">
-
-          {/* hero text */}
-          <div className="flex flex-col">
-            <p className="text-[10.5px] uppercase tracking-[0.25em] font-mono text-coral mb-3">
-              papermind · 还记得这些
-            </p>
-            <h1 className="font-serif text-[42px] font-medium text-navy leading-[1.2] tracking-wide m-0">
-              <span className="wavy-underline">{greeting}</span>
-            </h1>
-
-            {memoryHighlight ? (
-              <p className="mt-5 font-serif italic text-[17px] leading-[1.85] text-navy/75 m-0 max-w-[560px]">
-                {memoryHighlight}
-              </p>
-            ) : profileFilled ? (
-              <p className="mt-5 text-[15px] leading-relaxed text-navy/55 m-0 max-w-[560px]">
-                可以直接开一篇精读，也可以继续看推荐。
-              </p>
-            ) : (
-              <p className="mt-5 text-[15px] leading-relaxed text-navy/55 m-0 max-w-[560px]">
-                不用先填画像。先把手头这篇读起来，推荐偏好以后再慢慢补。
-              </p>
-            )}
-
-            {/* stats line */}
-            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-2 mt-7 text-[13px] text-warm-gray">
-              {focusTags.length > 0 && <><Stat n={focusTags.length} label="个长期方向"/><Sep/></>}
-              {total > 0 && <><Stat n={total} label="篇推荐"/><Sep/></>}
-              {remaining > 0 && !allExplored && <><Stat n={remaining} label="篇未看"/><Sep/></>}
-              <span className="whitespace-nowrap font-mono text-[12px]">{formatSearchRange(trackingDays)}</span>
+        {/* ─── W2 header：日期 · 问候 · 一行「papermind 还记得」 ─── */}
+        <header className="mb-9">
+          <p className="text-warm-gray text-xs mb-2.5 font-mono">{formatToday()}</p>
+          <h1 className="pm-page-title text-[40px] text-navy leading-[1.15] m-0">{greeting}</h1>
+          {memoryRecent && (
+            <div className="mt-5 max-w-[660px] flex items-start gap-2.5 text-[13px] leading-[1.75]">
+              <span className="text-coral/75 mt-0.5 shrink-0 whitespace-nowrap">papermind 还记得</span>
+              <span className="text-navy/70">
+                <span className={memoryExpanded ? '' : 'line-clamp-2'}>{memoryRecent}</span>
+                {memoryRecent.length > 42 && (
+                  <button
+                    type="button"
+                    onClick={() => setMemoryExpanded(v => !v)}
+                    className="ml-1 text-coral/80 hover:text-coral whitespace-nowrap"
+                  >
+                    {memoryExpanded ? '收起' : '展开'}
+                  </button>
+                )}
+              </span>
             </div>
+          )}
+        </header>
 
-            {/* resume card */}
-            {lastReading && (
-              <Link to={`/paper/${lastReading._cache_index ?? lastReading.index ?? 0}`}
-                state={{ paper: lastReading }}
-                onClick={() => sessionStorage.setItem('home-scroll-y', String(window.scrollY))}
-                className="mt-auto pt-6 group">
-                <div className="flex gap-4 items-center px-5 py-4 rounded-2xl bg-warm-white/70 border border-cream-dark/60 hover:border-cream-dark transition">
-                  <span className="shrink-0 w-9 h-9 rounded-full bg-coral/10 text-coral flex items-center justify-center">
-                    <Clock size={15}/>
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="m-0 text-[9.5px] uppercase tracking-[0.22em] font-mono text-warm-gray">上次停在这里 · {lastReading.readAt ? formatTimeAgo(lastReading.readAt) : '刚才'}</p>
-                    <p className="m-0 mt-1 text-[13.5px] leading-[1.5] text-navy line-clamp-1">{lastReading.title}</p>
-                  </div>
-                  <ArrowRight size={14} className="shrink-0 text-coral group-hover:translate-x-0.5 transition-transform"/>
-                </div>
-              </Link>
-            )}
+        {/* ─── 放入论文 | 继续上次精读 ─── */}
+        <div className="grid grid-cols-[1fr_1fr] gap-6 mb-12 items-stretch">
+          <WorkbenchDeepReadCard
+            query={quickQuery}
+            setQuery={setQuickQuery}
+            results={quickResults}
+            searching={quickSearching}
+            saving={quickSaving}
+            uploading={quickUploading}
+            error={quickError}
+            onLookup={lookupForDeepRead}
+            onOpenPaper={openPaperForDeepRead}
+            onUploadPdf={uploadPdfForDeepRead}
+          />
+          <WorkbenchResumeCard lastReading={lastReading} meta={resumeMeta}/>
+        </div>
+
+        {/* ─── 最近的精读工程 ─── */}
+        <section>
+          <div className="flex items-baseline justify-between mb-4">
+            <h2 className="text-lg font-serif text-navy m-0">最近的精读工程</h2>
+            <div className="flex items-center gap-4 text-[11px] text-warm-gray">
+              {libraryPapers.length > 0 && <span>{readingCount} 在读 · {doneCount} 读过</span>}
+              <Link to="/library" className="text-coral hover:underline">去书架 →</Link>
+            </div>
           </div>
 
-          {/* terrain mini */}
-          <Link to="/profile" className="block relative rounded-2xl overflow-hidden border border-cream-dark/60 shadow-[0_1px_0_rgba(30,58,95,0.04),0_18px_50px_-30px_rgba(30,58,95,0.22)] bg-[#F7F0E8] hover:-translate-y-0.5 transition-transform">
-            <Terrain hills={hills} trails={trails} variant="mini"/>
-            <span className="absolute top-3 left-4 text-[9px] uppercase tracking-[0.2em] font-mono text-warm-gray pointer-events-none">your landscape</span>
-            <span className="absolute top-3 right-4 text-[9px] uppercase tracking-[0.2em] font-mono text-warm-gray pointer-events-none">{focusTags.length} 个方向</span>
-            <div className="absolute bottom-3.5 right-3.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-navy/90 text-warm-white text-[11.5px] font-medium tracking-wide">
-              看完整地形
-              <svg width="10" height="10" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M2 5.5 H9 M6 2 L9 5.5 L6 9"/>
-              </svg>
+          {libraryLoading && libraryPapers.length === 0 ? (
+            <div className="text-center py-16 text-warm-gray text-sm">加载精读工程…</div>
+          ) : workbenchProjects.length > 0 ? (
+            <div className="space-y-3">
+              {workbenchProjects.map(p => <WorkbenchProjectRow key={p.id} p={p}/>)}
             </div>
-          </Link>
+          ) : (
+            <div className="bg-warm-white/70 border border-dashed border-cream-dark rounded-3xl px-6 py-12 text-center">
+              <p className="text-navy/70 text-sm m-0">还没有精读工程</p>
+              <p className="text-warm-gray text-[12.5px] mt-1.5 m-0">从上面放入一篇论文，开始你的第一次精读。</p>
+            </div>
+          )}
         </section>
 
-        <DeepReadEntry
-          query={quickQuery}
-          setQuery={setQuickQuery}
-          results={quickResults}
-          searching={quickSearching}
-          saving={quickSaving}
-          uploading={quickUploading}
-          error={quickError}
-          onLookup={lookupForDeepRead}
-          onOpenPaper={openPaperForDeepRead}
-          onUploadPdf={uploadPdfForDeepRead}
-        />
-
-        {/* ─── FOR YOU ─── */}
+        {SHOW_LEGACY_FEED && (<>
+        {/* ─── FOR YOU（发现流，W2 工作台上线后下线，代码保留）─── */}
         <section className="mt-12">
           <div className="flex items-end justify-between mb-7 pb-4 border-b border-cream-dark/50">
             <div>
@@ -559,6 +575,7 @@ export default function Home() {
             {showSearchDebug && <SearchDebugDetails debug={searchDebug}/>}
           </div>
         )}
+        </>)}
       </div>
 
       {/* ═══ MOBILE ═══ */}
@@ -600,13 +617,14 @@ export default function Home() {
 
       <Navbar/>
 
-      {homeTourStep === 1 && (
+      {/* Home tour 只在有发现流卡片的场景生效（桌面工作台无卡片，仅移动端保留） */}
+      {homeTourStep === 1 && (SHOW_LEGACY_FEED || window.innerWidth < 1024) && (
         <TourBubble
           targetRef={window.innerWidth >= 1024 ? desktopFirstCardRef : firstCardRef}
           text="这是 AI 根据你的研究方向精选的论文，点击查看详情和 AI 解读"
           step={1} total={2} placement="bottom" onNext={advanceHomeTour}/>
       )}
-      {homeTourStep === 2 && (
+      {homeTourStep === 2 && (SHOW_LEGACY_FEED || window.innerWidth < 1024) && (
         <TourBubble
           targetRef={window.innerWidth >= 1024 ? desktopNextPageRef : nextPageRef}
           text="看完这批？点这里获取下一批推荐"
@@ -627,6 +645,207 @@ function Stat({ n, label }) {
 
 function Sep() {
   return <span className="text-cream-dark">/</span>
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   W2 精读工作台 — 单栏工程流组件
+   ═══════════════════════════════════════════════════════════════ */
+
+// 放入论文入口：drop-zone 外观 + 复用 lookup/upload 逻辑（含拖拽 PDF）
+function WorkbenchDeepReadCard({
+  query, setQuery, results, searching, saving, uploading, error,
+  onLookup, onOpenPaper, onUploadPdf,
+}) {
+  const fileInputRef = useRef(null)
+  const [dragOver, setDragOver] = useState(false)
+  const hasManyResults = Array.isArray(results) && results.length > 1
+
+  const handleDrop = (event) => {
+    event.preventDefault()
+    setDragOver(false)
+    const file = event.dataTransfer?.files?.[0]
+    if (file) onUploadPdf(file)
+  }
+
+  return (
+    <div
+      onDragOver={(event) => { event.preventDefault(); setDragOver(true) }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      className={`flex flex-col bg-warm-white/70 border-2 border-dashed rounded-3xl p-7 transition ${dragOver ? 'border-coral/70 bg-warm-white' : 'border-coral/35'}`}
+    >
+      <div className="flex items-center gap-3.5 mb-5">
+        <span className="w-12 h-12 rounded-2xl bg-coral/10 text-coral flex items-center justify-center text-2xl shrink-0">＋</span>
+        <div className="min-w-0">
+          <p className="text-[16px] text-navy font-medium leading-tight m-0">放入一篇论文，开始精读</p>
+          <p className="text-[12.5px] text-warm-gray mt-1 m-0">拖入 PDF · 粘贴 PMID / DOI</p>
+        </div>
+      </div>
+
+      <form onSubmit={(event) => { event.preventDefault(); onLookup() }} className="flex flex-col gap-2.5">
+        <div className="relative">
+          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-warm-gray/45"/>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="PMID / DOI / 英文标题"
+            className="w-full h-12 rounded-xl border border-cream-dark/65 bg-cream/35 pl-10 pr-3 text-sm text-navy outline-none focus:border-coral/45 focus:ring-2 focus:ring-coral/10 placeholder:text-warm-gray/45"
+          />
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={searching || !query.trim()}
+            className="flex-1 h-12 px-4 rounded-xl bg-navy text-warm-white text-sm font-medium hover:bg-navy-light transition disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+          >
+            {searching ? <><Loader2 size={14} className="animate-spin"/>检索中</> : <>开始精读<ArrowRight size={14}/></>}
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="h-12 px-4 rounded-xl border border-coral/25 bg-coral/[0.06] text-coral text-sm font-medium hover:bg-coral/10 transition disabled:opacity-50 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+          >
+            {uploading ? <><Loader2 size={14} className="animate-spin"/>上传中</> : <><Upload size={14}/>PDF</>}
+          </button>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            event.target.value = ''
+            onUploadPdf(file)
+          }}
+        />
+      </form>
+
+      {error && <p className="mt-3 mb-0 text-[12.5px] text-coral leading-relaxed">{error}</p>}
+
+      {hasManyResults && (
+        <div className="mt-3 grid gap-2 max-h-52 overflow-y-auto pr-1">
+          {results.map((paper, index) => {
+            const key = paper.pmid || paper.doi || paper.paper_id || paper.title || index
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => onOpenPaper(paper)}
+                disabled={!!saving}
+                className="text-left rounded-xl border border-cream-dark/55 bg-cream/30 px-3.5 py-2.5 hover:border-coral/35 hover:bg-warm-white transition disabled:opacity-55"
+              >
+                <span className="block text-[12.5px] leading-[1.45] font-medium text-navy line-clamp-2">{paper.title}</span>
+                <span className="mt-1 flex items-center justify-between gap-3 text-[11px] text-warm-gray">
+                  <span className="truncate">{paper.pub_date || '年份未知'}{paper.journal ? ` · ${paper.journal}` : ''}</span>
+                  <span className="shrink-0 inline-flex items-center gap-1 text-coral">
+                    {saving === key ? <><Loader2 size={11} className="animate-spin"/>进入中</> : <>进入<ArrowRight size={11}/></>}
+                  </span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 继续上次精读（navy 卡）：复用 last-reading，命中书架时带卡片/笔记数
+function WorkbenchResumeCard({ lastReading, meta }) {
+  if (!lastReading) {
+    return (
+      <div className="flex flex-col justify-center bg-warm-white/70 border border-cream-dark/60 rounded-3xl p-7 text-center">
+        <p className="text-[13.5px] text-navy/70 m-0">还没有进行中的精读</p>
+        <p className="text-[12.5px] text-warm-gray mt-1.5 m-0">从左边放入一篇，接着读会出现在这里。</p>
+      </div>
+    )
+  }
+  const status = meta ? deriveReadStatus(meta) : '在读'
+  const to = `/paper/${lastReading._cache_index ?? lastReading.index ?? 0}`
+  return (
+    <div className="bg-navy text-warm-white rounded-3xl p-7 relative overflow-hidden flex flex-col">
+      <div className="absolute -right-8 -top-10 w-40 h-40 rounded-full bg-navy-light/40 blur-2xl"></div>
+      <div className="relative flex flex-col flex-1">
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-[10px] uppercase tracking-[0.22em] text-warm-white/55 m-0">继续上次精读</p>
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-coral-light">
+            <span className="w-1.5 h-1.5 rounded-full bg-coral-light"></span>{status}
+          </span>
+        </div>
+        <h3 className="text-[16px] leading-relaxed font-medium line-clamp-2 m-0">{lastReading.title}</h3>
+        <div className="mt-auto pt-5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 text-[11px] text-warm-white/60">
+            {meta && <span>◆ {meta.card_count || 0} 卡片</span>}
+            {meta && <span>✎ {meta.note_count || 0} 笔记</span>}
+            <span>{lastReading.readAt ? formatTimeAgo(lastReading.readAt) : '刚才'}</span>
+          </div>
+          <Link
+            to={to}
+            state={{ paper: lastReading }}
+            onClick={() => sessionStorage.setItem('home-scroll-y', String(window.scrollY))}
+            className="bg-coral text-warm-white text-[13px] font-medium rounded-full px-5 py-2 hover:bg-coral-light transition shadow-[0_4px_16px_rgba(232,135,122,0.4)] whitespace-nowrap no-underline"
+          >
+            接着读 →
+          </Link>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// 精读工程行（书架条目）
+function WorkbenchProjectRow({ p }) {
+  const status = deriveReadStatus(p)
+  const line = [p.authors, p.journal, p.pub_date].filter(Boolean).join(' · ')
+  return (
+    <Link
+      to={`/paper/${p.id}?library=1`}
+      state={{ paper: p }}
+      onClick={() => sessionStorage.setItem('home-scroll-y', String(window.scrollY))}
+      className="group block bg-warm-white rounded-2xl border border-cream-dark/50 p-5 hover:shadow-md hover:-translate-y-0.5 transition no-underline"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[11px] px-2 py-0.5 rounded-full font-medium leading-5 bg-coral/10 text-coral">{p.category || '未分类'}</span>
+            <WbStatusDot status={status}/>
+          </div>
+          <h3 className="text-navy text-[14px] leading-relaxed font-medium line-clamp-2 m-0">{p.title}</h3>
+          {line && <p className="text-[11px] text-warm-gray mt-1.5 m-0 line-clamp-1">{line}</p>}
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-[11px] text-warm-gray/70 m-0">{formatTimeAgo(p.last_read_at || p.saved_at)}</p>
+          {p.has_export ? <span className="inline-block mt-2 text-[10px] text-mint-deep bg-mint/15 rounded-full px-2 py-0.5">已导出</span> : null}
+        </div>
+      </div>
+      <div className="mt-3 pt-3 border-t border-cream-dark/40 flex items-center justify-between">
+        <div className="flex items-center gap-3 text-[11px] text-warm-gray">
+          <span>◆ {p.card_count || 0} 卡片</span>
+          <span>✎ {p.note_count || 0} 笔记</span>
+          <span>◌ {p.chat_count || 0} 对话</span>
+        </div>
+        <span className="text-[11px] text-coral opacity-0 group-hover:opacity-100 transition">打开工作台 →</span>
+      </div>
+    </Link>
+  )
+}
+
+function WbStatusDot({ status }) {
+  const reading = status === '在读'
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11px]">
+      <span className={`w-1.5 h-1.5 rounded-full ${reading ? 'bg-coral' : 'bg-mint'}`}></span>
+      <span className={reading ? 'text-coral' : 'text-warm-gray'}>{status}</span>
+    </span>
+  )
+}
+
+function formatToday() {
+  const d = new Date()
+  const week = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][d.getDay()]
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${week}`
 }
 
 function DeepReadEntry({
@@ -1035,11 +1254,6 @@ function ThreadGlyph({ kind }) {
   return (<svg {...props}><rect x="3" y="2" width="8" height="10" rx="1"/><path d="M5 5 H9 M5 7 H9 M5 9 H7"/></svg>)
 }
 
-function splitTags(value) {
-  return value
-    ? value.split(/[,，、\n]+/).map(s => s.trim()).filter(s => s && s.length <= 12).slice(0, 8)
-    : []
-}
 function titleFromFileName(fileName) {
   const base = (fileName || '本地 PDF')
     .replace(/\.pdf$/i, '')
@@ -1047,15 +1261,6 @@ function titleFromFileName(fileName) {
     .replace(/\s+/g, ' ')
     .trim()
   return base || '本地 PDF'
-}
-function formatSearchRange(trackingDays) {
-  const days = parseInt(trackingDays) || 90
-  if (days <= 7)  return `近${days}天`
-  if (days <= 14) return '近两周'
-  if (days <= 31) return '近1个月'
-  if (days <= 62) return '近2个月'
-  if (days <= 93) return '近3个月'
-  return `近${Math.round(days / 30)}个月`
 }
 function formatTimeAgo(iso) {
   if (!iso) return ''
