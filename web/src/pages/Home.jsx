@@ -85,6 +85,7 @@ export default function Home() {
   const [libraryLoading, setLibraryLoading] = useState(() => {
     try { return !localStorage.getItem('cached-library-papers') } catch { return true }
   })
+  const [memoryExpanded, setMemoryExpanded] = useState(false)
 
   // ── Home tour (unchanged) ─────────────────────────────────────────────────
   const [homeTourStep, setHomeTourStep] = useState(0)
@@ -373,19 +374,30 @@ export default function Home() {
       <div className="hidden lg:block max-w-[980px] mx-auto px-10 pt-24 pb-12">
 
         {/* ─── W2 header：日期 · 问候 · 一行「papermind 还记得」 ─── */}
-        <header className="mb-8">
-          <p className="text-warm-gray text-xs mb-2 font-mono">{formatToday()}</p>
-          <h1 className="font-serif text-[30px] font-medium text-navy-light leading-tight m-0">{greeting}</h1>
+        <header className="mb-9">
+          <p className="text-warm-gray text-xs mb-2.5 font-mono">{formatToday()}</p>
+          <h1 className="pm-page-title text-[40px] text-navy leading-[1.15] m-0">{greeting}</h1>
           {memoryRecent && (
-            <div className="mt-4 max-w-[640px] flex items-start gap-2.5 text-[12.5px] leading-6">
-              <span className="text-coral/70 mt-0.5 shrink-0 whitespace-nowrap">papermind 还记得</span>
-              <span className="text-navy/70 line-clamp-2">{memoryRecent}</span>
+            <div className="mt-5 max-w-[660px] flex items-start gap-2.5 text-[13px] leading-[1.75]">
+              <span className="text-coral/75 mt-0.5 shrink-0 whitespace-nowrap">papermind 还记得</span>
+              <span className="text-navy/70">
+                <span className={memoryExpanded ? '' : 'line-clamp-2'}>{memoryRecent}</span>
+                {memoryRecent.length > 42 && (
+                  <button
+                    type="button"
+                    onClick={() => setMemoryExpanded(v => !v)}
+                    className="ml-1 text-coral/80 hover:text-coral whitespace-nowrap"
+                  >
+                    {memoryExpanded ? '收起' : '展开'}
+                  </button>
+                )}
+              </span>
             </div>
           )}
         </header>
 
         {/* ─── 放入论文 | 继续上次精读 ─── */}
-        <div className="grid grid-cols-[1fr_1fr] gap-5 mb-10 items-stretch">
+        <div className="grid grid-cols-[1fr_1fr] gap-6 mb-12 items-stretch">
           <WorkbenchDeepReadCard
             query={quickQuery}
             setQuery={setQuickQuery}
@@ -660,31 +672,31 @@ function WorkbenchDeepReadCard({
       onDragOver={(event) => { event.preventDefault(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
-      className={`flex flex-col bg-warm-white/70 border-2 border-dashed rounded-3xl p-6 transition ${dragOver ? 'border-coral/70 bg-warm-white' : 'border-coral/35'}`}
+      className={`flex flex-col bg-warm-white/70 border-2 border-dashed rounded-3xl p-7 transition ${dragOver ? 'border-coral/70 bg-warm-white' : 'border-coral/35'}`}
     >
-      <div className="flex items-center gap-3 mb-4">
-        <span className="w-11 h-11 rounded-2xl bg-coral/10 text-coral flex items-center justify-center text-xl shrink-0">＋</span>
+      <div className="flex items-center gap-3.5 mb-5">
+        <span className="w-12 h-12 rounded-2xl bg-coral/10 text-coral flex items-center justify-center text-2xl shrink-0">＋</span>
         <div className="min-w-0">
-          <p className="text-[15px] text-navy font-medium leading-tight m-0">放入一篇论文，开始精读</p>
-          <p className="text-[12px] text-warm-gray mt-1 m-0">拖入 PDF · 粘贴 PMID / DOI</p>
+          <p className="text-[16px] text-navy font-medium leading-tight m-0">放入一篇论文，开始精读</p>
+          <p className="text-[12.5px] text-warm-gray mt-1 m-0">拖入 PDF · 粘贴 PMID / DOI</p>
         </div>
       </div>
 
-      <form onSubmit={(event) => { event.preventDefault(); onLookup() }} className="flex flex-col gap-2">
+      <form onSubmit={(event) => { event.preventDefault(); onLookup() }} className="flex flex-col gap-2.5">
         <div className="relative">
-          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-warm-gray/45"/>
+          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-warm-gray/45"/>
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="PMID / DOI / 英文标题"
-            className="w-full h-11 rounded-xl border border-cream-dark/65 bg-cream/35 pl-10 pr-3 text-sm text-navy outline-none focus:border-coral/45 focus:ring-2 focus:ring-coral/10 placeholder:text-warm-gray/45"
+            className="w-full h-12 rounded-xl border border-cream-dark/65 bg-cream/35 pl-10 pr-3 text-sm text-navy outline-none focus:border-coral/45 focus:ring-2 focus:ring-coral/10 placeholder:text-warm-gray/45"
           />
         </div>
         <div className="flex gap-2">
           <button
             type="submit"
             disabled={searching || !query.trim()}
-            className="flex-1 h-11 px-4 rounded-xl bg-navy text-warm-white text-sm font-medium hover:bg-navy-light transition disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
+            className="flex-1 h-12 px-4 rounded-xl bg-navy text-warm-white text-sm font-medium hover:bg-navy-light transition disabled:opacity-50 inline-flex items-center justify-center gap-1.5"
           >
             {searching ? <><Loader2 size={14} className="animate-spin"/>检索中</> : <>开始精读<ArrowRight size={14}/></>}
           </button>
@@ -692,7 +704,7 @@ function WorkbenchDeepReadCard({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
-            className="h-11 px-4 rounded-xl border border-coral/25 bg-coral/[0.06] text-coral text-sm font-medium hover:bg-coral/10 transition disabled:opacity-50 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
+            className="h-12 px-4 rounded-xl border border-coral/25 bg-coral/[0.06] text-coral text-sm font-medium hover:bg-coral/10 transition disabled:opacity-50 inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
           >
             {uploading ? <><Loader2 size={14} className="animate-spin"/>上传中</> : <><Upload size={14}/>PDF</>}
           </button>
@@ -744,16 +756,16 @@ function WorkbenchDeepReadCard({
 function WorkbenchResumeCard({ lastReading, meta }) {
   if (!lastReading) {
     return (
-      <div className="flex flex-col justify-center bg-warm-white/70 border border-cream-dark/60 rounded-3xl p-6 text-center">
-        <p className="text-[13px] text-navy/70 m-0">还没有进行中的精读</p>
-        <p className="text-[12px] text-warm-gray mt-1.5 m-0">从左边放入一篇，接着读会出现在这里。</p>
+      <div className="flex flex-col justify-center bg-warm-white/70 border border-cream-dark/60 rounded-3xl p-7 text-center">
+        <p className="text-[13.5px] text-navy/70 m-0">还没有进行中的精读</p>
+        <p className="text-[12.5px] text-warm-gray mt-1.5 m-0">从左边放入一篇，接着读会出现在这里。</p>
       </div>
     )
   }
   const status = meta ? deriveReadStatus(meta) : '在读'
   const to = `/paper/${lastReading._cache_index ?? lastReading.index ?? 0}`
   return (
-    <div className="bg-navy text-warm-white rounded-3xl p-6 relative overflow-hidden flex flex-col">
+    <div className="bg-navy text-warm-white rounded-3xl p-7 relative overflow-hidden flex flex-col">
       <div className="absolute -right-8 -top-10 w-40 h-40 rounded-full bg-navy-light/40 blur-2xl"></div>
       <div className="relative flex flex-col flex-1">
         <div className="flex items-center justify-between mb-4">
@@ -762,7 +774,7 @@ function WorkbenchResumeCard({ lastReading, meta }) {
             <span className="w-1.5 h-1.5 rounded-full bg-coral-light"></span>{status}
           </span>
         </div>
-        <h3 className="text-[15px] leading-relaxed font-medium line-clamp-2 m-0">{lastReading.title}</h3>
+        <h3 className="text-[16px] leading-relaxed font-medium line-clamp-2 m-0">{lastReading.title}</h3>
         <div className="mt-auto pt-5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 text-[11px] text-warm-white/60">
             {meta && <span>◆ {meta.card_count || 0} 卡片</span>}
@@ -789,7 +801,7 @@ function WorkbenchProjectRow({ p }) {
   const line = [p.authors, p.journal, p.pub_date].filter(Boolean).join(' · ')
   return (
     <Link
-      to={`/library/${p.id}`}
+      to={`/paper/${p.id}?library=1`}
       state={{ paper: p }}
       onClick={() => sessionStorage.setItem('home-scroll-y', String(window.scrollY))}
       className="group block bg-warm-white rounded-2xl border border-cream-dark/50 p-5 hover:shadow-md hover:-translate-y-0.5 transition no-underline"
