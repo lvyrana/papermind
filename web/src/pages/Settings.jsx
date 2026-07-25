@@ -91,14 +91,18 @@ function Toggle({ on, onChange }) {
 const FEEDBACK_TYPES = [
   { value: 'bug',   label: '发现问题',
     bg: 'rgba(232,135,122,0.1)',  activeBg: 'rgba(232,135,122,0.18)', activeColor: '#c0614f',
-    placeholder: '描述一下你遇到的问题，复现步骤也很有帮助…' },
+    placeholder: '描述问题现象与复现步骤…' },
   { value: 'idea',  label: '功能建议',
     bg: 'rgba(168,213,186,0.1)',  activeBg: 'rgba(168,213,186,0.22)', activeColor: '#4d9a6f',
-    placeholder: '说说你希望有什么功能，或者现有功能可以怎么改进…' },
+    placeholder: '描述期望的功能，或现有功能的改进方向…' },
   { value: 'other', label: '其他',
     bg: 'rgba(237,228,216,0.5)',  activeBg: 'rgba(237,228,216,0.9)',  activeColor: '#1E3A5F',
-    placeholder: '随便说点什么，我们都想听…' },
+    placeholder: '其他想反馈的内容…' },
 ]
+
+// 产品转向「精读工作台」后，画像改为行为自动生成的只读副产品，不再让用户主动填写。
+// 隐藏所有主动填写偏好入口（置 true 即恢复）。
+const SHOW_PREFERENCES = false
 
 // ═════════════════════════════════════════════════════════════
 // MAIN
@@ -244,20 +248,24 @@ export default function Settings() {
           <ArrowLeft size={16} /> <span>返回</span>
         </Link>
         <h1 className="pm-page-title text-[30px] lg:text-[34px] text-navy leading-tight">设置</h1>
-        <p className="text-sm text-warm-gray mt-1">管理你的研究偏好、AI 服务、数据与隐私</p>
+        <p className="text-sm text-warm-gray mt-1">管理 AI 服务、数据与隐私</p>
       </header>
 
       <main className="px-6 max-w-2xl lg:max-w-[860px] mx-auto space-y-1.5">
 
-        {/* ─── 研究偏好 (NEW · 顶部) ─── */}
-        <SectionLabel>研究偏好</SectionLabel>
-        <ResearchPrefsCard
-          profile={profile}
-          patchProfile={patchProfile}
-          onSave={handleSaveProfile}
-          saved={profileSaved}
-          saveError={profileSaveError}
-        />
+        {/* ─── 研究偏好（主动填写偏好入口，产品转向后隐藏；置 SHOW_PREFERENCES=true 恢复）─── */}
+        {SHOW_PREFERENCES && (
+          <>
+            <SectionLabel>研究偏好</SectionLabel>
+            <ResearchPrefsCard
+              profile={profile}
+              patchProfile={patchProfile}
+              onSave={handleSaveProfile}
+              saved={profileSaved}
+              saveError={profileSaveError}
+            />
+          </>
+        )}
 
         {/* ─── AI 服务 ─── */}
         <SectionLabel>AI 服务</SectionLabel>
@@ -277,14 +285,13 @@ export default function Settings() {
           </div>
 
           {usage ? (
-            <div className="grid grid-cols-3 gap-2.5 mb-5">
-              <UsageCell label="推荐批次" used={usage.recommend.used} limit={usage.recommend.limit} />
+            <div className="grid grid-cols-2 gap-2.5 mb-5">
               <UsageCell label="AI 对话"  used={usage.chat.used}      limit={usage.chat.limit} />
               <UsageCell label="翻译次数" used={usage.translate.used}  limit={usage.translate.limit} />
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-2.5 mb-5">
-              {['推荐批次', 'AI 对话', '翻译次数'].map(l => (
+            <div className="grid grid-cols-2 gap-2.5 mb-5">
+              {['AI 对话', '翻译次数'].map(l => (
                 <div key={l} className="bg-cream rounded-xl p-3.5 animate-pulse">
                   <div className="h-3 bg-cream-dark rounded mb-3" />
                   <div className="h-1.5 bg-cream-dark rounded-full" />
@@ -300,7 +307,7 @@ export default function Settings() {
             </div>
             <div className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-mint mt-1 flex-shrink-0" />
-              <span>每人每天最多获取 {usage ? usage.recommend.limit : '—'} 批推荐结果、{usage ? usage.chat.limit : '—'} 次 AI 对话、{usage ? usage.translate.limit : '—'} 次翻译次数</span>
+              <span>每人每天最多 {usage ? usage.chat.limit : '—'} 次 AI 对话、{usage ? usage.translate.limit : '—'} 次翻译</span>
             </div>
             <div className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-mint mt-1 flex-shrink-0" />
@@ -388,7 +395,7 @@ export default function Settings() {
             <IconBlock icon={MessageCircle} color="gray" />
             <div className="flex-1 min-w-0">
               <h2 className="text-navy font-semibold text-sm">用户反馈</h2>
-              <p className="text-xs text-warm-gray mt-0.5">遇到问题或有好想法，直接告诉我们</p>
+              <p className="text-xs text-warm-gray mt-0.5">问题反馈与功能建议</p>
             </div>
           </div>
           <div className="flex gap-2 mb-4">
@@ -408,7 +415,7 @@ export default function Settings() {
             })}
           </div>
           <textarea value={feedbackContent} onChange={e => setFeedbackContent(e.target.value)}
-            placeholder={FEEDBACK_TYPES.find(t => t.value === feedbackType)?.placeholder ?? '随便说点什么，我们都想听…'}
+            placeholder={FEEDBACK_TYPES.find(t => t.value === feedbackType)?.placeholder ?? '其他想反馈的内容…'}
             maxLength={1000} rows={5}
             className="w-full rounded-xl px-4 py-3 text-sm text-navy placeholder:text-warm-gray/50 resize-none focus:outline-none transition-colors"
             style={{ background: 'rgba(247,240,232,0.65)', border: '1px solid rgba(237,228,216,0.8)' }}
@@ -426,7 +433,7 @@ export default function Settings() {
                 boxShadow: feedbackContent.trim() && !feedbackSent ? '0 2px 10px rgba(30,58,95,0.18)' : 'none',
               }}>
               {feedbackSent ? <Check size={13} /> : <MessageCircle size={13} />}
-              {feedbackSending ? '发送中…' : feedbackSent ? '已发送，谢谢！' : '发送反馈'}
+              {feedbackSending ? '发送中…' : feedbackSent ? '反馈已提交' : '发送反馈'}
             </button>
           </div>
         </div>

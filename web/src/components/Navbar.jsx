@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { User, Home, Settings, BookOpen } from 'lucide-react'
+import { Home, Settings, BookOpen } from 'lucide-react'
 
 export default function Navbar() {
   const location = useLocation()
@@ -27,8 +27,9 @@ export default function Navbar() {
       </Link>
       <div className="flex-1 flex items-center justify-center gap-0.5 sm:gap-1.5 min-w-0">
         <DesktopNavItem to="/" icon={<Home size={15} />} label="首页" active={location.pathname === '/'} />
-        <DesktopNavItem to="/library" icon={<BookOpen size={15} />} label="收藏" active={isActive('/library')} />
-        <DesktopNavItem to="/profile" icon={<User size={15} />} label="画像" active={isActive('/profile')} />
+        <DesktopNavItem to="/library" icon={<BookOpen size={15} />} label="书架" active={isActive('/library')} />
+        {/* 画像不再占导航位（改为只读摘要，后续嵌入书架页顶部）；隐藏保留，恢复即取消注释 */}
+        {/* <DesktopNavItem to="/profile" icon={<User size={15} />} label="画像" active={isActive('/profile')} /> */}
         <DesktopNavItem to="/settings" icon={<Settings size={15} />} label="设置" active={isActive('/settings')} />
       </div>
       <div className="hidden lg:flex items-center gap-5 shrink-0">
