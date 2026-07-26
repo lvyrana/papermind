@@ -12,6 +12,7 @@ import { useSpeechInput } from '../hooks/useSpeechInput'
 import TourBubble from '../components/TourBubble'
 import PdfViewer from '../components/PdfViewer'
 import CardDrawer from '../components/CardDrawer'
+import SocraticRail from '../components/SocraticRail'
 import BoardDrawer, { BoardRail, BoardSectionPicker, CARD_SECTION_MAP, downloadBoardMarp } from '../components/BoardDrawer'
 
 /* ─────────────────────────────────────────────────────────────
@@ -131,8 +132,16 @@ export default function PaperRead() {
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
+  // 自测打开时，语音输入改灌进自测答题框（否则灌进对话输入框）
+  const [selfTestOpen, setSelfTestOpen] = useState(false)
+  const [speechDraft, setSpeechDraft] = useState('')
+  const selfTestOpenRef = useRef(false)
+  useEffect(() => { selfTestOpenRef.current = selfTestOpen }, [selfTestOpen])
   const { listening, supported: speechSupported, startListening, stopListening } = useSpeechInput(
-    (text) => setChatInput(prev => prev ? prev + ' ' + text : text),
+    (text) => {
+      if (selfTestOpenRef.current) setSpeechDraft(text)
+      else setChatInput(prev => prev ? prev + ' ' + text : text)
+    },
   )
   const [summarizing, setSummarizing] = useState(false)
   const [summarized, setSummarized] = useState(false)
@@ -674,6 +683,28 @@ export default function PaperRead() {
   }
 
   // ── chat message → seed a card (归卡) ──
+  // 自测「不确定 · 转到对话」：带上下文过去，用户不必自己切、自己重述
+  const handoffToChat = (prompt, chip) => {
+    setChatMessages(prev => [...prev, { role: 'assistant', content: prompt }])
+    setChatInput(chip || '')
+    setSelfTestOpen(false)
+    setChatOpen(true)
+    setMobileTab('chat')
+    setTimeout(() => chatInputRef.current?.focus(), 120)
+  }
+
+  // 自测里「站住了」的回答 → 沉成卡片（用自己的话说明白的，是质量最高的卡片）
+  const makeCardFromSelfTest = (turn) => {
+    const myAnswer = turn?._myAnswer || ''
+    setCardSeed({
+      quote: turn?.anchor_quote || '',
+      page: turn?.anchor_page || null,
+      question: '',
+      answer: myAnswer,
+    })
+    setSelfTestOpen(false)
+  }
+
   const seedCardFromChat = (idx) => {
     const m = chatMessages[idx]
     if (!m || m.role !== 'assistant') return
@@ -1219,6 +1250,14 @@ export default function PaperRead() {
             onDeleteNote={deleteSavedNote}
             notesOpen={notesOpen}
             setNotesOpen={setNotesOpen}
+            savedRowId={savedRowId}
+            selfTestOpen={selfTestOpen}
+            onOpenSelfTest={() => setSelfTestOpen(true)}
+            onCloseSelfTest={() => setSelfTestOpen(false)}
+            onHandoffToChat={handoffToChat}
+            onMakeCardFromSelfTest={makeCardFromSelfTest}
+            speechDraft={speechDraft}
+            onClearSpeechDraft={() => setSpeechDraft('')}
             board={board}
             onOpenBoard={() => setBoardOpen(true)}
             onExportBoard={exportBoard}
@@ -1389,6 +1428,9 @@ function MemoryChannel(props) {
     deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
     board, onOpenBoard, onExportBoard, boardExporting,
     onSendDeepReadToBoard, onSendCardToBoard, onDeleteQuote,
+    savedRowId, selfTestOpen, onOpenSelfTest, onCloseSelfTest,
+    onHandoffToChat, onMakeCardFromSelfTest,
+    speechDraft, onClearSpeechDraft,
   } = props
 
   const [guideOpen, setGuideOpen] = useState(false)
@@ -1544,13 +1586,14 @@ function MemoryChannel(props) {
         </div>
       )}
 
-      {/* ── 自测入口（占位：功能下一轮实现）── */}
+      {/* ── 自测入口 ── */}
       <div className="shrink-0 px-4 pb-3 pt-2">
         <button
           type="button"
-          disabled
-          title="下一轮实现"
-          className="group w-full text-left bg-warm-white border border-cream-dark/60 rounded-2xl px-3.5 py-3 flex items-center gap-3 opacity-60 cursor-not-allowed">
+          onClick={onOpenSelfTest}
+          disabled={!savedRowId}
+          title={savedRowId ? '' : '收藏这篇后即可自测'}
+          className="group w-full text-left bg-warm-white border border-cream-dark/60 rounded-2xl px-3.5 py-3 flex items-center gap-3 hover:border-coral/50 hover:shadow-sm transition disabled:opacity-55 disabled:cursor-not-allowed">
           <span className="w-8 h-8 rounded-xl bg-coral/10 text-coral flex items-center justify-center text-[15px] shrink-0">?</span>
           <div className="min-w-0 flex-1">
             <p className="text-[12.5px] font-medium text-navy leading-tight m-0">让 papermind 考考你</p>
@@ -1558,7 +1601,7 @@ function MemoryChannel(props) {
               苏格拉底式追问 · 基于这 {cards.length} 张卡片
             </p>
           </div>
-          <span className="text-[10px] text-warm-gray/60 shrink-0">即将上线</span>
+          <span className="text-[11px] text-coral opacity-0 group-hover:opacity-100 transition shrink-0">开始 →</span>
         </button>
       </div>
 
@@ -1572,6 +1615,28 @@ function MemoryChannel(props) {
           variant="rail"
         />
       </div>
+
+      {/* ── 苏格拉底自测（覆盖右栏；内嵌而非全屏，方便随时翻原文对照）── */}
+      {selfTestOpen && (
+        <div className="absolute inset-0 z-40 bg-cream">
+          <SocraticRail
+            paper={paper}
+            paperRowid={savedRowId}
+            currentPage={currentPage}
+            currentPageText={currentPageText}
+            onExit={() => onCloseSelfTest()}
+            onJumpToPage={jumpToPage}
+            onHandoffToChat={onHandoffToChat}
+            onMakeCard={onMakeCardFromSelfTest}
+            speechSupported={speechSupported}
+            listening={listening}
+            startListening={startListening}
+            stopListening={stopListening}
+            speechDraft={speechDraft}
+            clearSpeechDraft={onClearSpeechDraft}
+          />
+        </div>
+      )}
 
       {/* ── 对话抽屉（按需唤出，覆盖右栏）── */}
       {chatOpen && (

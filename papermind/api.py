@@ -42,6 +42,8 @@ from src.database import (
     get_enrichment_cache, save_enrichment_cache,
     increment_recent_events,
     save_feedback, get_user_stats, get_portrait,
+    get_self_test, init_self_test, update_self_test,
+    record_method_gap, get_method_gaps,
     create_project, get_projects, update_project, delete_project, set_paper_project,
     set_paper_has_pdf, get_paper_owner,
     save_card, get_cards, update_card, delete_card, get_card_owner, CARD_TYPES,
@@ -1738,6 +1740,313 @@ async def api_draft_card(data: DraftCardRequest, request: Request):
     except Exception as e:
         print(f"[api] cards/draft 失败: {e}")
         return {"ok": False, "error": "起草失败，请稍后重试。"}
+
+
+# ========== 苏格拉底自测 ==========
+#
+# 设计立场（见 handoff）：它是诊断工具，不是老师。唯一职责是照出盲点。
+# - 只提问，不教学；填平盲点交给对话
+# - 判定必须分档（solid/partial/off），宁可较真不可捧场
+# - 每条反馈必须带原文锚点，且锚点由后端逐字校验——不靠模型自觉
+# - 一根问到底但三问收口，由后端计数强制，不由模型决定
+
+MAX_PROBES_PER_PILLAR = 3          # 三问收口
+SELF_TEST_DAILY_LIMIT = int(os.environ.get("SELF_TEST_DAILY_LIMIT", "300"))  # 保险丝，正常用不到
+
+
+class SelfTestAskRequest(BaseModel):
+    pillar_key: str
+    paper_title: str = ""
+    paper_abstract: str = ""
+    current_page_text: str = ""
+
+
+class SelfTestAnswerRequest(BaseModel):
+    pillar_key: str
+    answer: str
+    paper_title: str = ""
+    paper_abstract: str = ""
+    current_page_text: str = ""
+
+
+class SelfTestHandoffRequest(BaseModel):
+    pillar_key: str
+    paper_title: str = ""
+    current_page: Optional[int] = None
+
+
+def _self_test_guard(uid: str) -> Optional[dict]:
+    """自测不占用每日对话额度；仅保留一个高上限做成本熔断。"""
+    if not _has_llm_config(task="chat"):
+        return {"ok": False, "error": "AI 服务暂不可用"}
+    is_owner = OWNER_UID and uid == OWNER_UID
+    if not is_owner and not check_rate_limit(uid, "self_test", SELF_TEST_DAILY_LIMIT):
+        return {"ok": False, "error": "自测调用次数已达今日上限。"}
+    return None
+
+
+def _build_source_context(paper_rowid: int, abstract: str, page_text: str) -> tuple[str, str]:
+    """出题依据：三来源混合 + 可引用原文。
+
+    只考卡片 = 只考你已经会的，所以显式标注来源并要求优先从 ②③ 出题。
+    返回 (给模型看的来源说明, 可用于锚点校验的原文全文)
+    """
+    cards = get_cards(paper_rowid)
+    quotes = get_quotes(paper_rowid)
+    board = get_or_create_board(paper_rowid)
+    board_items = get_board_items(paper_rowid)
+
+    # ② 划了但没做卡片的段落
+    card_quotes = " ".join((c.get("quote") or "") for c in cards)
+    orphan_quotes = [q for q in quotes if q.get("text") and q["text"][:30] not in card_quotes]
+
+    # ③ 完全没碰的板块
+    filled = {it["section"] for it in board_items}
+    untouched = [s["title"] for s in (board.get("sections") or []) if s["key"] not in filled]
+
+    parts = []
+    if cards:
+        parts.append("① 用户已做的卡片（检验有没有真懂，别只考这些）：\n" + "\n".join(
+            f"- [{c.get('card_type')}] {c.get('title') or ''}：{(c.get('content') or '')[:160]}" for c in cards[:10]))
+    if orphan_quotes:
+        parts.append("② 用户划了但没做成卡片的段落（**优先从这里出题，检验遗漏**）：\n" + "\n".join(
+            f"- p.{q.get('page') or '?'}：{q['text'][:180]}" for q in orphan_quotes[:8]))
+    if untouched:
+        parts.append("③ 完全没碰过的板块（**优先从这里出题，检验盲区**）：" + "、".join(untouched))
+    if not parts:
+        parts.append("用户还没有任何卡片或划词，请直接基于原文出题。")
+
+    # 可引用原文：有 PDF 当前页则用之，否则降级用摘要 + 卡片 + 划词
+    corpus = page_text.strip()
+    if len(corpus) < 200:
+        fallback = [abstract or ""]
+        fallback += [(c.get("content") or "") for c in cards]
+        fallback += [(q.get("text") or "") for q in quotes]
+        corpus = "\n".join(x for x in fallback if x)
+    return "\n\n".join(parts), corpus[:6000]
+
+
+def _verify_anchor(quote: str, corpus: str) -> bool:
+    """锚点逐字校验：模型给的原文引用必须真的出现在原文里。
+
+    「没有锚点的反馈一律不可信」的机器执行版——校验不过就降级，不靠模型自觉。
+    """
+    q = re.sub(r"\s+", "", quote or "")
+    c = re.sub(r"\s+", "", corpus or "")
+    return len(q) >= 6 and q in c
+
+
+@app.get("/api/self-test/{paper_rowid}")
+async def api_get_self_test(paper_rowid: int, request: Request):
+    """拉自测会话；不存在则用五个核心问题建一个。"""
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(paper_rowid, uid):
+        return {"ok": False, "error": "not found"}
+    sessions = get_self_test(paper_rowid) or init_self_test(paper_rowid)
+    return {"ok": True, "pillars": sessions, "gaps": get_method_gaps(uid, limit=10)}
+
+
+@app.post("/api/self-test/{paper_rowid}/ask")
+async def api_self_test_ask(paper_rowid: int, data: SelfTestAskRequest, request: Request):
+    """出题 / 追问下一层。"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_rowid, uid)
+    if not paper:
+        return {"ok": False, "error": "not found"}
+    blocked = _self_test_guard(uid)
+    if blocked:
+        return blocked
+
+    sessions = get_self_test(paper_rowid) or init_self_test(paper_rowid)
+    current = next((s for s in sessions if s["pillar_key"] == data.pillar_key), None)
+    if not current:
+        return {"ok": False, "error": "invalid pillar"}
+    if current["turn_count"] >= MAX_PROBES_PER_PILLAR:
+        return {"ok": True, "closed": True, "pillar": current}
+
+    sources, corpus = _build_source_context(
+        paper_rowid, data.paper_abstract or paper.get("abstract", ""), data.current_page_text)
+    history = "\n".join(
+        f"{'提问' if t.get('role') == 'ai' else '用户'}：{t.get('text', '')}" for t in current["turns"])
+
+    system_prompt = f"""你在对用户做苏格拉底式提问，检验他是否真读懂了这篇论文。
+
+你是诊断工具，不是老师：
+- 只提问，不讲解、不补课、不给答案
+- 一次只问一个问题，问得具体，能用一两句话回答
+- 用中文，口语化，像同行随口一问，不要学术腔
+
+当前核心问题：{current['pillar_name']}（{current['pillar_short']}）
+论文标题：{data.paper_title or paper.get('title', '')}
+
+出题依据（**优先从标②③的地方出题**，只考卡片等于只考他已经会的）：
+{sources}
+
+可引用的原文：
+{corpus[:3000]}
+
+严格输出 JSON，不要其他内容：
+{{"question": "你要问的问题（40 字以内，具体、可回答）"}}"""
+
+    user_msg = f"这是已经问过的：\n{history}\n\n请追问下一层，要抓住他上一个回答里含糊的地方。" if history else "请出第一个问题。"
+
+    try:
+        raw, _, _ = await _llm_chat_complete_async(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_msg}],
+            max_tokens=300, temperature=0.6, task="chat",
+        )
+        match = re.search(r"\{.*\}", raw or "", re.DOTALL)
+        question = str(json.loads(match.group(0)).get("question", "")).strip() if match else ""
+        if not question:
+            return {"ok": False, "error": "出题失败，请重试。"}
+    except (json.JSONDecodeError, AttributeError):
+        return {"ok": False, "error": "AI 输出解析失败，请重试。"}
+    except Exception as e:
+        print(f"[api] self-test/ask 失败: {e}")
+        return {"ok": False, "error": "出题失败，请稍后重试。"}
+
+    turns = current["turns"] + [{
+        "role": "ai", "text": question,
+        "probe": current["turn_count"] > 0, "n": current["turn_count"] + 1,
+    }]
+    new_state = "vague" if current["state"] == "untouched" else current["state"]
+    update_self_test(paper_rowid, data.pillar_key,
+                     state=new_state, turns=turns, turn_count=current["turn_count"] + 1)
+    return {"ok": True, "question": question, "turn_count": current["turn_count"] + 1,
+            "state": new_state, "turns": turns}
+
+
+@app.post("/api/self-test/{paper_rowid}/answer")
+async def api_self_test_answer(paper_rowid: int, data: SelfTestAnswerRequest, request: Request):
+    """提交回答 → 三档判定 + 原文锚点（后端校验）+ 三问收口。"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_rowid, uid)
+    if not paper:
+        return {"ok": False, "error": "not found"}
+    if not (data.answer or "").strip():
+        return {"ok": False, "error": "回答不能为空"}
+    blocked = _self_test_guard(uid)
+    if blocked:
+        return blocked
+
+    sessions = get_self_test(paper_rowid) or init_self_test(paper_rowid)
+    current = next((s for s in sessions if s["pillar_key"] == data.pillar_key), None)
+    if not current:
+        return {"ok": False, "error": "invalid pillar"}
+
+    _, corpus = _build_source_context(
+        paper_rowid, data.paper_abstract or paper.get("abstract", ""), data.current_page_text)
+    asked = next((t["text"] for t in reversed(current["turns"]) if t.get("role") == "ai"), "")
+
+    system_prompt = f"""你在判定用户对一篇论文的理解是否站得住。你是诊断工具，不是老师。
+
+铁律（违反即失败）：
+1. 禁止捧场。不得出现「很好的观察」「说得对」「不错」这类评价性开场，直接说结论。
+2. 宁可较真，不可捧场。判 solid 的门槛要高：他必须真的答到点上，而不是复述或含糊带过。
+3. anchor_quote 必须逐字摘自下面的原文，不得改写、不得凭记忆生成。
+
+三档怎么分（重要）：
+- solid：他对这篇论文的判断站得住。**允许他引用原文之外的方法学常识**（如 MCID、偏倚类型、
+  统计前提）——只要该常识本身正确、且与原文不矛盾，这恰恰说明他读进去了，判 solid。
+- partial：方向对，但漏了关键一块。在 gap 里写清漏的是什么。
+- off：他的说法与原文矛盾，或对这篇论文的理解有明确错误，或只是复述没有判断。
+
+注意：不要因为「原文没写这句话」就判 off——那是在惩罚他动用背景知识。
+只有当他说的东西**与原文冲突**或**理解错了**，才判 off。
+
+论文标题：{data.paper_title or paper.get('title', '')}
+当前核心问题：{current['pillar_name']}
+你问他的是：{asked}
+
+原文（判定和锚点只能依据这里）：
+{corpus[:4000]}
+
+严格输出 JSON，不要其他内容：
+{{"verdict": "solid|partial|off",
+  "gap": "partial/off 时写清缺的具体是哪一块（40 字内）；solid 时为空字符串",
+  "anchor_quote": "支持判定的原文原句，逐字摘录，60 字以内",
+  "anchor_page": 页码数字或 null,
+  "next_probe": "若还需追问下一层，写问题；否则 null",
+  "gap_term": "若暴露了某个方法学概念没掌握，写该术语（如 倾向评分匹配 PSM）；否则 null"}}"""
+
+    try:
+        raw, _, _ = await _llm_chat_complete_async(
+            [{"role": "system", "content": system_prompt},
+             {"role": "user", "content": f"他的回答：{data.answer.strip()}"}],
+            max_tokens=600, temperature=0.2, task="chat",
+        )
+        match = re.search(r"\{.*\}", raw or "", re.DOTALL)
+        parsed = json.loads(match.group(0)) if match else {}
+    except (json.JSONDecodeError, AttributeError):
+        return {"ok": False, "error": "AI 输出解析失败，请重试。"}
+    except Exception as e:
+        print(f"[api] self-test/answer 失败: {e}")
+        return {"ok": False, "error": "判定失败，请稍后重试。"}
+
+    verdict = parsed.get("verdict") if parsed.get("verdict") in ("solid", "partial", "off") else "partial"
+    anchor_quote = str(parsed.get("anchor_quote") or "").strip()
+    gap = str(parsed.get("gap") or "").strip()
+
+    # 锚点逐字校验：编造的锚点一律剥掉，并把 solid 降级——没有锚点的反馈不可信
+    anchor_ok = _verify_anchor(anchor_quote, corpus)
+    if not anchor_ok:
+        anchor_quote = ""
+        if verdict == "solid":
+            verdict = "partial"
+            gap = gap or "这个说法在原文里没有找到直接依据。"
+
+    gap_term = str(parsed.get("gap_term") or "").strip()
+    if gap_term and verdict != "solid":
+        record_method_gap(uid, gap_term, paper_rowid)
+
+    turn_count = current["turn_count"]
+    next_probe = str(parsed.get("next_probe") or "").strip()
+    # 三问收口由后端计数强制，不由模型决定
+    closed = verdict == "solid" or turn_count >= MAX_PROBES_PER_PILLAR or not next_probe
+    state = "solid" if verdict == "solid" else "vague"
+
+    turns = current["turns"] + [
+        {"role": "me", "text": data.answer.strip()},
+        {"role": "ai", "text": gap or ("站住了。" if verdict == "solid" else ""),
+         "verdict": verdict, "anchor_quote": anchor_quote,
+         "anchor_page": parsed.get("anchor_page"), "judged": True},
+    ]
+    if not closed and next_probe:
+        turns.append({"role": "ai", "text": next_probe, "probe": True, "n": turn_count + 1})
+        turn_count += 1
+
+    update_self_test(paper_rowid, data.pillar_key, state=state, turns=turns, turn_count=turn_count)
+    return {
+        "ok": True, "verdict": verdict, "gap": gap,
+        "anchor_quote": anchor_quote, "anchor_page": parsed.get("anchor_page"),
+        "anchor_verified": anchor_ok,
+        "next_probe": None if closed else next_probe,
+        "closed": closed, "state": state, "turns": turns,
+        "can_make_card": verdict == "solid",   # 只有站住了的回答才允许沉成卡片
+    }
+
+
+@app.post("/api/self-test/{paper_rowid}/handoff")
+async def api_self_test_handoff(paper_rowid: int, data: SelfTestHandoffRequest, request: Request):
+    """「不确定 · 转到对话」：带上下文过去 + 标记待澄清（保留回程）。"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_rowid, uid)
+    if not paper:
+        return {"ok": False, "error": "not found"}
+
+    sessions = get_self_test(paper_rowid) or init_self_test(paper_rowid)
+    current = next((s for s in sessions if s["pillar_key"] == data.pillar_key), None)
+    if not current:
+        return {"ok": False, "error": "invalid pillar"}
+
+    asked = next((t["text"] for t in reversed(current["turns"]) if t.get("role") == "ai"), "")
+    page_hint = f" p.{data.current_page}" if data.current_page else ""
+    prompt = f"你在读的这篇{page_hint}问到「{current['pillar_name']}」：{asked} 你想先搞懂什么？"
+    chips = [f"{current['pillar_name']}是什么意思", "这段原文在说什么", "举个例子说明"]
+
+    # 自测停在这等着——标 asked，不算失败也不算结束
+    update_self_test(paper_rowid, data.pillar_key, state="asked")
+    return {"ok": True, "prompt": prompt, "chips": chips, "state": "asked"}
 
 
 # ========== Chat Route ==========

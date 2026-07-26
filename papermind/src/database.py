@@ -185,6 +185,38 @@ def _ensure_db():
         )
     """)
 
+    # 苏格拉底自测：每篇论文五个核心问题的状态 + 追问流
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS self_test_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_rowid INTEGER NOT NULL,
+            pillar_key TEXT NOT NULL,
+            pillar_name TEXT NOT NULL,
+            pillar_short TEXT NOT NULL DEFAULT '',
+            state TEXT NOT NULL DEFAULT 'untouched',
+            turns_json TEXT NOT NULL DEFAULT '[]',
+            turn_count INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(paper_rowid, pillar_key),
+            FOREIGN KEY (paper_rowid) REFERENCES saved_papers(id)
+        )
+    """)
+
+    # 苏格拉底自测：方法学盲区（跨论文累积 = 画像的另一半）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS method_gaps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            term TEXT NOT NULL,
+            times INTEGER NOT NULL DEFAULT 1,
+            last_paper_rowid INTEGER,
+            last_at TEXT NOT NULL,
+            UNIQUE(user_id, term)
+        )
+    """)
+
     # 迁移：给 board_items 加 image 列（图表截图文件名）
     try:
         conn.execute("ALTER TABLE board_items ADD COLUMN image TEXT NOT NULL DEFAULT ''")
@@ -577,6 +609,110 @@ def touch_last_read(paper_id: int):
     conn.close()
 
 
+# ========== 苏格拉底自测 ==========
+
+# 五个核心问题（内部 key 固定；name/short 由 AI 按论文实例化后覆盖）
+# 注意：「五根柱子」是内部口语，绝不进 UI —— 界面统一称「核心问题」。
+DEFAULT_PILLARS = [
+    {"key": "question",   "name": "研究问题",     "short": "这篇在回答什么？为什么值得问？"},
+    {"key": "method_fit", "name": "方法—问题匹配", "short": "这个设计能不能真回答那个问题？"},
+    {"key": "strength",   "name": "结果有多强",   "short": "效应量和区间说明了什么？"},
+    {"key": "weakness",   "name": "哪里站不住",   "short": "最可能的偏倚在哪？"},
+    {"key": "scope",      "name": "外推边界",     "short": "这结论能用在谁身上？"},
+]
+
+
+def _session_row_to_dict(row) -> dict:
+    d = dict(row)
+    try:
+        d["turns"] = json.loads(d.pop("turns_json") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        d["turns"] = []
+    return d
+
+
+def get_self_test(paper_rowid: int) -> list[dict]:
+    """取一篇论文的自测会话（五个核心问题）。不存在时返回空列表。"""
+    conn = _ensure_db()
+    rows = conn.execute(
+        "SELECT * FROM self_test_sessions WHERE paper_rowid = ? ORDER BY sort_order, id",
+        (paper_rowid,),
+    ).fetchall()
+    conn.close()
+    return [_session_row_to_dict(r) for r in rows]
+
+
+def init_self_test(paper_rowid: int, pillars: list[dict] = None) -> list[dict]:
+    """首次进入自测时建会话。pillars 可由 AI 按论文实例化，缺省用通用问法。"""
+    pillars = pillars or DEFAULT_PILLARS
+    now = datetime.now().isoformat()
+    conn = _ensure_db()
+    for i, p in enumerate(pillars):
+        conn.execute(
+            """INSERT OR IGNORE INTO self_test_sessions
+               (paper_rowid, pillar_key, pillar_name, pillar_short, state,
+                turns_json, turn_count, sort_order, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'untouched', '[]', 0, ?, ?, ?)""",
+            (paper_rowid, p["key"], p.get("name", ""), p.get("short", ""), i, now, now),
+        )
+    conn.commit()
+    conn.close()
+    return get_self_test(paper_rowid)
+
+
+def update_self_test(paper_rowid: int, pillar_key: str, state: str = None,
+                     turns: list = None, turn_count: int = None):
+    """更新某个核心问题的状态 / 追问流。"""
+    sets, params = [], []
+    if state is not None:
+        sets.append("state = ?"); params.append(state)
+    if turns is not None:
+        sets.append("turns_json = ?"); params.append(json.dumps(turns, ensure_ascii=False))
+    if turn_count is not None:
+        sets.append("turn_count = ?"); params.append(turn_count)
+    if not sets:
+        return
+    sets.append("updated_at = ?"); params.append(datetime.now().isoformat())
+    params += [paper_rowid, pillar_key]
+    conn = _ensure_db()
+    conn.execute(
+        f"UPDATE self_test_sessions SET {', '.join(sets)} WHERE paper_rowid = ? AND pillar_key = ?",
+        params,
+    )
+    conn.commit()
+    conn.close()
+
+
+def record_method_gap(user_id: str, term: str, paper_rowid: int = None):
+    """记一次方法学盲区（同一术语累加次数）。"""
+    term = (term or "").strip()
+    if not term:
+        return
+    now = datetime.now().isoformat()
+    conn = _ensure_db()
+    conn.execute(
+        """INSERT INTO method_gaps (user_id, term, times, last_paper_rowid, last_at)
+           VALUES (?, ?, 1, ?, ?)
+           ON CONFLICT(user_id, term) DO UPDATE SET
+             times = times + 1, last_paper_rowid = excluded.last_paper_rowid,
+             last_at = excluded.last_at""",
+        (user_id, term, paper_rowid, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_method_gaps(user_id: str, limit: int = 20) -> list[dict]:
+    conn = _ensure_db()
+    rows = conn.execute(
+        """SELECT term, times, last_at FROM method_gaps
+           WHERE user_id = ? ORDER BY times DESC, last_at DESC LIMIT ?""",
+        (user_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_portrait(user_id: str) -> dict:
     """书架画像卡：完全由精读行为聚合，无任何用户填写项（只读副产品）。
 
@@ -615,6 +751,8 @@ def get_portrait(user_id: str) -> dict:
         "card_mix": card_mix,
         "recent_papers": recent_papers,
         "total_papers": total_papers,
+        # 画像的另一半：自测暴露的方法学盲区（跨论文累积）
+        "method_gaps": get_method_gaps(user_id, limit=8),
     }
 
 
