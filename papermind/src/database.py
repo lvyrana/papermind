@@ -577,6 +577,47 @@ def touch_last_read(paper_id: int):
     conn.close()
 
 
+def get_portrait(user_id: str) -> dict:
+    """书架画像卡：完全由精读行为聚合，无任何用户填写项（只读副产品）。
+
+    返回主题分布（按 category）、卡片四类构成、以及近 30 天精读篇数。
+    """
+    conn = _ensure_db()
+    topics = [
+        {"name": r["category"] or "未分类", "n": r["n"]}
+        for r in conn.execute(
+            """SELECT category, COUNT(*) as n FROM saved_papers
+               WHERE user_id = ? GROUP BY category ORDER BY n DESC LIMIT 5""",
+            (user_id,),
+        ).fetchall()
+    ]
+    card_mix = {
+        r["card_type"]: r["n"]
+        for r in conn.execute(
+            """SELECT rc.card_type, COUNT(*) as n FROM reading_cards rc
+               JOIN saved_papers sp ON rc.paper_rowid = sp.id
+               WHERE sp.user_id = ? GROUP BY rc.card_type""",
+            (user_id,),
+        ).fetchall()
+    }
+    since = (datetime.now() - timedelta(days=30)).isoformat()
+    recent_papers = conn.execute(
+        """SELECT COUNT(*) as n FROM saved_papers
+           WHERE user_id = ? AND COALESCE(last_read_at, saved_at) >= ?""",
+        (user_id, since),
+    ).fetchone()["n"]
+    total_papers = conn.execute(
+        "SELECT COUNT(*) as n FROM saved_papers WHERE user_id = ?", (user_id,)
+    ).fetchone()["n"]
+    conn.close()
+    return {
+        "topics": topics,
+        "card_mix": card_mix,
+        "recent_papers": recent_papers,
+        "total_papers": total_papers,
+    }
+
+
 def get_saved_paper(paper_id: int) -> Optional[dict]:
     conn = _ensure_db()
     row = conn.execute("SELECT * FROM saved_papers WHERE id = ?", (paper_id,)).fetchone()

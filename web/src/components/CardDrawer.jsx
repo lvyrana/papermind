@@ -22,6 +22,7 @@ const typeOf = (key) => CARD_TYPES.find(t => t.key === key) || CARD_TYPES[0]
 
 export default function CardDrawer({
   paper, cards, setCards, ensureSaved, seed, clearSeed, onJumpToPage, onSendToBoard,
+  variant = 'section',   // 'section' = 旧的纵向分区；'rail' = V1 右栏沉淀区（撑满 + 自身滚动）
 }) {
   const [composerOpen, setComposerOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)   // null = 新建
@@ -142,11 +143,15 @@ export default function CardDrawer({
     } catch { /* ignore */ }
   }
 
+  const isRail = variant === 'rail'
+
   return (
-    <section className="px-6 py-4 border-b border-navy/5">
-      <div className="flex items-baseline justify-between mb-3">
+    <section className={isRail
+      ? 'flex-1 min-h-0 flex flex-col px-4 pt-3.5 overflow-hidden'
+      : 'px-6 py-4 border-b border-navy/5'}>
+      <div className={`flex items-baseline justify-between ${isRail ? 'mb-2 shrink-0' : 'mb-3'}`}>
         <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] tracking-widest uppercase text-coral">
-          <Layers size={11}/> 阅读卡片
+          <Layers size={11}/> {isRail ? '沉淀' : '阅读卡片'}
         </span>
         <div className="flex items-center gap-2">
           {cards.length > 0 && (
@@ -161,21 +166,22 @@ export default function CardDrawer({
         </div>
       </div>
 
-      {/* 空状态 */}
-      {cards.length === 0 && !composerOpen && (
-        <div className="text-xs text-warm-gray/70 leading-relaxed py-3 px-3 border border-dashed border-navy/15 rounded-xl text-center">
-          划选原文「存为卡片」，或从对话「归卡」，<br/>把读懂的方法和发现沉淀下来
-        </div>
-      )}
+      <div className={isRail ? 'flex-1 min-h-0 overflow-y-auto -mx-1 px-1 pb-2' : ''}>
+        {/* 空状态 */}
+        {cards.length === 0 && !composerOpen && (
+          <div className="text-xs text-warm-gray/70 leading-relaxed py-3 px-3 border border-dashed border-navy/15 rounded-xl text-center">
+            划选原文「存为卡片」，或从对话「归卡」，<br/>把读懂的方法和发现沉淀下来
+          </div>
+        )}
 
-      {/* 卡片列表 */}
-      {cards.map(card => (
-        <ReadingCard key={card.id} card={card}
-          onEdit={() => openEdit(card)}
-          onDelete={() => handleDelete(card.id)}
-          onJump={() => card.page && onJumpToPage?.(card.page)}
-          onSendToBoard={onSendToBoard ? () => onSendToBoard(card) : null}/>
-      ))}
+        {/* 卡片列表 */}
+        {cards.map(card => (
+          <ReadingCard key={card.id} card={card}
+            onEdit={() => openEdit(card)}
+            onDelete={() => handleDelete(card.id)}
+            onJump={() => card.page && onJumpToPage?.(card.page)}
+            onSendToBoard={onSendToBoard ? () => onSendToBoard(card) : null}/>
+        ))}
 
       {/* composer */}
       {composerOpen && (
@@ -232,6 +238,7 @@ export default function CardDrawer({
           </div>
         </div>
       )}
+      </div>
     </section>
   )
 }

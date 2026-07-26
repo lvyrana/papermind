@@ -41,7 +41,7 @@ from src.database import (
     check_rate_limit, increment_rate_limit, get_rate_limit_remaining,
     get_enrichment_cache, save_enrichment_cache,
     increment_recent_events,
-    save_feedback, get_user_stats,
+    save_feedback, get_user_stats, get_portrait,
     create_project, get_projects, update_project, delete_project, set_paper_project,
     set_paper_has_pdf, get_paper_owner,
     save_card, get_cards, update_card, delete_card, get_card_owner, CARD_TYPES,
@@ -2194,6 +2194,13 @@ async def api_get_stats(request: Request):
     """返回用户收藏/笔记/对话统计"""
     uid = _get_user_id(request)
     return get_user_stats(uid)
+
+@app.get("/api/portrait")
+async def api_get_portrait(request: Request):
+    """书架画像卡：由精读行为聚合的只读摘要（主题分布 + 卡片构成）"""
+    uid = _get_user_id(request)
+    return get_portrait(uid)
+
 
 @app.post("/api/feedback")
 async def api_post_feedback(data: FeedbackRequest, request: Request):

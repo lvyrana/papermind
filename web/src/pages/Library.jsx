@@ -4,6 +4,23 @@ import { ArrowLeft, BookOpen, MessageCircle, FileText, Search, Trash2, Plus, X, 
 import Navbar from '../components/Navbar'
 import { apiGet, apiDelete, apiPost } from '../api'
 
+// 「在读」判定与首页一致：last_read_at（缺则 saved_at）在近 14 天内
+const READING_WINDOW_DAYS = 14
+function deriveReadStatus(p) {
+  const ts = p?.last_read_at || p?.saved_at
+  if (!ts) return '读过'
+  const days = (Date.now() - new Date(ts).getTime()) / 86400000
+  return days <= READING_WINDOW_DAYS ? '在读' : '读过'
+}
+
+// 画像卡：卡片四类的展示顺序与配色（与 CardDrawer 一致）
+const CARD_MIX_META = [
+  { key: 'method', label: '方法', tone: '#E8877A' },
+  { key: 'finding', label: '发现', tone: '#7BB89C' },
+  { key: 'critique', label: '批判', tone: '#2D5380' },
+  { key: 'transfer', label: '迁移', tone: '#B56A5A' },
+]
+
 function timeAgo(dateStr) {
   if (!dateStr) return ''
   const now = new Date()
@@ -35,6 +52,9 @@ export default function Library() {
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
   const newProjectRef = useRef(null)
+  // 书架：画像摘要（只读副产品）+ 状态筛选
+  const [portrait, setPortrait] = useState(null)
+  const [shelfFilter, setShelfFilter] = useState('全部')
 
   useEffect(() => {
     apiGet('/library')
@@ -48,27 +68,42 @@ export default function Library() {
     apiGet('/projects')
       .then(data => setProjects(data.projects || []))
       .catch(() => {})
+    apiGet('/portrait')
+      .then(setPortrait)
+      .catch(() => {})
   }, [])
 
-  const handleCreateProject = async () => {
-    const name = newProjectName.trim()
-    if (!name) return
-    const res = await apiPost('/projects', { name }).catch(() => null)
-    if (res?.ok) {
-      setProjects(prev => [{ id: res.id, name, description: '', paper_count: 0 }, ...prev])
-      setNewProjectName('')
-      setShowNewProject(false)
-    }
+  // 项目（任务型收藏夹）：书架单栏化后暂无入口，逻辑保留待新 IA 安排位置。
+  // 集中挂在 projectApi 上，避免散落的未引用符号。
+  const projectApi = {
+    projects,
+    activeProject,
+    setActiveProject,
+    newProjectName,
+    setNewProjectName,
+    showNewProject,
+    setShowNewProject,
+    newProjectRef,
+    create: async () => {
+      const name = newProjectName.trim()
+      if (!name) return
+      const res = await apiPost('/projects', { name }).catch(() => null)
+      if (res?.ok) {
+        setProjects(prev => [{ id: res.id, name, description: '', paper_count: 0 }, ...prev])
+        setNewProjectName('')
+        setShowNewProject(false)
+      }
+    },
+    remove: async (e, id) => {
+      e.stopPropagation()
+      if (!confirm('删除项目后，项目内论文会移回普通收藏，确定删除？')) return
+      await apiDelete(`/projects/${id}`).catch(() => {})
+      setProjects(prev => prev.filter(p => p.id !== id))
+      if (activeProject === id) setActiveProject(null)
+      setPapers(prev => prev.map(p => p.project_id === id ? { ...p, project_id: null } : p))
+    },
   }
-
-  const handleDeleteProject = async (e, id) => {
-    e.stopPropagation()
-    if (!confirm('删除项目后，项目内论文会移回普通收藏，确定删除？')) return
-    await apiDelete(`/projects/${id}`).catch(() => {})
-    setProjects(prev => prev.filter(p => p.id !== id))
-    if (activeProject === id) setActiveProject(null)
-    setPapers(prev => prev.map(p => p.project_id === id ? { ...p, project_id: null } : p))
-  }
+  void projectApi  // 暂无 UI 入口；保留能力，勿删
 
   const handleDelete = async (id, e) => {
     e.preventDefault()
@@ -87,14 +122,6 @@ export default function Library() {
     return ['全部', ...cats]
   }, [papers])
 
-  const categoryCounts = useMemo(() => {
-    const counts = {}
-    papers.forEach(p => {
-      const cat = p.category || '未分类'
-      counts[cat] = (counts[cat] || 0) + 1
-    })
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8)
-  }, [papers])
 
   const filtered = useMemo(() => {
     let result = papers
@@ -115,8 +142,31 @@ export default function Library() {
   }, [papers, search, activeCategory, notesOnly, activeProject])
 
   const hasNotes = useMemo(() => papers.some(p => p.note_count > 0), [papers])
-  const hasChats = useMemo(() => papers.some(p => p.chat_count > 0), [papers])
-  const hasFilters = activeCategory !== '全部' || notesOnly || search.trim() || activeProject !== null
+
+  // ── 书架（桌面）：统计行 + 状态筛选 + 按最近动过排序 ──
+  const shelfStats = useMemo(() => {
+    const reading = papers.filter(p => deriveReadStatus(p) === '在读').length
+    return {
+      total: papers.length,
+      reading,
+      done: papers.length - reading,
+      cards: papers.reduce((s, p) => s + (p.card_count || 0), 0),
+      notes: papers.reduce((s, p) => s + (p.note_count || 0), 0),
+    }
+  }, [papers])
+
+  const shelfProjects = useMemo(() => {
+    let result = [...papers]
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
+      result = result.filter(p => p.title.toLowerCase().includes(q))
+    }
+    if (shelfFilter === '在读') result = result.filter(p => deriveReadStatus(p) === '在读')
+    else if (shelfFilter === '读过') result = result.filter(p => deriveReadStatus(p) === '读过')
+    else if (shelfFilter === '有导出') result = result.filter(p => p.has_export)
+    return result.sort((a, b) =>
+      new Date(b.last_read_at || b.saved_at || 0) - new Date(a.last_read_at || a.saved_at || 0))
+  }, [papers, search, shelfFilter])
 
   return (
     <div className="min-h-screen pb-24 lg:pb-12">
@@ -202,176 +252,69 @@ export default function Library() {
         </main>
       </div>
 
-      {/* ── Desktop layout (lg+) ── */}
-      <div className="hidden lg:grid lg:grid-cols-[260px_1fr] lg:gap-10 max-w-[1280px] mx-auto px-10 pt-24">
+      {/* ── 书架 · 桌面（单栏 1080：页头 + 画像卡 + 筛选 + 精读工程列表 + 导出成果）── */}
+      <div className="hidden lg:block max-w-[1080px] mx-auto px-10 pt-24 pb-16">
+        <div className="mb-6">
+          <h1 className="pm-page-title text-[34px] text-navy leading-tight">我的书架</h1>
+          <p className="text-warm-gray text-xs mt-2">
+            共 {shelfStats.total} 篇 · {shelfStats.reading} 在读 · {shelfStats.done} 读过
+            {shelfStats.cards > 0 && ` · ${shelfStats.cards} 卡片`}
+            {shelfStats.notes > 0 && ` · ${shelfStats.notes} 笔记`}
+          </p>
+        </div>
 
-        {/* Sidebar */}
-        <aside className="sticky top-6 self-start space-y-5">
-          <div>
-            <h1 className="pm-page-title text-[34px] text-navy leading-tight">我的收藏</h1>
-            <p className="text-warm-gray text-xs mt-2">
-              共 {papers.length} 篇
-              {papers.filter(p => p.note_count > 0).length > 0 && ` · ${papers.filter(p => p.note_count > 0).length} 有笔记`}
-              {hasChats && ` · ${papers.filter(p => p.chat_count > 0).length} 有对话`}
-            </p>
-          </div>
+        <PortraitCard portrait={portrait} />
 
-          {/* Category stats */}
-          {categoryCounts.length > 0 && (
-            <div className="liquid-glass p-5">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-warm-gray/65 mb-3">收藏概况</p>
-              <div className="space-y-2.5">
-                {categoryCounts.map(([cat, count]) => (
-                  <div key={cat}
-                    className="flex items-center gap-3 cursor-pointer group"
-                    onClick={() => setActiveCategory(activeCategory === cat ? '全部' : cat)}>
-                    <div className="flex-1 flex items-center justify-between">
-                      <span className={`text-[12px] transition ${activeCategory === cat ? 'text-coral font-medium' : 'text-navy/75 group-hover:text-navy'}`}>
-                        {cat}
-                      </span>
-                      <span className="text-[11px] text-warm-gray/60 tabular-nums">{count}</span>
-                    </div>
-                    <div className="w-[60px] h-1 bg-cream-dark/60 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full bg-coral/60 transition-all"
-                        style={{ width: `${(count / papers.length) * 100}%` }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
+        <div className="flex items-center justify-between gap-4 mb-4 mt-8">
+          <h2 className="text-lg font-serif text-navy m-0">精读工程</h2>
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray/40" />
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="搜索标题…"
+                className="w-[200px] bg-warm-white rounded-full pl-8 pr-3 py-1.5 text-xs text-navy border border-cream-dark/60 outline-none focus:border-coral/40 placeholder:text-warm-gray/40 transition" />
             </div>
-          )}
-
-          {/* Filters */}
-          <div className="liquid-glass p-5 space-y-3">
-            <p className="text-[10px] uppercase tracking-[0.22em] text-warm-gray/65">筛选</p>
-            {hasNotes && (
-              <button onClick={() => setNotesOnly(v => !v)}
-                className={`w-full px-4 py-2 rounded-full text-xs text-left flex items-center gap-2 transition ${
-                  notesOnly ? 'bg-coral/10 text-coral border border-coral/30' : 'bg-cream-dark/40 text-warm-gray hover:text-navy'
-                }`}>
-                <FileText size={11} /> 只看有笔记
-              </button>
-            )}
-            {hasFilters && (
-              <button onClick={() => { setActiveCategory('全部'); setNotesOnly(false); setSearch(''); setActiveProject(null) }}
-                className="w-full px-4 py-2 rounded-full text-xs text-warm-gray/60 bg-cream-dark/30 hover:text-warm-gray transition text-left">
-                清除筛选
-              </button>
-            )}
-            {!hasNotes && !hasFilters && (
-              <p className="text-[12px] text-warm-gray/50">暂无可用筛选</p>
-            )}
-          </div>
-
-          {/* Projects */}
-          <div className="liquid-glass p-5">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-warm-gray/65">项目</p>
-              <button
-                onClick={() => { setShowNewProject(v => !v); setTimeout(() => newProjectRef.current?.focus(), 50) }}
-                className="text-warm-gray/50 hover:text-coral transition"
-              >
-                <Plus size={13} />
-              </button>
-            </div>
-
-            {showNewProject && (
-              <div className="flex gap-1.5 mb-3">
-                <input
-                  ref={newProjectRef}
-                  value={newProjectName}
-                  onChange={e => setNewProjectName(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') handleCreateProject(); if (e.key === 'Escape') setShowNewProject(false) }}
-                  placeholder="项目名称..."
-                  className="flex-1 bg-warm-white/60 rounded-xl px-3 py-1.5 text-xs text-navy border border-cream-dark/50 outline-none focus:border-coral/40 placeholder:text-warm-gray/40"
-                />
-                <button onClick={handleCreateProject} className="px-2.5 py-1.5 rounded-xl bg-coral/10 text-coral text-xs hover:bg-coral/20 transition">
-                  建
+            <div className="flex gap-2 text-[11px]">
+              {['全部', '在读', '读过', '有导出'].map(t => (
+                <button key={t} onClick={() => setShelfFilter(t)}
+                  className={`px-3 py-1.5 rounded-full transition ${
+                    shelfFilter === t ? 'bg-navy text-warm-white' : 'text-warm-gray border border-cream-dark hover:text-navy'
+                  }`}>
+                  {t}
                 </button>
-              </div>
-            )}
-
-            {projects.length === 0 && !showNewProject && (
-              <p className="text-[12px] text-warm-gray/40">点击 + 新建项目</p>
-            )}
-
-            <div className="space-y-1">
-              {projects.map(proj => (
-                <div
-                  key={proj.id}
-                  onClick={() => setActiveProject(activeProject === proj.id ? null : proj.id)}
-                  className={`flex items-center justify-between px-3 py-2 rounded-xl cursor-pointer group transition ${
-                    activeProject === proj.id ? 'bg-coral/10 text-coral' : 'hover:bg-cream-dark/40 text-navy/75'
-                  }`}
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <FolderOpen size={12} className="shrink-0" />
-                    <span className="text-[12px] truncate">{proj.name}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] text-warm-gray/50 tabular-nums">{proj.paper_count}</span>
-                    <button
-                      onClick={e => handleDeleteProject(e, proj.id)}
-                      className="opacity-0 group-hover:opacity-100 text-warm-gray/40 hover:text-red-400 transition"
-                    >
-                      <X size={11} />
-                    </button>
-                  </div>
-                </div>
               ))}
             </div>
           </div>
+        </div>
 
-          <button onClick={() => setShowAddModal(true)}
-            className="w-full py-2.5 rounded-2xl border border-dashed border-coral/40 text-coral text-sm flex items-center justify-center gap-2 hover:bg-coral/5 transition">
-            <Plus size={13} /> 添加论文
-          </button>
-        </aside>
+        {loading && papers.length === 0 && (
+          <div className="text-center py-20 text-warm-gray text-sm">加载中…</div>
+        )}
 
-        {/* Main */}
-        <main className="min-h-[80vh]">
-          {loading && <div className="text-center py-20 text-warm-gray text-sm">加载中...</div>}
+        {!loading && papers.length === 0 && (
+          <div className="text-center py-24">
+            <BookOpen size={40} className="text-cream-dark mx-auto mb-4" />
+            <p className="text-warm-gray text-sm mb-4">还没有精读工程</p>
+            <Link to="/" className="text-coral text-sm hover:underline">去首页放入一篇论文</Link>
+          </div>
+        )}
 
-          {!loading && papers.length === 0 && (
-            <div className="text-center py-32">
-              <BookOpen size={40} className="text-cream-dark mx-auto mb-4" />
-              <p className="text-warm-gray text-sm mb-4">收藏的论文会出现在这里</p>
-              <Link to="/" className="text-coral text-sm hover:underline">去看看推荐论文</Link>
-            </div>
-          )}
+        {shelfProjects.length > 0 && (
+          <div className="space-y-3">
+            {shelfProjects.map(p => (
+              <ShelfProjectRow key={p.id} p={p} onDelete={handleDelete} />
+            ))}
+          </div>
+        )}
 
-          {!loading && papers.length > 0 && (
-            <>
-              <div className="relative mb-5">
-                <Search size={13} className="absolute left-4 top-1/2 -translate-y-1/2 text-warm-gray/40" />
-                <input value={search} onChange={e => setSearch(e.target.value)}
-                  placeholder="搜索论文标题…"
-                  className="w-full bg-warm-white rounded-2xl pl-10 pr-4 py-2.5 text-sm text-navy border border-cream-dark/50 outline-none focus:border-coral/40 placeholder:text-warm-gray/40 transition" />
-              </div>
+        {!loading && papers.length > 0 && shelfProjects.length === 0 && (
+          <div className="text-center py-16 text-warm-gray/60 text-sm">没有符合条件的精读工程</div>
+        )}
 
-              <div className="flex gap-2 mb-6 flex-wrap">
-                {categories.map(cat => (
-                  <button key={cat} onClick={() => setActiveCategory(cat)}
-                    className={`px-3 py-1 rounded-full text-xs transition ${
-                      activeCategory === cat ? 'bg-navy/90 text-warm-white' : 'bg-warm-white text-warm-gray border border-cream-dark hover:border-navy/20 hover:text-navy'
-                    }`}>
-                    {cat}
-                  </button>
-                ))}
-              </div>
-
-              {filtered.length === 0 && (
-                <div className="text-center py-20 text-warm-gray/60 text-sm">没有符合条件的论文</div>
-              )}
-
-              <div className="grid grid-cols-2 gap-4 auto-rows-[240px]">
-                {filtered.map((paper, i) => (
-                  <PaperCard key={paper.id} paper={paper} onDelete={handleDelete} index={i} />
-                ))}
-              </div>
-            </>
-          )}
-        </main>
+        <button onClick={() => setShowAddModal(true)}
+          className="mt-6 w-full py-3 rounded-2xl border border-dashed border-coral/40 text-coral text-sm flex items-center justify-center gap-2 hover:bg-coral/5 transition">
+          <Plus size={14} /> 放入一篇论文
+        </button>
       </div>
 
       <Navbar />
@@ -383,6 +326,128 @@ export default function Library() {
         />
       )}
     </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   书架 · 画像卡（只读副产品）+ 精读工程行
+   ═══════════════════════════════════════════════════════════════ */
+
+// 画像卡：全部由行为聚合，无任何输入控件；数据不足（少于 3 篇精读）时不渲染
+function PortraitCard({ portrait }) {
+  if (!portrait || (portrait.total_papers ?? 0) < 3) return null
+
+  const topics = (portrait.topics || []).filter(t => t.n > 0)
+  const mix = CARD_MIX_META
+    .map(m => ({ ...m, n: portrait.card_mix?.[m.key] || 0 }))
+    .filter(m => m.n > 0)
+  const maxMix = Math.max(1, ...mix.map(m => m.n))
+
+  // 一句话总结由聚合结果拼出（不是编出来的文案）
+  const topTopics = topics.slice(0, 2).map(t => t.name).join(' 与 ')
+  const topKinds = [...mix].sort((a, b) => b.n - a.n).slice(0, 2).map(m => m.label).join('与')
+  const line = topTopics
+    ? `你在 ${topTopics} 这条线上读得最深${topKinds ? `；卡片集中在${topKinds}` : ''}。`
+    : `已经精读 ${portrait.total_papers} 篇，卡片正在积累。`
+
+  return (
+    <div className="bg-navy text-warm-white rounded-3xl p-6 relative overflow-hidden">
+      <div className="absolute -right-10 -top-12 w-44 h-44 rounded-full bg-navy-light/40 blur-2xl" />
+      <div className="relative">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-[10px] uppercase tracking-[0.22em] text-warm-white/55 m-0">我的精读画像</p>
+          <span className="text-[10px] text-warm-white/45">
+            近 30 天 · {portrait.recent_papers} 篇精读
+          </span>
+        </div>
+        <p className="text-[13.5px] leading-7 text-warm-white/90 m-0">{line}</p>
+
+        {(topics.length > 0 || mix.length > 0) && (
+          <div className="mt-5 grid grid-cols-2 gap-x-8 gap-y-4">
+            {topics.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.16em] text-warm-white/45 mb-2.5 m-0">主题</p>
+                <div className="space-y-1.5">
+                  {topics.map(t => (
+                    <div key={t.name} className="flex items-center justify-between text-[12px]">
+                      <span className="text-warm-white/80">{t.name}</span>
+                      <span className="text-warm-white/45">{t.n}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {mix.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.16em] text-warm-white/45 mb-2.5 m-0">卡片构成</p>
+                <div className="space-y-2">
+                  {mix.map(m => (
+                    <div key={m.key} className="flex items-center gap-2">
+                      <span className="text-[11px] text-warm-white/70 w-8 shrink-0">{m.label}</span>
+                      <div className="flex-1 h-1.5 rounded-full bg-warm-white/12 overflow-hidden">
+                        <div className="h-full rounded-full"
+                          style={{ width: `${(m.n / maxMix) * 100}%`, background: m.tone }} />
+                      </div>
+                      <span className="text-[10px] text-warm-white/45 w-4">{m.n}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// 精读工程行（与首页同构，点进真精读台）
+function ShelfProjectRow({ p, onDelete }) {
+  const status = deriveReadStatus(p)
+  const reading = status === '在读'
+  const line = [p.authors, p.journal, p.pub_date].filter(Boolean).join(' · ')
+  return (
+    <Link
+      to={`/paper/${p.id}?library=1`}
+      state={{ paper: p }}
+      className="group block bg-warm-white rounded-2xl border border-cream-dark/50 p-5 hover:shadow-md hover:-translate-y-0.5 transition no-underline"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[11px] px-2 py-0.5 rounded-full font-medium leading-5 bg-coral/10 text-coral">
+              {p.category || '未分类'}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-[11px]">
+              <span className={`w-1.5 h-1.5 rounded-full ${reading ? 'bg-coral' : 'bg-mint-deep'}`} />
+              <span className={reading ? 'text-coral' : 'text-warm-gray'}>{status}</span>
+            </span>
+          </div>
+          <h3 className="text-navy text-[14px] leading-relaxed font-medium line-clamp-2 m-0">{p.title}</h3>
+          {line && <p className="text-[11px] text-warm-gray mt-1.5 m-0 line-clamp-1">{line}</p>}
+        </div>
+        <div className="text-right shrink-0 flex flex-col items-end gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-warm-gray/70">{timeAgo(p.last_read_at || p.saved_at)}</span>
+            <button onClick={e => onDelete(p.id, e)}
+              className="opacity-0 group-hover:opacity-100 text-warm-gray/40 hover:text-coral transition-all p-0.5">
+              <Trash2 size={11} />
+            </button>
+          </div>
+          {p.has_export ? (
+            <span className="text-[10px] text-mint-deep bg-mint/15 rounded-full px-2 py-0.5">已导出</span>
+          ) : null}
+        </div>
+      </div>
+      <div className="mt-3 pt-3 border-t border-cream-dark/40 flex items-center justify-between">
+        <div className="flex items-center gap-3 text-[11px] text-warm-gray">
+          <span>◆ {p.card_count || 0} 卡片</span>
+          <span>✎ {p.note_count || 0} 笔记</span>
+          <span>◌ {p.chat_count || 0} 对话</span>
+        </div>
+        <span className="text-[11px] text-coral opacity-0 group-hover:opacity-100 transition">打开工作台 →</span>
+      </div>
+    </Link>
   )
 }
 

@@ -63,13 +63,15 @@ export async function downloadBoardMarp(paperRowid, title) {
 }
 
 /* ── 右栏紧凑区块 ─────────────────────────────────────────── */
-export function BoardRail({ board, onOpen, onExport, exporting }) {
+export function BoardRail({ board, onOpen, onExport, exporting, variant = 'section' }) {
   if (!board) return null
   const counts = countBySection(board.items || [])
   const filled = (board.sections || []).filter(s => counts[s.key]).length
   const total = (board.sections || []).length
   return (
-    <section className="px-6 py-4 border-b border-navy/5">
+    <section className={variant === 'rail'
+      ? 'border-t border-cream-dark/60 bg-cream/80 backdrop-blur px-4 pt-3 pb-4'
+      : 'px-6 py-4 border-b border-navy/5'}>
       <div className="flex items-center justify-between mb-2.5">
         <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] tracking-widest uppercase text-coral">
           <Presentation size={11}/> 组会汇报板
@@ -99,9 +101,11 @@ export function BoardRail({ board, onOpen, onExport, exporting }) {
           {exporting ? <Loader2 size={11} className="animate-spin"/> : <Download size={11}/>} 导出 PPT
         </button>
       </div>
-      <p className="mt-2 text-[10.5px] text-warm-gray/55 leading-relaxed m-0">
-        划词、带读结果、卡片、AI 回复都可「送到汇报」；空板块 = 还没读到的部分。
-      </p>
+      {variant !== 'rail' && (
+        <p className="mt-2 text-[10.5px] text-warm-gray/55 leading-relaxed m-0">
+          划词、带读结果、卡片、AI 回复都可「送到汇报」；空板块 = 还没读到的部分。
+        </p>
+      )}
     </section>
   )
 }

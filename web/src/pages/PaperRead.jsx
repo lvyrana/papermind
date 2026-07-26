@@ -4,7 +4,7 @@ import {
   ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2,
   FileText, Download, ExternalLink, Mic, MicOff,
   ChevronDown, ChevronUp, MessageSquare, Quote as QuoteIcon, X, Layers,
-  GripVertical, PanelLeftClose, PanelLeftOpen, Presentation,
+  GripVertical, PanelLeftClose, PanelLeftOpen, Presentation, MoreHorizontal,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, apiPatch, API_BASE, getUserId } from '../api'
@@ -159,7 +159,7 @@ export default function PaperRead() {
   const [selection, setSelection] = useState(null)  // {text, page, x, y}
   const [pendingQuote, setPendingQuote] = useState(null)  // quote about to be sent
   const [currentPage, setCurrentPage] = useState(1)
-  const [chatOpen, setChatOpen] = useState(true)
+  const [chatOpen, setChatOpen] = useState(false)  // V1：对话按需唤出，不常驻右栏
   const [mobileTab, setMobileTab] = useState('pdf')  // pdf | meta | chat
   const [structuredQuotes, setStructuredQuotes] = useState([])
   const [leftRailOpen, setLeftRailOpen] = useState(() => {
@@ -1367,6 +1367,11 @@ function RailContent({
 // ═════════════════════════════════════════════════════════════
 // MEMORY CHANNEL (right)
 // ═════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════
+   右栏 V1 · 主线纵览
+   顶栏（精读沉淀 + 对话入口）→ 折叠带读 → 卡片流(flex-1)
+   → 自测入口 → 钉底汇报板；对话/元操作按需唤出，不常驻占轨。
+   ═══════════════════════════════════════════════════════════════ */
 function MemoryChannel(props) {
   const {
     paper, quotes, chatMessages, chatLoading, chatInput, setChatInput,
@@ -1374,85 +1379,122 @@ function MemoryChannel(props) {
     speechSupported, listening, startListening, stopListening,
     pendingQuote, setPendingQuote, chatOpen, setChatOpen,
     chatEndRef, chatInputRef, chatFootRef, jumpToQuote,
-    bookmarked, onToggleBookmark, projects, showProjectPicker,
+    bookmarked, onToggleBookmark, projects, showProjectPicker, setShowProjectPicker,
     projectPickerRef, saveToProject,
     notes, setNotes,
     savedNotes, manualNoteId, onDeleteNote, notesOpen, setNotesOpen,
     cards, setCards, ensureSaved, cardSeed, setCardSeed,
-    seedCardFromChat, jumpToPage,
+    jumpToPage,
     currentPage, currentPageText, deepReadGuide, deepReadSource,
     deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
     board, onOpenBoard, onExportBoard, boardExporting,
-    onSendDeepReadToBoard, onSendChatToBoard, onSendCardToBoard, onDeleteQuote,
+    onSendDeepReadToBoard, onSendCardToBoard, onDeleteQuote,
   } = props
 
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
+
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
+    <div className="flex flex-col h-full min-h-0 relative">
 
-      {/* WHY hero (compact) */}
-      {paper.relevance && (
-        <div className="px-6 py-5 bg-gradient-to-b from-coral/[0.07] to-coral/[0.02] border-b border-coral/15">
-          <div className="flex items-center gap-2 mb-2.5 font-mono text-[10.5px] tracking-widest uppercase text-coral">
-            <ReasonGlyph/>
-            <span>为什么把这篇推给你</span>
+      {/* ── 顶栏：精读沉淀 · 对话 · 溢出菜单 ── */}
+      <div className="shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-cream-dark/60">
+        <span className="text-[13px] font-serif text-navy">精读沉淀</span>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setChatOpen(true)}
+            className="inline-flex items-center gap-1.5 text-[11px] text-warm-gray hover:text-navy border border-cream-dark rounded-full px-2.5 py-1 transition">
+            <MessageSquare size={11}/>
+            对话{chatMessages.length > 0 ? ` · ${chatMessages.length}` : ''}
+          </button>
+          <div className="relative" ref={projectPickerRef}>
+            <button
+              onClick={() => { setMoreOpen(o => !o); setShowProjectPicker(false) }}
+              className="w-7 h-7 rounded-full text-warm-gray hover:text-navy hover:bg-cream-dark/40 transition flex items-center justify-center"
+              aria-label="更多">
+              <MoreHorizontal size={14}/>
+            </button>
+            {moreOpen && (
+              <div className="absolute right-0 top-8 z-30 w-44 rounded-xl border border-cream-dark bg-warm-white shadow-lg py-1.5">
+                <button
+                  onClick={() => { onToggleBookmark(); setMoreOpen(false) }}
+                  className="w-full text-left px-3 py-1.5 text-[12px] text-navy/80 hover:bg-cream-dark/30 flex items-center gap-2">
+                  <Bookmark size={11} className={bookmarked ? 'text-coral' : ''}/>
+                  {bookmarked ? '已收藏' : '收藏这篇'}
+                </button>
+                {projects.length > 0 && (
+                  <button
+                    onClick={() => { setShowProjectPicker(true); setMoreOpen(false) }}
+                    className="w-full text-left px-3 py-1.5 text-[12px] text-navy/80 hover:bg-cream-dark/30 flex items-center gap-2">
+                    <Layers size={11}/> 归入项目
+                  </button>
+                )}
+                <button
+                  onClick={() => { setNotesOpen(o => !o); setMoreOpen(false) }}
+                  className="w-full text-left px-3 py-1.5 text-[12px] text-navy/80 hover:bg-cream-dark/30 flex items-center gap-2">
+                  <FileText size={11}/> 自由笔记{savedNotes.length > 0 ? ` · ${savedNotes.length}` : ''}
+                </button>
+              </div>
+            )}
+            {showProjectPicker && (
+              <div className="absolute right-0 top-8 z-30 w-52 rounded-xl border border-cream-dark bg-warm-white shadow-lg p-2.5">
+                <p className="text-[10px] text-warm-gray/70 mb-1.5 m-0">收藏到</p>
+                <div className="flex flex-wrap gap-1.5">
+                  <button onClick={() => { saveToProject(null); setShowProjectPicker(false) }}
+                    className="px-2 py-1 text-[11px] rounded-lg border border-cream-dark text-warm-gray hover:text-navy">
+                    直接收藏
+                  </button>
+                  {projects.map(p => (
+                    <button key={p.id} onClick={() => { saveToProject(p.id); setShowProjectPicker(false) }}
+                      className="px-2 py-1 text-[11px] rounded-lg bg-coral/5 border border-coral/25 text-coral hover:bg-coral/10">
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-          <p className="text-[14.5px] leading-[1.65] text-navy font-medium" style={{ fontFamily: '"Noto Serif SC", serif' }}>
-            {paper.relevance}
-          </p>
         </div>
-      )}
-
-      {/* compact title block (no rail on mobile so we restate it) */}
-      <div className="lg:hidden px-6 py-3 border-b border-navy/5">
-        <p className="text-[11px] text-warm-gray/60 mb-1">{paper.journal} · {paper.pub_date}</p>
-        <p className="text-sm font-medium text-navy leading-snug">{paper.title}</p>
       </div>
 
-      {/* bookmark prompt */}
+      {/* ── 怎么读这篇（带读，默认收起）── */}
+      <div className="shrink-0 border-b border-cream-dark/50">
+        <button
+          onClick={() => setGuideOpen(o => !o)}
+          className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-cream-dark/20 transition">
+          <span className="flex items-center gap-2 text-[12px] text-navy/75">
+            <Sparkles size={12} className="text-coral"/> 怎么读这篇
+          </span>
+          <ChevronDown size={12} className={`text-warm-gray/60 transition-transform ${guideOpen ? 'rotate-180' : ''}`}/>
+        </button>
+        {guideOpen && (
+          <DeepReadPanel
+            paper={paper}
+            currentPage={currentPage}
+            currentPageText={currentPageText}
+            guide={deepReadGuide}
+            source={deepReadSource}
+            mode={deepReadMode}
+            loading={deepReading}
+            error={deepReadError}
+            saved={deepReadSaved}
+            onRun={onRunDeepRead}
+            onSave={onSaveDeepRead}
+            onSendToBoard={onSendDeepReadToBoard}
+            variant="rail"
+          />
+        )}
+      </div>
+
+      {/* ── 未收藏提示（轻量，一行）── */}
       {!bookmarked && (
-        <div ref={projectPickerRef} className="px-6 py-3 border-b border-navy/5 bg-navy/[0.02]">
-          {showProjectPicker ? (
-            <div>
-              <p className="text-xs text-warm-gray/60 mb-2">收藏到</p>
-              <div className="flex flex-wrap gap-1.5">
-                <button onClick={() => saveToProject(null)}
-                  className="px-2.5 py-1 text-xs rounded-lg border border-cream-dark text-warm-gray hover:text-navy">
-                  直接收藏
-                </button>
-                {projects.map(p => (
-                  <button key={p.id} onClick={() => saveToProject(p.id)}
-                    className="px-2.5 py-1 text-xs rounded-lg bg-coral/5 border border-coral/25 text-coral hover:bg-coral/10">
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-xs text-warm-gray">收藏后笔记和对话永久保存</p>
-              <button onClick={onToggleBookmark} className="text-xs text-coral font-medium hover:underline">收藏这篇</button>
-            </div>
-          )}
+        <div className="shrink-0 px-4 py-2 border-b border-cream-dark/50 bg-navy/[0.02] flex items-center justify-between gap-2">
+          <p className="text-[11px] text-warm-gray m-0">收藏后笔记和对话永久保存</p>
+          <button onClick={onToggleBookmark} className="text-[11px] text-coral font-medium hover:underline shrink-0">收藏</button>
         </div>
       )}
 
-      {/* ★ GUIDED DEEP READING */}
-      <DeepReadPanel
-        paper={paper}
-        currentPage={currentPage}
-        currentPageText={currentPageText}
-        guide={deepReadGuide}
-        source={deepReadSource}
-        mode={deepReadMode}
-        loading={deepReading}
-        error={deepReadError}
-        saved={deepReadSaved}
-        onRun={onRunDeepRead}
-        onSave={onSaveDeepRead}
-        onSendToBoard={onSendDeepReadToBoard}
-      />
-
-      {/* ★ READING CARDS */}
+      {/* ── 沉淀区：卡片流（主体，自身滚动）── */}
       <CardDrawer
         paper={paper}
         cards={cards}
@@ -1462,19 +1504,35 @@ function MemoryChannel(props) {
         clearSeed={() => setCardSeed(null)}
         onJumpToPage={jumpToPage}
         onSendToBoard={onSendCardToBoard}
+        variant="rail"
       />
 
-      {/* ★ PRESENTATION BOARD（组会汇报板） */}
-      <BoardRail
-        board={board}
-        onOpen={onOpenBoard}
-        onExport={onExportBoard}
-        exporting={boardExporting}
-      />
+      {/* ── 自由笔记（从溢出菜单唤出，默认收起）── */}
+      {notesOpen && (
+        <div className="shrink-0 max-h-[38%] overflow-y-auto px-4 py-3 border-t border-cream-dark/50 bg-cream/60">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-mono text-[10px] tracking-widest uppercase text-warm-gray/70">自由笔记</span>
+            <button onClick={() => setNotesOpen(false)} className="text-warm-gray/60 hover:text-navy"><X size={12}/></button>
+          </div>
+          {savedNotes.filter(n => n.id !== manualNoteId).map(n => (
+            <SavedNoteItem key={n.id} note={n} onDelete={() => onDeleteNote(n.id)}/>
+          ))}
+          <textarea
+            value={notes}
+            onChange={e => setNotes(e.target.value)}
+            placeholder="读完这篇，你想记下什么？"
+            className="mt-2 w-full bg-warm-white rounded-lg px-3 py-2 text-[13px] text-navy border border-navy/10 outline-none resize-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 leading-relaxed min-h-[100px]"/>
+          {notes && (
+            <p className="text-[10.5px] text-warm-gray/60 mt-1 italic">
+              {bookmarked ? '已自动保存到收藏' : '已保存到本地；收藏后永久'}
+            </p>
+          )}
+        </div>
+      )}
 
-      {/* ★ YOUR QUOTES */}
+      {/* ── 引用与追问（有内容才出现，收在底部之上）── */}
       {quotes.length > 0 && (
-        <section className="px-6 py-4 border-b border-navy/5">
+        <div className="shrink-0 max-h-[30%] overflow-y-auto px-4 py-2.5 border-t border-cream-dark/50">
           <SectionHeader
             left={<><QuoteIcon size={11}/> 引用与追问</>}
             right={`${quotes.length} 段`}
@@ -1483,119 +1541,94 @@ function MemoryChannel(props) {
             <QuoteCard key={q.n} quote={q} onJump={() => jumpToQuote(q)}
               onDelete={!String(q.id).startsWith('local-') ? () => onDeleteQuote(q) : null}/>
           ))}
-        </section>
+        </div>
       )}
 
-      {/* NOTES — 已保存笔记列表（带读/对话总结/手写）+ 自由笔记输入 */}
-      <div className="px-6 py-3 border-b border-navy/5">
+      {/* ── 自测入口（占位：功能下一轮实现）── */}
+      <div className="shrink-0 px-4 pb-3 pt-2">
         <button
-          onClick={() => setNotesOpen(o => !o)}
-          className="w-full flex items-center justify-between text-[10.5px] font-mono tracking-widest uppercase text-warm-gray/70 hover:text-navy">
-          <span>
-            我的笔记
-            {savedNotes.length > 0 && (
-              <span className="ml-1.5 text-coral font-semibold">{savedNotes.length}</span>
-            )}
-          </span>
-          <ChevronDown size={12} className={`transition-transform ${notesOpen ? 'rotate-180' : ''}`}/>
+          type="button"
+          disabled
+          title="下一轮实现"
+          className="group w-full text-left bg-warm-white border border-cream-dark/60 rounded-2xl px-3.5 py-3 flex items-center gap-3 opacity-60 cursor-not-allowed">
+          <span className="w-8 h-8 rounded-xl bg-coral/10 text-coral flex items-center justify-center text-[15px] shrink-0">?</span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[12.5px] font-medium text-navy leading-tight m-0">让 papermind 考考你</p>
+            <p className="text-[10.5px] text-warm-gray/70 mt-0.5 m-0">
+              苏格拉底式追问 · 基于这 {cards.length} 张卡片
+            </p>
+          </div>
+          <span className="text-[10px] text-warm-gray/60 shrink-0">即将上线</span>
         </button>
-        {notesOpen && (
-          <>
-            {savedNotes.filter(n => n.id !== manualNoteId).map(n => (
-              <SavedNoteItem key={n.id} note={n} onDelete={() => onDeleteNote(n.id)}/>
-            ))}
-            <textarea
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              placeholder="读完这篇，你想记下什么？"
-              className="mt-2 w-full bg-warm-white rounded-lg px-3 py-2 text-sm text-navy border border-navy/10 outline-none resize-none focus:border-coral/40 focus:ring-2 focus:ring-coral/10 leading-relaxed min-h-[120px]"/>
-            {notes && (
-              <p className="text-[10.5px] text-warm-gray/60 mt-1 italic">
-                {bookmarked ? '已自动保存到收藏' : '已保存到本地；收藏后永久'}
-              </p>
-            )}
-          </>
-        )}
       </div>
 
-      {/* spacer */}
-      <div className="flex-1"/>
+      {/* ── 汇报板（钉底）── */}
+      <div className="shrink-0">
+        <BoardRail
+          board={board}
+          onOpen={onOpenBoard}
+          onExport={onExportBoard}
+          exporting={boardExporting}
+          variant="rail"
+        />
+      </div>
 
-      {/* CHAT FOOT (sticky) */}
-      <div ref={chatFootRef} className="sticky bottom-0 bg-cream/96 backdrop-blur border-t border-navy/8 z-10">
-        <button
-          onClick={() => setChatOpen(!chatOpen)}
-          className="w-full px-5 py-3 flex items-center gap-2.5 text-sm font-medium text-navy">
-          <MessageSquare size={14} className="text-coral"/>
-          {pendingQuote ? '继续这段追问' : (chatMessages.length > 0 ? `对话 · ${chatMessages.length} 条` : '想和这篇聊点什么')}
-          <span className="ml-auto font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/70">
-            claude · 会保存
-          </span>
-          {chatOpen ? <ChevronDown size={13}/> : <ChevronUp size={13}/>}
-        </button>
+      {/* ── 对话抽屉（按需唤出，覆盖右栏）── */}
+      {chatOpen && (
+        <div className="absolute inset-0 z-40 flex flex-col bg-cream">
+          <div className="shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-cream-dark/60">
+            <span className="inline-flex items-center gap-2 text-[13px] font-serif text-navy">
+              <MessageSquare size={13} className="text-coral"/>
+              {pendingQuote ? '继续这段追问' : '对话'}
+              {chatMessages.length > 0 && (
+                <span className="font-mono text-[10px] text-warm-gray/70">{chatMessages.length} 条</span>
+              )}
+            </span>
+            <button onClick={() => setChatOpen(false)}
+              className="w-7 h-7 rounded-full text-warm-gray hover:text-navy hover:bg-cream-dark/40 flex items-center justify-center transition"
+              aria-label="关闭对话">
+              <X size={14}/>
+            </button>
+          </div>
 
-        {chatOpen && (
-          <div className="px-5 pb-4">
-            {/* messages */}
-            {chatMessages.length > 0 && (
-              <div className="max-h-[260px] overflow-y-auto space-y-2 mb-3 -mx-1 px-1">
-                {chatMessages.map((m, i) => (
-                  <div key={i} className={`text-[13px] px-3 py-2 rounded-xl leading-relaxed ${
-                    m.role === 'user' ? 'bg-navy text-warm-white ml-6' : 'bg-warm-white text-navy/85 mr-6 border border-navy/5'
-                  }`}>
-                    {m._quote && (
-                      <p className="font-mono text-[9.5px] tracking-widest uppercase opacity-70 mb-1">
-                        ↳ 引用 p.{m._quote.page}
-                      </p>
-                    )}
-                    {m.role === 'assistant' ? (
-                      <>
-                        <ReactMarkdown components={{
-                          p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
-                          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-                          ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
-                          ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
-                        }}>{m.content}</ReactMarkdown>
-                        <span className="mt-1.5 inline-flex items-center gap-3">
-                          <button onClick={() => seedCardFromChat(i)}
-                            className="inline-flex items-center gap-1 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/70 hover:text-coral transition-colors">
-                            <Layers size={10}/> 归卡
-                          </button>
-                          <button onClick={() => onSendChatToBoard(i)}
-                            className="inline-flex items-center gap-1 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/70 hover:text-mint-deep transition-colors">
-                            <Presentation size={10}/> 送到汇报
-                          </button>
-                        </span>
-                      </>
-                    ) : m.content}
-                  </div>
-                ))}
-                {chatLoading && (
-                  <div className="flex items-center gap-2 text-warm-gray text-xs">
-                    <Loader2 size={12} className="animate-spin"/> 思考中…
-                  </div>
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2">
+            {chatMessages.length === 0 && (
+              <p className="text-[12px] text-warm-gray/70 text-center py-8 leading-relaxed">
+                在左侧 PDF 里划一段话来追问，<br/>或直接在下面提问。
+              </p>
+            )}
+            {chatMessages.map((m, i) => (
+              <div key={i} className={`text-[13px] px-3 py-2 rounded-xl leading-relaxed ${
+                m.role === 'user' ? 'bg-navy text-warm-white ml-6' : 'bg-warm-white text-navy/85 mr-6 border border-navy/5'
+              }`}>
+                {m._quote && (
+                  <p className="font-mono text-[9.5px] tracking-widest uppercase opacity-70 mb-1">
+                    ↳ 引用 p.{m._quote.page}
+                  </p>
                 )}
-                <div ref={chatEndRef}/>
+                {m.content}
+              </div>
+            ))}
+            {chatLoading && (
+              <div className="flex items-center gap-2 text-[12px] text-warm-gray mr-6">
+                <Loader2 size={12} className="animate-spin text-coral"/> 正在回答…
               </div>
             )}
+            <div ref={chatEndRef}/>
+          </div>
 
-            {/* pending quote preload */}
+          <div ref={chatFootRef} className="shrink-0 border-t border-cream-dark/60 px-4 py-3 bg-cream">
             {pendingQuote && (
-              <div className="bg-coral/[0.06] border-l-2 border-coral pl-3 pr-7 py-2 rounded-r-lg mb-2 relative">
-                <p className="italic text-[12.5px] leading-snug text-navy/75" style={{ fontFamily: '"Source Serif Pro", Georgia, serif' }}>
-                  &ldquo;{pendingQuote.text}&rdquo;
+              <div className="mb-2 bg-coral/[0.07] border-l-2 border-coral pl-2.5 pr-2 py-1.5 rounded-r-lg flex items-start gap-2">
+                <p className="flex-1 italic text-[11.5px] leading-snug text-navy/70 m-0">
+                  &ldquo;{pendingQuote.text?.length > 120 ? pendingQuote.text.slice(0, 120) + '…' : pendingQuote.text}&rdquo;
                 </p>
-                <p className="font-mono text-[9.5px] tracking-widest uppercase text-coral-deep mt-1.5">
-                  QUOTING · p.{pendingQuote.page}
-                </p>
-                <button onClick={() => setPendingQuote(null)}
-                  className="absolute top-1.5 right-1.5 p-0.5 text-warm-gray hover:text-navy">
-                  <X size={12}/>
+                <button onClick={() => setPendingQuote(null)} className="text-warm-gray/60 hover:text-navy shrink-0">
+                  <X size={11}/>
                 </button>
               </div>
             )}
 
-            {/* summarize */}
             {chatMessages.length >= 2 && (
               <>
                 <button onClick={handleSummarizeChat} disabled={summarizing || summarized}
@@ -1610,7 +1643,6 @@ function MemoryChannel(props) {
               </>
             )}
 
-            {/* input */}
             <div className="flex gap-2 items-center">
               <input
                 ref={chatInputRef}
@@ -1632,15 +1664,15 @@ function MemoryChannel(props) {
               </button>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }
 
 function DeepReadPanel({
   paper, currentPage, currentPageText, guide, source, mode, loading, error, saved, onRun, onSave,
-  onSendToBoard,
+  onSendToBoard, variant = 'section',
 }) {
   const hasAbstract = !!paper?.abstract
   const hasPageText = currentPageText.trim().length > 80
@@ -1660,7 +1692,9 @@ function DeepReadPanel({
   }, [guide, loading])
 
   return (
-    <section ref={rootRef} className="px-6 py-4 border-b border-navy/5 bg-gradient-to-b from-warm-white/60 to-transparent">
+    <section ref={rootRef} className={variant === 'rail'
+      ? 'px-4 pb-3 max-h-[46vh] overflow-y-auto'
+      : 'px-6 py-4 border-b border-navy/5 bg-gradient-to-b from-warm-white/60 to-transparent'}>
       <SectionHeader
         left={<><Sparkles size={11}/> 精读工作台</>}
         right={hasPageText ? `P.${currentPage}` : '摘要'}
