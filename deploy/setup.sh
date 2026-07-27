@@ -1,10 +1,14 @@
 #!/bin/bash
-# PaperMind 首次部署脚本（Ubuntu 22.04）
+# PaperMind 首次部署脚本（Ubuntu 24.04）
 # 用法：sudo bash setup.sh
-set -e
+set -euo pipefail
 
 PROJECT_DIR="/opt/papermind"
 REPO_URL="https://github.com/lvyrana/papermind.git"   # 你的仓库地址
+DEPLOY_REF="${DEPLOY_REF:-main}"
+PREVIEW_HOST="${PREVIEW_HOST:-_}"
+AUTH_USER="${PAPERMIND_BASIC_AUTH_USER:-}"
+AUTH_PASSWORD="${PAPERMIND_BASIC_AUTH_PASSWORD:-}"
 
 if [ "$EUID" -ne 0 ]; then
     echo "请使用 sudo 运行此脚本：sudo bash setup.sh"
@@ -13,7 +17,8 @@ fi
 
 echo "=== [1/7] 安装系统依赖 ==="
 apt-get update -qq
-apt-get install -y nginx python3.11 python3.11-venv python3-pip git curl ca-certificates gnupg sqlite3
+apt-get install -y nginx apache2-utils certbot python3-certbot-nginx \
+    python3 python3-venv python3-pip git curl ca-certificates gnupg sqlite3
 
 if ! command -v node >/dev/null 2>&1; then
     echo "=== 安装 Node.js 22 ==="
@@ -30,16 +35,19 @@ fi
 
 echo "=== [2/7] 克隆 / 更新代码 ==="
 if [ -d "$PROJECT_DIR/.git" ]; then
-    cd "$PROJECT_DIR" && git pull
+    cd "$PROJECT_DIR"
+    git fetch origin "$DEPLOY_REF"
+    git checkout "$DEPLOY_REF"
+    git pull --ff-only origin "$DEPLOY_REF"
 else
-    git clone "$REPO_URL" "$PROJECT_DIR"
+    git clone --branch "$DEPLOY_REF" --single-branch "$REPO_URL" "$PROJECT_DIR"
 fi
 chown -R ubuntu:ubuntu "$PROJECT_DIR"
 chmod +x "$PROJECT_DIR/deploy/backup.sh"
 
 echo "=== [3/7] 创建 Python 虚拟环境并安装依赖 ==="
 cd "$PROJECT_DIR/papermind"
-python3.11 -m venv .venv
+python3 -m venv .venv
 .venv/bin/pip install --upgrade pip -q
 .venv/bin/pip install -r requirements.txt -q
 
@@ -76,17 +84,43 @@ echo "备份定时器状态："
 systemctl status papermind-backup.timer --no-pager -l | head -12
 
 echo "=== [8/8] 配置 nginx ==="
-cp "$PROJECT_DIR/deploy/nginx-papermind.conf" /etc/nginx/sites-available/papermind
+if ! [[ "$PREVIEW_HOST" =~ ^[A-Za-z0-9.-]+$|^_$ ]]; then
+    echo "PREVIEW_HOST 格式无效"
+    exit 1
+fi
+
+if [ ! -f /etc/nginx/.htpasswd ]; then
+    if [ -z "$AUTH_USER" ] || [ -z "$AUTH_PASSWORD" ]; then
+        echo "首次部署必须提供 PAPERMIND_BASIC_AUTH_USER 和 PAPERMIND_BASIC_AUTH_PASSWORD"
+        exit 1
+    fi
+    htpasswd -bc /etc/nginx/.htpasswd "$AUTH_USER" "$AUTH_PASSWORD"
+    chown root:www-data /etc/nginx/.htpasswd
+    chmod 640 /etc/nginx/.htpasswd
+fi
+unset AUTH_PASSWORD PAPERMIND_BASIC_AUTH_PASSWORD
+
+sed "s/__PAPERMIND_HOST__/$PREVIEW_HOST/g" \
+    "$PROJECT_DIR/deploy/nginx-papermind-ip.conf" \
+    > /etc/nginx/sites-available/papermind
 ln -sf /etc/nginx/sites-available/papermind /etc/nginx/sites-enabled/papermind
 # 删除 nginx 默认站点，避免冲突
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
 systemctl restart nginx
 
-PUBLIC_IP=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || echo "your-server-ip")
+if [ "$PREVIEW_HOST" != "_" ]; then
+    certbot --nginx --non-interactive --agree-tos \
+        --register-unsafely-without-email --redirect -d "$PREVIEW_HOST"
+    PUBLIC_URL="https://$PREVIEW_HOST"
+else
+    PUBLIC_IP=$(curl -s --max-time 3 ifconfig.me 2>/dev/null || echo "your-server-ip")
+    PUBLIC_URL="http://$PUBLIC_IP"
+fi
+
 echo ""
 echo "✅ 部署完成！"
-echo "   访问地址：http://$PUBLIC_IP"
+echo "   访问地址：$PUBLIC_URL"
 echo ""
 echo "常用命令："
 echo "   查看后端日志：journalctl -u papermind -f"

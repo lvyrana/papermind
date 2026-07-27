@@ -1,9 +1,10 @@
 #!/bin/bash
 # PaperMind 更新脚本：拉最新代码，重新构建前端，重启后端
 # 用法：sudo bash update.sh
-set -e
+set -euo pipefail
 
 PROJECT_DIR="/opt/papermind"
+DEPLOY_REF="${DEPLOY_REF:-main}"
 
 if [ "$EUID" -ne 0 ]; then
     echo "请使用 sudo 运行此脚本：sudo bash update.sh"
@@ -12,7 +13,9 @@ fi
 
 echo "=== 拉取最新代码 ==="
 cd "$PROJECT_DIR"
-git pull
+git fetch origin "$DEPLOY_REF"
+git checkout "$DEPLOY_REF"
+git pull --ff-only origin "$DEPLOY_REF"
 
 echo "=== 确保备份依赖存在 ==="
 apt-get update -qq
@@ -32,8 +35,6 @@ echo "=== 同步服务配置 ==="
 cp "$PROJECT_DIR/deploy/papermind.service" /etc/systemd/system/papermind.service
 cp "$PROJECT_DIR/deploy/papermind-backup.service" /etc/systemd/system/papermind-backup.service
 cp "$PROJECT_DIR/deploy/papermind-backup.timer" /etc/systemd/system/papermind-backup.timer
-cp "$PROJECT_DIR/deploy/nginx-papermind.conf" /etc/nginx/sites-available/papermind
-ln -sf /etc/nginx/sites-available/papermind /etc/nginx/sites-enabled/papermind
 chmod +x "$PROJECT_DIR/deploy/backup.sh"
 systemctl daemon-reload
 systemctl enable papermind-backup.timer >/dev/null 2>&1 || true
