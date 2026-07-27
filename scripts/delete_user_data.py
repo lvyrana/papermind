@@ -21,6 +21,7 @@ UUID_PATTERN = re.compile(
 )
 
 PAPER_CHILD_TABLES = (
+    "self_test_sessions",
     "board_items",
     "presentation_boards",
     "paper_quotes",
@@ -29,6 +30,7 @@ PAPER_CHILD_TABLES = (
     "paper_chats",
 )
 USER_TABLES = (
+    "method_gaps",
     "reading_history",
     "search_runs",
     "user_feedback",

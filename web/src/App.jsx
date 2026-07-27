@@ -23,15 +23,13 @@ const CACHE_KEY_EXACT = [
 
 function clearLocalAccountCache() {
   try {
-    // 精确 key
-    CACHE_KEY_EXACT.forEach(k => localStorage.removeItem(k))
-    // 所有 paper-* 动态 key
+    CACHE_KEY_EXACT.forEach(key => localStorage.removeItem(key))
     const toRemove = []
     for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i)
-      if (k && CACHE_KEY_PREFIXES.some(p => k.startsWith(p))) toRemove.push(k)
+      const key = localStorage.key(i)
+      if (key && CACHE_KEY_PREFIXES.some(prefix => key.startsWith(prefix))) toRemove.push(key)
     }
-    toRemove.forEach(k => localStorage.removeItem(k))
+    toRemove.forEach(key => localStorage.removeItem(key))
   } catch {
     // localStorage may be unavailable in privacy-restricted browsers.
   }
@@ -43,14 +41,13 @@ function UidHandler() {
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     const uid = params.get('uid')
-    if (uid && /^[0-9a-f-]{36}$/i.test(uid)) {
-      // 只有真的换了身份才清本地缓存；深链（如 Zotero 跳转）保留当前路径，
-      // 只把 ?uid= 从地址栏去掉
-      if (consumeUidSwitchFlag()) clearLocalAccountCache()
-      setUserId(uid)
-      navigate(location.pathname, { replace: true })
-    }
-  }, [location.search, location.pathname, navigate])
+    if (!uid || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uid)) return
+    if (consumeUidSwitchFlag()) clearLocalAccountCache()
+    setUserId(uid)
+    params.delete('uid')
+    const search = params.toString()
+    navigate(`${location.pathname}${search ? `?${search}` : ''}${location.hash}`, { replace: true })
+  }, [location.search, location.pathname, location.hash, navigate])
   return null
 }
 

@@ -309,7 +309,7 @@ export default function Settings() {
             </div>
             <div className="flex items-start gap-2">
               <span className="w-1.5 h-1.5 rounded-full bg-mint mt-1 flex-shrink-0" />
-              <span>可在下方配置自己的 API，优先于内置通道使用，失败时自动回退</span>
+              <span>AI 服务配置由试用主持人统一管理，所有设备使用同一条服务链</span>
             </div>
           </div>
         </div>
@@ -342,18 +342,18 @@ export default function Settings() {
           <div className="flex items-center gap-3 mb-3">
             <IconBlock icon={Link2} color="gray" />
             <div className="flex-1 min-w-0">
-              <h2 className="text-navy font-semibold text-sm">多端同步</h2>
+              <h2 className="text-navy font-semibold text-sm">设备隔离与多端同步</h2>
               <p className="text-xs text-warm-gray mt-0.5">
                 {uidUnavailable
                   ? '当前浏览器暂时无法读取设备 ID，建议刷新或切换常规浏览模式。'
-                  : '复制专属链接可在其他浏览器继续使用；链接等同访问凭证，请勿转发。'}
+                  : '新设备默认使用独立空间；只有打开你的专属链接时才会同步这份数据。'}
               </p>
             </div>
           </div>
           <button onClick={handleCopyLink} disabled={!uid}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-coral text-warm-white text-xs font-medium hover:bg-coral-light transition-colors disabled:opacity-40">
             {linkCopied ? <Check size={13} /> : <Link2 size={13} />}
-            {linkCopied ? '链接已复制！' : '复制我的专属链接'}
+            {linkCopied ? '链接已复制' : '复制我的专属链接'}
           </button>
         </div>
 
@@ -364,13 +364,13 @@ export default function Settings() {
             <IconBlock icon={Shield} color="gray" />
             <div className="flex-1 min-w-0">
               <h2 className="text-navy font-semibold text-sm">隐私与安全</h2>
-              <p className="text-xs text-warm-gray mt-0.5">数据保存在运行 PaperMind 的主持人电脑上</p>
+              <p className="text-xs text-warm-gray mt-0.5">试用数据保存在运行 PaperMind 的服务器上</p>
             </div>
           </div>
           <div className="flex items-start justify-between gap-4 py-3 border-t border-cream-dark/60">
             <div>
               <p className="text-sm font-medium text-navy">匿名设备编号</p>
-              <p className="text-xs text-warm-gray mt-0.5">用于区分试用者数据，不是密码登录，也不提供加密保护</p>
+              <p className="text-xs text-warm-gray mt-0.5">用于区分试用者数据；专属链接等同于这台设备的数据凭证</p>
             </div>
           </div>
           <div className="flex items-start justify-between gap-4 py-3 border-t border-cream-dark/60">
@@ -644,6 +644,7 @@ const LLM_PRESETS = [
 ]
 
 function CustomLLMCard() {
+  const [canManage, setCanManage] = useState(null)
   const [enabled, setEnabled] = useState(false)
   const [preset, setPreset] = useState('openrouter')
   const [baseUrl, setBaseUrl] = useState(LLM_PRESETS[0].base)
@@ -663,6 +664,8 @@ function CustomLLMCard() {
 
   useEffect(() => {
     apiGet('/settings').then(data => {
+      setCanManage(!!data.can_manage)
+      if (!data.can_manage) return
       const c = data.custom
       if (!c) return
       setEnabled(!!c.enabled)
@@ -672,7 +675,7 @@ function CustomLLMCard() {
       setKeyMasked(c.api_key_masked || '')
       setHasKey(!!c.has_key)
       setActive(data.active || 'builtin')
-    }).catch(() => {})
+    }).catch(() => setCanManage(false))
   }, [])
 
   const pickPreset = (p) => {
@@ -741,6 +744,8 @@ function CustomLLMCard() {
   const filteredModels = modelFilter
     ? models.filter(m => m.toLowerCase().includes(modelFilter.toLowerCase()))
     : models
+
+  if (canManage !== true) return null
 
   return (
     <div className="bg-warm-white/[0.82] backdrop-blur-sm rounded-2xl p-5 border border-cream-dark/[0.7] mt-2.5">

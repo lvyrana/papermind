@@ -23,9 +23,8 @@ export const SOURCE_LABELS = {
   figure: '图表',
 }
 
-// <img> 无法带 X-User-ID header，图片地址用 ?uid= 鉴权（沿用深链模式）
 export function figureUrl(paperRowid, name) {
-  return `${API_BASE}/board/${paperRowid}/figures/${name}?uid=${encodeURIComponent(getUserId())}`
+  return `${API_BASE}/board/${paperRowid}/figures/${name}`
 }
 
 // 卡片类型 → 默认板块映射（可在选单里改投）

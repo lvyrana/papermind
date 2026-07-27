@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,11 +14,17 @@ import api  # noqa: E402
 import llm_router  # noqa: E402
 import memory_service  # noqa: E402
 import search_service  # noqa: E402
+from src import database  # noqa: E402
+
+
+USER_A = "11111111-1111-4111-8111-111111111111"
+USER_B = "22222222-2222-4222-8222-222222222222"
 
 
 class HeaderRequest:
-    def __init__(self, user_id: str = "test-user"):
-        self.headers = {"X-User-ID": user_id}
+    def __init__(self, user_id: str = USER_A, cookie_user_id: str = ""):
+        self.headers = {"X-User-ID": user_id} if user_id else {}
+        self.cookies = {"papermind-uid": cookie_user_id} if cookie_user_id else {}
 
 
 class LLMRouterTests(unittest.IsolatedAsyncioTestCase):
@@ -230,14 +237,113 @@ class ProfileSaveTests(unittest.TestCase):
         with patch.object(api, "get_profile", return_value=previous), \
              patch.object(api, "save_profile", side_effect=capture_save), \
              patch.object(api, "_reset_user_cache") as reset_cache:
-            response = api.api_save_profile(payload, HeaderRequest("user-1"))
+            response = api.api_save_profile(payload, HeaderRequest(USER_A))
 
         self.assertEqual(response, {"ok": True})
-        self.assertEqual(saved["user_id"], "user-1")
+        self.assertEqual(saved["user_id"], USER_A)
         self.assertEqual(saved["profile"]["memory_core"], "stable core")
         self.assertEqual(saved["profile"]["memory_recent"], "recent changes")
         self.assertEqual(saved["profile"]["behavior_events_since_recent"], "5")
         reset_cache.assert_not_called()
+
+
+class DeviceIsolationTests(unittest.TestCase):
+    def test_device_id_accepts_header_or_same_origin_cookie(self):
+        self.assertEqual(api._get_user_id(HeaderRequest(USER_A)), USER_A)
+        self.assertEqual(api._get_user_id(HeaderRequest("", USER_B)), USER_B)
+
+    def test_missing_or_malformed_device_id_is_rejected(self):
+        for request in (HeaderRequest(""), HeaderRequest("anonymous"), HeaderRequest("not-a-uuid")):
+            with self.subTest(headers=request.headers):
+                with self.assertRaises(api.FastAPIHTTPException) as raised:
+                    api._get_user_id(request)
+                self.assertEqual(raised.exception.status_code, 401)
+
+    def test_server_configuration_is_owner_only(self):
+        with patch.object(api, "OWNER_UID", USER_A):
+            self.assertEqual(api._require_owner(HeaderRequest(USER_A)), USER_A)
+            with self.assertRaises(api.FastAPIHTTPException) as raised:
+                api._require_owner(HeaderRequest(USER_B))
+            self.assertEqual(raised.exception.status_code, 403)
+
+    def test_foreign_project_cannot_be_assigned_to_owned_paper(self):
+        payload = api.SetPaperProjectRequest(project_id=22)
+        with patch.object(api, "_get_owned_paper_or_none", return_value={"id": 7, "user_id": USER_A}), \
+             patch.object(api, "get_projects", return_value=[{"id": 11}]), \
+             patch.object(api, "set_paper_project") as setter:
+            result = api.api_set_paper_project(7, payload, HeaderRequest(USER_A))
+
+        self.assertEqual(result, {"ok": False, "error": "not found"})
+        setter.assert_not_called()
+
+    def test_note_edit_cannot_target_another_devices_note(self):
+        payload = api.SaveNoteRequest(paper_rowid=7, content="changed", note_id=91)
+        with patch.object(api, "_get_owned_paper_or_none", return_value={"id": 7, "user_id": USER_A}), \
+             patch.object(api, "get_note_owner", return_value=USER_B), \
+             patch.object(api, "save_note") as saver:
+            result = api.api_save_note(payload, HeaderRequest(USER_A))
+
+        self.assertEqual(result, {"ok": False, "error": "not found"})
+        saver.assert_not_called()
+
+    def test_foreign_paper_cannot_be_exported_or_added_to_history(self):
+        with patch.object(api, "_get_owned_paper_or_none", return_value=None), \
+             patch.object(api, "record_reading") as recorder:
+            export = api.api_export_ris(7, HeaderRequest(USER_B))
+            history = api.api_record_reading(
+                {"paper_rowid": 7, "title": "Private paper"},
+                HeaderRequest(USER_B),
+            )
+
+        self.assertEqual(export.status_code, 404)
+        self.assertEqual(history, {"ok": False, "error": "not found"})
+        recorder.assert_not_called()
+
+    def test_same_title_is_stored_separately_for_two_devices(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             patch.object(database, "DB_PATH", Path(temp_dir) / "isolation.db"):
+            database.init_db()
+            first_id = database.save_paper({"title": "Shared title"}, USER_A)
+            second_id = database.save_paper({"title": "Shared title"}, USER_B)
+
+            self.assertNotEqual(first_id, second_id)
+            self.assertEqual([paper["id"] for paper in database.get_saved_papers(USER_A)], [first_id])
+            self.assertEqual([paper["id"] for paper in database.get_saved_papers(USER_B)], [second_id])
+
+    def test_deleting_paper_removes_self_test_and_detaches_history(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             patch.object(database, "DB_PATH", Path(temp_dir) / "cleanup.db"):
+            database.init_db()
+            paper_id = database.save_paper({"title": "Cleanup paper"}, USER_A)
+            database.init_self_test(paper_id)
+            database.record_reading(paper_id, "Cleanup paper", USER_A)
+            database.record_method_gap(USER_A, "selection bias", paper_id)
+
+            database.delete_saved_paper(paper_id)
+
+            conn = database.get_conn()
+            try:
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM self_test_sessions WHERE paper_rowid = ?",
+                        (paper_id,),
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT paper_rowid FROM reading_history WHERE user_id = ?",
+                        (USER_A,),
+                    ).fetchone()[0]
+                )
+                self.assertIsNone(
+                    conn.execute(
+                        "SELECT last_paper_rowid FROM method_gaps WHERE user_id = ?",
+                        (USER_A,),
+                    ).fetchone()[0]
+                )
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":

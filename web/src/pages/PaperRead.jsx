@@ -455,7 +455,7 @@ export default function PaperRead() {
     const run = async () => {
       // 已上传的本地 PDF 优先
       if (savedRowId) {
-        const localUrl = `${API_BASE}/library/${savedRowId}/pdf?uid=${getUserId()}`
+        const localUrl = `${API_BASE}/library/${savedRowId}/pdf`
         try {
           const r = await fetch(localUrl, { method: 'HEAD' })
           if (r.ok && !cancelled) {
@@ -512,7 +512,7 @@ export default function PaperRead() {
       })
       const data = await resp.json()
       if (data.ok) {
-        const localUrl = `${API_BASE}/library/${rowId}/pdf?uid=${getUserId()}`
+        const localUrl = `${API_BASE}/library/${rowId}/pdf`
         setPdfUrlLoading(false)
         setPdfUrl(localUrl)
         setPdfOriginalUrl(localUrl)

@@ -15,6 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Optional
+from uuid import UUID
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -45,7 +46,7 @@ from src.database import (
     get_self_test, init_self_test, update_self_test,
     record_method_gap, get_method_gaps,
     create_project, get_projects, update_project, delete_project, set_paper_project,
-    set_paper_has_pdf, get_paper_owner,
+    set_paper_has_pdf,
     save_card, get_cards, update_card, delete_card, get_card_owner, CARD_TYPES,
     save_quote, get_quotes, delete_quote, get_quote_owner,
     get_or_create_board, update_board, add_board_item, get_board_items,
@@ -97,8 +98,8 @@ _allowed_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_credentials=False,   # 我们用 X-User-ID header，不需要 cookie
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_credentials=False,   # 跨域仍用 header；cookie 仅作为同源 PDF/图片请求的回退。
+    allow_methods=["GET", "POST", "DELETE", "PATCH", "HEAD"],
     allow_headers=["Content-Type", "X-User-ID"],
 )
 
@@ -111,7 +112,7 @@ DAILY_CHAT_LIMIT = int(os.environ.get("DAILY_CHAT_LIMIT", "20"))
 DAILY_TRANSLATE_LIMIT = int(os.environ.get("DAILY_TRANSLATE_LIMIT", "30"))
 # 全局每日 AI 对话熔断（所有用户之和，超了暂停服务）
 GLOBAL_DAILY_CHAT_LIMIT = int(os.environ.get("GLOBAL_DAILY_CHAT_LIMIT", "500"))
-OWNER_UID = os.environ.get("OWNER_UID", "")
+OWNER_UID = os.environ.get("OWNER_UID", "").strip().lower()
 MAX_ENRICH_ATTEMPTS = 5
 
 
@@ -256,8 +257,17 @@ class SetPaperProjectRequest(BaseModel):
 # ========== User ID ==========
 
 def _get_user_id(request: Request) -> str:
-    """从请求头获取用户 ID"""
-    return request.headers.get("X-User-ID", "anonymous")
+    """读取并校验匿名设备 ID；同源媒体请求可从 cookie 回退。"""
+    headers = getattr(request, "headers", {})
+    cookies = getattr(request, "cookies", {})
+    user_id = (headers.get("X-User-ID", "") or cookies.get("papermind-uid", "")).strip().lower()
+    try:
+        parsed = UUID(user_id)
+    except (ValueError, AttributeError):
+        raise FastAPIHTTPException(status_code=401, detail="valid device id required")
+    if str(parsed) != user_id or parsed.version != 4:
+        raise FastAPIHTTPException(status_code=401, detail="valid device id required")
+    return user_id
 
 
 def _get_client_ip(request: Request) -> str:
@@ -266,6 +276,14 @@ def _get_client_ip(request: Request) -> str:
     if forwarded:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+def _require_owner(request: Request) -> str:
+    """主机级配置只允许 OWNER_UID 管理；本地未配置时保持开发兼容。"""
+    uid = _get_user_id(request)
+    if OWNER_UID and uid != OWNER_UID:
+        raise FastAPIHTTPException(status_code=403, detail="owner device required")
+    return uid
 
 
 def _get_owned_paper_or_none(paper_id: int, user_id: str) -> Optional[dict]:
@@ -281,15 +299,17 @@ def _get_owned_paper_or_none(paper_id: int, user_id: str) -> Optional[dict]:
 # ========== Settings Routes（简化：只显示内置状态） ==========
 
 @app.get("/api/settings")
-def api_get_settings():
+def api_get_settings(request: Request):
     """返回当前 LLM 配置状态（内置链 + 自定义通道）"""
+    uid = _get_user_id(request)
+    can_manage = not OWNER_UID or uid == OWNER_UID
     client, model = _get_llm_client()
     provider_name = ""
     for p in _LLM_PROVIDERS:
         if p["model"] == model:
             provider_name = p["name"]
             break
-    custom = get_custom_provider_safe()
+    custom = get_custom_provider_safe() if can_manage else {}
     return {
         "provider": provider_name,
         "model": model,
@@ -298,11 +318,13 @@ def api_get_settings():
         "builtin": True,
         "custom": custom,
         "active": ("custom" if (custom.get("enabled") and custom.get("has_key") and custom.get("model")) else "builtin"),
+        "can_manage": can_manage,
     }
 
 @app.post("/api/settings")
-def api_save_settings():
+def api_save_settings(request: Request):
     """内置 API 模式下，保存操作为空操作（兼容前端调用）"""
+    _require_owner(request)
     return {"ok": True, "builtin": True}
 
 
@@ -315,8 +337,9 @@ def api_zotero_plugin_update():
 # ========== 自定义 LLM 通道 ==========
 
 @app.post("/api/settings/custom-llm")
-def api_save_custom_llm(data: CustomLLMRequest):
+def api_save_custom_llm(data: CustomLLMRequest, request: Request):
     """保存自定义 API 配置；api_key 传空表示沿用已存的 key"""
+    _require_owner(request)
     current = get_custom_provider()
     api_key = data.api_key.strip() or current.get("api_key", "")
     base_url = data.base_url.strip().rstrip("/")
@@ -333,15 +356,17 @@ def api_save_custom_llm(data: CustomLLMRequest):
 
 
 @app.delete("/api/settings/custom-llm")
-def api_delete_custom_llm():
+def api_delete_custom_llm(request: Request):
     """清除自定义 API 配置，回到纯内置链"""
+    _require_owner(request)
     save_custom_provider({})
     return {"ok": True}
 
 
 @app.post("/api/settings/custom-llm/models")
-async def api_list_custom_llm_models(data: CustomLLMProbeRequest):
+async def api_list_custom_llm_models(data: CustomLLMProbeRequest, request: Request):
     """调用 provider 的 /models 接口，列出该账号实际可用的模型"""
+    _require_owner(request)
     api_key = data.api_key.strip() or get_custom_provider().get("api_key", "")
     base_url = data.base_url.strip().rstrip("/")
     if not (api_key and base_url):
@@ -369,8 +394,9 @@ async def api_list_custom_llm_models(data: CustomLLMProbeRequest):
 
 
 @app.post("/api/settings/custom-llm/test")
-async def api_test_custom_llm(data: CustomLLMProbeRequest):
+async def api_test_custom_llm(data: CustomLLMProbeRequest, request: Request):
     """对填写的配置发一次最小对话请求，验证连通性"""
+    _require_owner(request)
     api_key = data.api_key.strip() or get_custom_provider().get("api_key", "")
     base_url = data.base_url.strip().rstrip("/")
     model = data.model.strip()
@@ -1277,6 +1303,10 @@ def api_set_paper_project(paper_id: int, data: SetPaperProjectRequest, request: 
     paper = _get_owned_paper_or_none(paper_id, uid)
     if not paper:
         return {"ok": False, "error": "not found"}
+    if data.project_id is not None:
+        projects = get_projects(uid)
+        if not any(project["id"] == data.project_id for project in projects):
+            return {"ok": False, "error": "not found"}
     set_paper_project(paper_id, data.project_id)
     return {"ok": True}
 
@@ -1305,10 +1335,10 @@ async def api_upload_paper_pdf(paper_id: int, request: Request, file: UploadFile
 
 
 @app.get("/api/library/{paper_id}/pdf")
-def api_get_paper_pdf(paper_id: int, uid: str = Query(default="")):
+def api_get_paper_pdf(paper_id: int, request: Request):
     """获取已上传的论文 PDF"""
-    owner = get_paper_owner(paper_id)
-    if not owner or owner != uid:
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(paper_id, uid):
         raise FastAPIHTTPException(status_code=403, detail="forbidden")
     pdf_path = PDF_DIR / f"{paper_id}.pdf"
     if not pdf_path.exists():
@@ -1318,10 +1348,10 @@ def api_get_paper_pdf(paper_id: int, uid: str = Query(default="")):
 
 
 @app.head("/api/library/{paper_id}/pdf")
-def api_head_paper_pdf(paper_id: int, uid: str = Query(default="")):
+def api_head_paper_pdf(paper_id: int, request: Request):
     """前端用 HEAD 探测是否已上传本地 PDF（FastAPI 的 GET 不自动支持 HEAD）"""
-    owner = get_paper_owner(paper_id)
-    if not owner or owner != uid:
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(paper_id, uid):
         raise FastAPIHTTPException(status_code=403, detail="forbidden")
     pdf_path = PDF_DIR / f"{paper_id}.pdf"
     if not pdf_path.exists():
@@ -1389,6 +1419,8 @@ def api_save_note(data: SaveNoteRequest, request: Request):
         return {"ok": False, "error": "not found"}
     source = getattr(data, "source", "manual")
     note_id_param = getattr(data, "note_id", None)
+    if note_id_param and get_note_owner(note_id_param) != uid:
+        return {"ok": False, "error": "not found"}
     note_id = save_note(data.paper_rowid, data.content, source=source, note_id=note_id_param)
     return {"ok": True, "id": note_id}
 
@@ -1564,12 +1596,10 @@ async def api_add_board_figure(
 
 
 @app.get("/api/board/{paper_rowid}/figures/{name}")
-def api_get_board_figure(paper_rowid: int, name: str, request: Request, uid: str = Query("")):
-    """图表图片；<img> 无法带 header，允许 ?uid= 查询参数鉴权（沿用深链模式）"""
-    user = _get_user_id(request)
-    if user == "anonymous" and uid:
-        user = uid
-    if not _get_owned_paper_or_none(paper_rowid, user):
+def api_get_board_figure(paper_rowid: int, name: str, request: Request):
+    """图表图片；同源 img 请求使用设备 cookie 校验归属。"""
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(paper_rowid, uid):
         return PlainTextResponse("not found", status_code=404)
     # 防路径穿越 + 校验归属前缀
     if not re.fullmatch(r"[\w.-]+", name) or not name.startswith(f"{paper_rowid}-"):
@@ -2292,7 +2322,10 @@ async def api_summarize_chat(data: SummarizeChatRequest, request: Request):
 def api_record_reading(data: dict, request: Request):
     """记录阅读行为"""
     uid = _get_user_id(request)
-    record_reading(data.get("paper_rowid"), data.get("title", ""), uid)
+    paper_rowid = data.get("paper_rowid")
+    if paper_rowid and not _get_owned_paper_or_none(paper_rowid, uid):
+        return {"ok": False, "error": "not found"}
+    record_reading(paper_rowid, data.get("title", ""), uid)
     increment_recent_events(uid)  # 阅读 = 关键行为
     return {"ok": True}
 
@@ -2411,9 +2444,10 @@ def _paper_to_bibtex(paper: dict) -> str:
 
 
 @app.get("/api/export/ris/{paper_id}")
-def api_export_ris(paper_id: int):
+def api_export_ris(paper_id: int, request: Request):
     """导出收藏论文为 RIS 格式"""
-    paper = get_saved_paper(paper_id)
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_id, uid)
     if not paper:
         return PlainTextResponse("Not found", status_code=404)
     ris = _paper_to_ris(paper)
@@ -2425,9 +2459,10 @@ def api_export_ris(paper_id: int):
 
 
 @app.get("/api/export/bibtex/{paper_id}")
-def api_export_bibtex(paper_id: int):
+def api_export_bibtex(paper_id: int, request: Request):
     """导出收藏论文为 BibTeX 格式"""
-    paper = get_saved_paper(paper_id)
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_id, uid)
     if not paper:
         return PlainTextResponse("Not found", status_code=404)
     bib = _paper_to_bibtex(paper)

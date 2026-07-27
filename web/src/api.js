@@ -3,6 +3,7 @@
  */
 
 const API_BASE = '/api'
+const DEVICE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 let memoryUid = ''
 
 function fallbackUuid() {
@@ -19,18 +20,17 @@ function getCookie(name) {
 }
 
 function setCookie(name, value) {
-  // 365 天，路径根目录，SameSite=Lax
+  // 365 天，路径根目录，生产 HTTPS 下同时启用 Secure。
   const expires = new Date(Date.now() + 365 * 864e5).toUTCString()
-  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`
+  const secure = window.location.protocol === 'https:' ? '; Secure' : ''
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax${secure}`
 }
 
-// 深链 ?uid= 必须在模块加载时同步认领：子组件的数据请求先于 App.jsx 的
-// uid effect 发出，晚了就会带着随机新身份去查别人的论文。
-// 是否"换了人"也只能在这里判断——过后旧 uid 已被覆盖。
+// 专属链接和 Zotero 深链会显式认领同一匿名身份；普通新设备仍会生成独立 UUID。
 let uidSwitchedViaUrl = false
 try {
   const urlUid = new URLSearchParams(window.location.search).get('uid')
-  if (urlUid && /^[0-9a-f-]{36}$/i.test(urlUid)) {
+  if (urlUid && DEVICE_ID_PATTERN.test(urlUid)) {
     let prev = null
     try { prev = localStorage.getItem('papermind-uid') } catch { /* ignore */ }
     prev = prev || getCookie('papermind-uid')
@@ -42,9 +42,9 @@ try {
 } catch { /* ignore */ }
 
 function consumeUidSwitchFlag() {
-  const v = uidSwitchedViaUrl
+  const value = uidSwitchedViaUrl
   uidSwitchedViaUrl = false
-  return v
+  return value
 }
 
 function getUserId() {
@@ -56,6 +56,7 @@ function getUserId() {
     // localStorage may be unavailable in privacy-restricted browsers.
   }
   if (!uid) uid = getCookie('papermind-uid')
+  if (uid && !DEVICE_ID_PATTERN.test(uid)) uid = null
 
   if (!uid) {
     uid = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'

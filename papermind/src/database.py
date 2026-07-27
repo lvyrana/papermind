@@ -765,12 +765,15 @@ def get_saved_paper(paper_id: int) -> Optional[dict]:
 
 def delete_saved_paper(paper_id: int):
     conn = _ensure_db()
+    conn.execute("DELETE FROM self_test_sessions WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM paper_notes WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM paper_chats WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM reading_cards WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM paper_quotes WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM board_items WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM presentation_boards WHERE paper_rowid = ?", (paper_id,))
+    conn.execute("UPDATE reading_history SET paper_rowid = NULL WHERE paper_rowid = ?", (paper_id,))
+    conn.execute("UPDATE method_gaps SET last_paper_rowid = NULL WHERE last_paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM saved_papers WHERE id = ?", (paper_id,))
     conn.commit()
     conn.close()
