@@ -957,9 +957,18 @@ async def api_translate(data: TranslateRequest, request: Request):
 
 # ========== Deep Reading Guide ==========
 
+def _detect_reading_language(*texts: str) -> str:
+    """Use the supplied paper text to choose Chinese-first or English-assisted guidance."""
+    sample = " ".join(text for text in texts if text)[:8000]
+    cjk_count = len(re.findall(r"[\u4e00-\u9fff]", sample))
+    latin_count = len(re.findall(r"[A-Za-z]", sample))
+    if cjk_count >= 20 and cjk_count >= latin_count * 0.25:
+        return "zh"
+    return "en"
+
 @app.post("/api/deep-read/guide")
 async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
-    """生成面向英文阅读困难用户的逐页/摘要精读带读。"""
+    """按论文语言生成逐页、摘要、选段或路线图精读带读。"""
     uid = _get_user_id(request)
     is_owner = OWNER_UID and uid == OWNER_UID
 
@@ -992,8 +1001,18 @@ async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
     if not source_text:
         return {"ok": False, "error": "还没有可精读的文本。请先上传并加载 PDF，或确认论文有摘要。"}
 
+    reading_language = _detect_reading_language(
+        data.paper_title or "", data.paper_abstract or "", source_text
+    )
+    is_chinese = reading_language == "zh"
+
     if mode == "map":
-        task_instruction = """请输出一份“精读路线图”，严格使用下面这些小标题：
+        terminology_instruction = (
+            "列 4-6 个最影响理解的关键概念、变量或方法词，结合本文语境解释。"
+            if is_chinese else
+            "列 4-6 个最影响理解的英文术语或方法词，用中文解释，并说明它在这篇里大概扮演什么角色。"
+        )
+        task_instruction = f"""请输出一份“精读路线图”，严格使用下面这些小标题：
 
 **这篇论文先抓什么**
 用 3-4 句话说明研究问题、对象/暴露/结局、核心设计，以及为什么值得读。
@@ -1005,21 +1024,29 @@ async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
 给出 5 步阅读路线：先读哪里、再读哪里、每一步要确认什么。
 
 **先弄懂的词**
-列 4-6 个最影响理解的英文术语或方法词，用中文解释，并说明它在这篇里大概扮演什么角色。
+{terminology_instruction}
 
 **读完后要能回答**
 列 4 个检查问题，帮助用户判断自己是否真的读懂。"""
     elif mode == "selection":
-        task_instruction = """请专门带读用户选中的英文句子/片段，严格使用下面这些小标题：
+        if is_chinese:
+            selection_breakdown = """**论证拆开读**
+把选段拆成 3-5 个逻辑块：原文片段 + 这部分在论证中承担什么作用。不要改写成空泛摘要。
 
-**原句在说什么**
-先用一句中文说清这句话的主干意思，不要整段机械翻译。
-
-**句子拆开读**
+**关键词与证据**
+解释 2-4 个最影响理解的概念、变量、统计表达、限定条件或数字。"""
+        else:
+            selection_breakdown = """**句子拆开读**
 把英文拆成 3-5 个语义块：英文片段 + 中文解释 + 这个片段在句子里起什么作用。
 
 **关键词**
-解释 2-4 个最容易卡住的词、变量、统计表达或连接词。
+解释 2-4 个最容易卡住的词、变量、统计表达或连接词。"""
+        task_instruction = f"""请专门带读用户选中的句子或片段，严格使用下面这些小标题：
+
+**原句在说什么**
+先用一句中文说清这段话的主干意思，不要机械复述。
+
+{selection_breakdown}
 
 **为什么重要**
 说明这句话对理解研究设计、结果、因果边界或作者论证有什么作用。
@@ -1027,7 +1054,14 @@ async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
 **可以继续追问**
 给 2 个非常具体的追问。"""
     elif mode == "page":
-        task_instruction = """请按“当前页陪读”的方式输出，严格使用下面这些小标题：
+        language_block = (
+            """**关键论证拆解**
+挑 2-4 个最关键的信息块，说明原文在提出什么主张、用了什么证据、有哪些限定条件。"""
+            if is_chinese else
+            """**英文句子拆解**
+挑 2-4 个最关键、最容易读卡的英文短语或句子片段：英文片段 + 中文拆解。不要整页翻译。"""
+        )
+        task_instruction = f"""请按“当前页陪读”的方式输出，严格使用下面这些小标题：
 
 **这一页在全文的位置**
 判断这一页更像 Introduction / Methods / Results / Discussion / 图表说明中的哪一类，并说明它承担什么任务。
@@ -1035,8 +1069,7 @@ async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
 **逐段带读**
 按页面里的自然段落或信息块拆成 3-5 点：每点先说“这一块在讲什么”，再说“读的时候要抓什么”。
 
-**英文句子拆解**
-挑 2-4 个最关键、最容易读卡的英文短语或句子片段：英文片段 + 中文拆解。不要整页翻译。
+{language_block}
 
 **术语、变量和数字**
 解释这一页里真正影响理解的术语、变量、统计量或比较关系，尽量保留数字和方向。
@@ -1047,7 +1080,13 @@ async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
 **下一步读法**
 告诉用户下一页/下一段最应该盯住什么。"""
     else:
-        task_instruction = """请按“摘要精读”的方式输出，严格使用下面这些小标题：
+        keyword_heading = "关键概念与方法词" if is_chinese else "英文关键词"
+        keyword_instruction = (
+            "挑 3-5 个摘要里的关键概念、变量或方法词，结合本文语境解释。"
+            if is_chinese else
+            "挑 3-5 个摘要里的关键英文短语，说明怎么理解。"
+        )
+        task_instruction = f"""请按“摘要精读”的方式输出，严格使用下面这些小标题：
 
 **研究问题**
 用 2-3 句话讲清这篇到底想回答什么。
@@ -1058,14 +1097,20 @@ async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
 **结果先抓什么**
 列 3 条最关键的发现，保留方向、数字和边界。
 
-**英文关键词**
-挑 3-5 个摘要里的关键英文短语，说明怎么理解。
+**{keyword_heading}**
+{keyword_instruction}
 
 **读正文前的问题**
 列 3 个进入正文前要带着的问题。"""
 
-    prompt = f"""你是一位耐心的论文精读老师，正在带一位英文阅读吃力但有研究经验的中文研究者读论文。
-目标不是泛泛总结，也不是代替用户读完；目标是降低英文障碍，带用户抓住研究逻辑、句子结构、术语、数字和证据边界。
+    reading_context = (
+        "正在阅读中文论文。不要把篇幅浪费在翻译或中文词句释义上，重点检查研究逻辑、方法、证据、数字、限定条件和可迁移启发。"
+        if is_chinese else
+        "正在阅读英文论文。除了研究逻辑、方法和证据，还要降低术语与长句障碍，但不要机械翻译整页。"
+    )
+    prompt = f"""你是一位耐心的论文精读老师，正在带一位有研究经验的中文研究者读论文。
+目标不是泛泛总结，也不是代替用户读完；目标是带用户抓住研究逻辑、术语、数字、证据边界和可以迁移到自己研究中的启发。
+{reading_context}
 不要写“本文探讨了”这种空话。要像真人陪读一样，告诉用户读这一段时眼睛应该看哪里、脑子里应该确认什么。
 
 论文标题：{data.paper_title}
@@ -1092,7 +1137,7 @@ async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
         increment_rate_limit("__global__", "chat")
         if not is_owner:
             increment_rate_limit(uid, "chat")
-        return {"ok": True, "guide": guide, "source": source_label}
+        return {"ok": True, "guide": guide, "source": source_label, "language": reading_language}
     except Exception as e:
         print(f"[api] deep-read/guide 失败: {e}")
         return {"ok": False, "error": "精读生成失败，请稍后重试。"}

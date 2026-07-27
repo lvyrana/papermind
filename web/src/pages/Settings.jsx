@@ -5,7 +5,7 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
-import { getUserId, API_BASE, apiGet, apiPost, apiDelete } from '../api'
+import { getUserId, clearUserId, API_BASE, apiGet, apiPost, apiDelete } from '../api'
 
 /* ─────────────────────────────────────────────────────────────
    SETTINGS — 加上「研究偏好」section（从 Profile 搬来）
@@ -174,9 +174,6 @@ export default function Settings() {
   const [uidUnavailable, setUidUnavailable] = useState(false)
   const [usage, setUsage] = useState(null)
   const [stats, setStats] = useState(null)
-  const [anonymousData, setAnonymousData] = useState(() => {
-    try { return localStorage.getItem('pm-anonymous-data') !== 'false' } catch { return true }
-  })
   const [feedbackType, setFeedbackType] = useState('')
   const [feedbackContent, setFeedbackContent] = useState('')
   const [feedbackSending, setFeedbackSending] = useState(false)
@@ -191,10 +188,6 @@ export default function Settings() {
     apiGet('/stats').then(setStats).catch(() => {})
   }, [])
 
-  const handleToggleAnonymous = (val) => {
-    setAnonymousData(val)
-    try { localStorage.setItem('pm-anonymous-data', val ? 'true' : 'false') } catch { /* ignore */ }
-  }
   const handleCopyLink = () => {
     if (!uid) return
     const link = `${window.location.origin}/?uid=${uid}`
@@ -223,10 +216,15 @@ export default function Settings() {
     } catch (error) { alert(error.message || '导出失败，请稍后重试') }
     finally { setExporting(false) }
   }
-  const handleClearData = () => {
-    if (!confirm('确定要清除所有本地数据吗？\n\n这将清除设备 ID，你将无法再访问当前账号的收藏与笔记，且不可撤销。')) return
-    try { localStorage.clear(); alert('本地数据已清除，页面即将刷新。'); window.location.reload() }
-    catch { alert('清除失败，请检查浏览器权限。') }
+  const handleForgetDevice = () => {
+    if (!confirm('确定要让当前浏览器退出这个匿名身份吗？\n\n这只会清除当前浏览器里的设备编号，不会删除主持人电脑上的收藏、笔记、对话或 PDF。如需彻底删除，请联系主持人。')) return
+    try {
+      clearUserId()
+      const nextUrl = new URL(window.location.href)
+      nextUrl.searchParams.delete('uid')
+      alert('当前浏览器已退出原匿名身份，页面即将刷新。')
+      window.location.replace(`${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`)
+    } catch { alert('退出失败，请检查浏览器权限。') }
   }
   const handleSendFeedback = async () => {
     if (!feedbackContent.trim()) return
@@ -348,7 +346,7 @@ export default function Settings() {
               <p className="text-xs text-warm-gray mt-0.5">
                 {uidUnavailable
                   ? '当前浏览器暂时无法读取设备 ID，建议刷新或切换常规浏览模式。'
-                  : '复制专属链接，在手机或其他浏览器中打开即可同步数据。'}
+                  : '复制专属链接可在其他浏览器继续使用；链接等同访问凭证，请勿转发。'}
               </p>
             </div>
           </div>
@@ -366,24 +364,23 @@ export default function Settings() {
             <IconBlock icon={Shield} color="gray" />
             <div className="flex-1 min-w-0">
               <h2 className="text-navy font-semibold text-sm">隐私与安全</h2>
-              <p className="text-xs text-warm-gray mt-0.5">数据仅存储在你的设备上</p>
+              <p className="text-xs text-warm-gray mt-0.5">数据保存在运行 PaperMind 的主持人电脑上</p>
             </div>
           </div>
           <div className="flex items-start justify-between gap-4 py-3 border-t border-cream-dark/60">
             <div>
-              <p className="text-sm font-medium text-navy">匿名使用数据</p>
-              <p className="text-xs text-warm-gray mt-0.5">帮助我们改进产品，不含任何个人内容</p>
+              <p className="text-sm font-medium text-navy">匿名设备编号</p>
+              <p className="text-xs text-warm-gray mt-0.5">用于区分试用者数据，不是密码登录，也不提供加密保护</p>
             </div>
-            <Toggle on={anonymousData} onChange={handleToggleAnonymous} />
           </div>
           <div className="flex items-start justify-between gap-4 py-3 border-t border-cream-dark/60">
             <div>
-              <p className="text-sm font-medium text-navy">清除所有数据</p>
-              <p className="text-xs text-warm-gray mt-0.5">删除本地所有收藏与笔记，不可撤销</p>
+              <p className="text-sm font-medium text-navy">退出当前设备身份</p>
+              <p className="text-xs text-warm-gray mt-0.5">只清除本浏览器的设备编号；彻底删除数据需联系主持人</p>
             </div>
-            <button onClick={handleClearData}
+            <button onClick={handleForgetDevice}
               className="flex-shrink-0 px-4 py-1.5 rounded-xl border border-coral/40 text-coral text-xs hover:bg-coral/5 transition-colors">
-              清除数据
+              退出设备
             </button>
           </div>
         </div>
@@ -423,7 +420,7 @@ export default function Settings() {
             onBlur={e => e.target.style.borderColor = 'rgba(237,228,216,0.8)'}/>
           <div className="flex items-center justify-between mt-3">
             <span className="text-xs" style={{ color: '#B8A798' }}>
-              {feedbackContent.length > 0 ? `${feedbackContent.length} 字` : '匿名发送，不包含任何个人信息'}
+              {feedbackContent.length > 0 ? `${feedbackContent.length} 字` : '反馈会关联匿名设备编号，请勿填写个人敏感信息'}
             </span>
             <button onClick={handleSendFeedback} disabled={feedbackSending || !feedbackContent.trim()}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-medium transition-all"
