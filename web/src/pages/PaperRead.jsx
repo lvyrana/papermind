@@ -1673,7 +1673,7 @@ function MemoryChannel(props) {
               </p>
             )}
             {chatMessages.map((m, i) => (
-              <div key={i} className={`text-[13px] px-3 py-2 rounded-xl leading-relaxed ${
+              <div key={i} className={`text-[13px] px-3.5 py-2.5 rounded-xl leading-[1.75] ${
                 m.role === 'user' ? 'bg-navy text-warm-white ml-6' : 'bg-warm-white text-navy/85 mr-6 border border-navy/5'
               }`}>
                 {m._quote && (
@@ -1681,7 +1681,21 @@ function MemoryChannel(props) {
                     ↳ 引用 p.{m._quote.page}
                   </p>
                 )}
-                {m.content}
+                {/* AI 回复是 markdown：纯文本直出会吞掉换行和列表，把回答压成一堵墙 */}
+                {m.role === 'user' ? (
+                  <span className="whitespace-pre-wrap">{m.content}</span>
+                ) : (
+                  <ReactMarkdown components={{
+                    p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                    strong: ({ children }) => <strong className="font-semibold text-navy">{children}</strong>,
+                    ul: ({ children }) => <ul className="list-disc pl-4 space-y-1 my-2">{children}</ul>,
+                    ol: ({ children }) => <ol className="list-decimal pl-4 space-y-1 my-2">{children}</ol>,
+                    li: ({ children }) => <li className="pl-0.5">{children}</li>,
+                    h1: ({ children }) => <p className="font-semibold text-navy mt-2 mb-1 first:mt-0">{children}</p>,
+                    h2: ({ children }) => <p className="font-semibold text-navy mt-2 mb-1 first:mt-0">{children}</p>,
+                    h3: ({ children }) => <p className="font-semibold text-navy mt-2 mb-1 first:mt-0">{children}</p>,
+                  }}>{m.content}</ReactMarkdown>
+                )}
               </div>
             ))}
             {chatLoading && (
