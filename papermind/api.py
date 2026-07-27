@@ -150,6 +150,8 @@ class ChatRequest(BaseModel):
     paper_rowid: int = 0
     current_page: Optional[int] = None
     current_page_text: str = Field(default="", max_length=12000)
+    # 全篇已提取的页文字（按页标注）。只给当前页时，AI 无法交叉核对跨页的数字
+    paper_pages: str = Field(default="", max_length=30000)
     quote: Optional[QuotePayload] = None
 
 class SummarizeChatRequest(BaseModel):
@@ -2088,6 +2090,16 @@ async def api_chat(data: ChatRequest, request: Request):
 {current_page_text[:5000]}
 """
 
+    # 全篇文字：让 AI 能跨页核对同一指标（图注 AUC vs 表格 AUC 这类矛盾）
+    paper_context = ""
+    paper_pages = (data.paper_pages or "").strip()
+    if paper_pages:
+        paper_context = f"""
+【本篇已提取的全文（按页标注，可能不含未浏览过的页）】
+回答前请把相关的表、图注、正文放在一起看；**同一个指标在不同页出现时必须先核对是否一致**。
+{paper_pages[:24000]}
+"""
+
     system_prompt = f"""你是一位学术研究伙伴。用户正在阅读一篇论文，请基于论文内容和用户的研究背景来回答问题。
 用中文回答，专业但亲切，像同事在聊天，不像在写报告。
 
@@ -2096,6 +2108,7 @@ async def api_chat(data: ChatRequest, request: Request):
 
 {f"用户研究背景：{chr(10)}{profile_text}" if profile_text else ""}
 {notes_context}
+{paper_context}
 {page_context}
 
 回答要求：

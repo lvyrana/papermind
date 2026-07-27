@@ -859,6 +859,9 @@ export default function PaperRead() {
         paper_rowid: rowIdForChat || 0,
         current_page: contextPage,
         current_page_text: contextText,
+        // 全篇已提取的页文字：只给当前页的话，图在一页、表在另一页时
+        // AI 物理上无法交叉核对（实测正是它漏掉 AUC 矛盾的原因）
+        paper_pages: buildPaperPagesPayload(pdfPageTexts, contextPage),
         quote: sentQuote
           ? {
               text: sentQuote.text,
@@ -1894,6 +1897,30 @@ function DeepReadAction({ active, icon, label, sub, loading, disabled, onClick }
       <span className="block mt-0.5 text-[10px] text-warm-gray/75 truncate">{sub}</span>
     </button>
   )
+}
+
+// 把已提取的各页文字拼成「全篇」上下文：当前页给足，其余页压缩，总量设上限。
+// 目的是让 AI 能跨页交叉核对（图注的 AUC vs 表格的 AUC 这类矛盾）。
+function buildPaperPagesPayload(pageTexts, focusPage, budget = 24000) {
+  const pages = Object.keys(pageTexts || {})
+    .map(Number)
+    .filter(n => (pageTexts[n] || '').trim().length > 40)
+    .sort((a, b) => a - b)
+  if (pages.length === 0) return ''
+
+  // 当前页优先吃预算，其余页按页序补，避免长论文把关键页挤掉
+  const perOther = Math.max(1200, Math.floor((budget - 6000) / Math.max(1, pages.length - 1)))
+  const parts = []
+  let used = 0
+  for (const n of pages) {
+    const cap = n === focusPage ? 6000 : perOther
+    const body = (pageTexts[n] || '').trim().slice(0, cap)
+    const chunk = `\n【第 ${n} 页】\n${body}`
+    if (used + chunk.length > budget) break
+    parts.push(chunk)
+    used += chunk.length
+  }
+  return parts.join('\n')
 }
 
 function formatDeepReadSource(mode, page) {
