@@ -133,4 +133,14 @@ function setUserId(uid) {
   setCookie('papermind-uid', uid)
 }
 
-export { API_BASE, getUserId, setUserId, consumeUidSwitchFlag }
+function clearUserId() {
+  memoryUid = ''
+  try {
+    localStorage.removeItem('papermind-uid')
+  } catch {
+    // The expired cookie is enough when localStorage is unavailable.
+  }
+  document.cookie = 'papermind-uid=; Max-Age=0; path=/; SameSite=Lax'
+}
+
+export { API_BASE, getUserId, setUserId, clearUserId, consumeUidSwitchFlag }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "PaperMind Unknowns Adapter"
+  short_description: "Apply Unknowns Compass to PaperMind work"
+  default_prompt: "Run an Unknowns Compass pass for this PaperMind task, inspect the real project territory, and recommend the safest next move."

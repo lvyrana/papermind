@@ -16,6 +16,11 @@ __pycache__/
 **/data/profile.json
 **/data/paperdiary.db
 *.db
+*.db-shm
+*.db-wal
+
+# 本地备份产物
+backups/
 
 # Node
 node_modules/

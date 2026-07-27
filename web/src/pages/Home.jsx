@@ -325,7 +325,7 @@ export default function Home() {
   }, [])
 
   // ── derived ───────────────────────────────────────────────────────────────
-  // memory_recent 第一句 = 主推文案（移动端仍在用）
+  // memory_recent 第一句 = 旧发现流的主推文案（仅显式开启回退时使用）
   const memoryHighlight = useMemo(() => {
     if (!memoryRecent) return ''
     const match = memoryRecent.match(/^[^。！？\n]+[。！？]/)
@@ -361,24 +361,39 @@ export default function Home() {
     [libraryPapers],
   )
   const doneCount = libraryPapers.length - readingCount
-  // 「继续上次精读」补充精读计数：lastReading.index 命中书架时带上卡片/笔记数
+  // 「继续上次精读」优先沿用本机阅读现场；换地址或设备后，从书架最近在读项恢复。
   const resumeMeta = useMemo(() => {
-    if (!lastReading) return null
-    return libraryPapers.find(p => String(p.id) === String(lastReading.index ?? lastReading._cache_index)) || null
-  }, [lastReading, libraryPapers])
+    if (lastReading) {
+      const matched = libraryPapers.find(
+        p => String(p.id) === String(lastReading.index ?? lastReading._cache_index),
+      )
+      if (matched) return matched
+    }
+    return workbenchProjects.find(p => deriveReadStatus(p) === '在读') || workbenchProjects[0] || null
+  }, [lastReading, libraryPapers, workbenchProjects])
+  const resumeReading = useMemo(() => {
+    if (lastReading) return lastReading
+    if (!resumeMeta) return null
+    return {
+      ...resumeMeta,
+      index: resumeMeta.id,
+      _cache_index: resumeMeta.id,
+      readAt: resumeMeta.last_read_at || resumeMeta.saved_at,
+    }
+  }, [lastReading, resumeMeta])
 
   return (
     <div className="min-h-screen pb-24 lg:pb-0">
 
-      {/* ═══ DESKTOP ═══ */}
-      <div className="hidden lg:block max-w-[980px] mx-auto px-10 pt-24 pb-12">
+      {/* ═══ W2 精读工作台：桌面与窄屏共用同一条产品路径 ═══ */}
+      <div className={`${SHOW_LEGACY_FEED ? 'hidden lg:block' : 'block'} max-w-[980px] mx-auto px-4 sm:px-6 lg:px-10 pt-20 sm:pt-24 pb-12`}>
 
         {/* ─── W2 header：日期 · 问候 · 一行「papermind 还记得」 ─── */}
-        <header className="mb-9">
+        <header className="mb-7 sm:mb-9">
           <p className="text-warm-gray text-xs mb-2.5 font-mono">{formatToday()}</p>
-          <h1 className="pm-page-title text-[40px] text-navy leading-[1.15] m-0">{greeting}</h1>
+          <h1 className="pm-page-title text-[36px] sm:text-[40px] text-navy leading-[1.15] m-0">{greeting}</h1>
           {memoryRecent && (
-            <div className="mt-5 max-w-[660px] flex items-start gap-2.5 text-[13px] leading-[1.75]">
+            <div className="mt-4 sm:mt-5 max-w-[660px] flex flex-col sm:flex-row items-start gap-1 sm:gap-2.5 text-[13px] leading-[1.75]">
               <span className="text-coral/75 mt-0.5 shrink-0 whitespace-nowrap">papermind 还记得</span>
               <span className="text-navy/70">
                 <span className={memoryExpanded ? '' : 'line-clamp-2'}>{memoryRecent}</span>
@@ -397,7 +412,7 @@ export default function Home() {
         </header>
 
         {/* ─── 放入论文 | 继续上次精读 ─── */}
-        <div className="grid grid-cols-[1fr_1fr] gap-6 mb-12 items-stretch">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 mb-10 sm:mb-12 items-stretch">
           <WorkbenchDeepReadCard
             query={quickQuery}
             setQuery={setQuickQuery}
@@ -410,12 +425,12 @@ export default function Home() {
             onOpenPaper={openPaperForDeepRead}
             onUploadPdf={uploadPdfForDeepRead}
           />
-          <WorkbenchResumeCard lastReading={lastReading} meta={resumeMeta}/>
+          <WorkbenchResumeCard lastReading={resumeReading} meta={resumeMeta}/>
         </div>
 
         {/* ─── 最近的精读工程 ─── */}
         <section>
-          <div className="flex items-baseline justify-between mb-4">
+          <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-2 mb-4">
             <h2 className="text-lg font-serif text-navy m-0">最近的精读工程</h2>
             <div className="flex items-center gap-4 text-[11px] text-warm-gray">
               {libraryPapers.length > 0 && <span>{readingCount} 在读 · {doneCount} 读过</span>}
@@ -578,8 +593,8 @@ export default function Home() {
         </>)}
       </div>
 
-      {/* ═══ MOBILE ═══ */}
-      <MobileHome
+      {/* 旧推荐首页仅作为显式回退保留；正常路径在所有宽度统一使用 W2。 */}
+      {SHOW_LEGACY_FEED && <MobileHome
         greeting={greeting}
         memoryHighlight={memoryHighlight}
         total={total}
@@ -613,18 +628,18 @@ export default function Home() {
         searchDebug={searchDebug}
         showSearchDebug={showSearchDebug}
         setShowSearchDebug={setShowSearchDebug}
-      />
+      />}
 
       <Navbar/>
 
-      {/* Home tour 只在有发现流卡片的场景生效（桌面工作台无卡片，仅移动端保留） */}
-      {homeTourStep === 1 && (SHOW_LEGACY_FEED || window.innerWidth < 1024) && (
+      {/* Home tour 只在显式恢复旧发现流时生效。 */}
+      {homeTourStep === 1 && SHOW_LEGACY_FEED && (
         <TourBubble
           targetRef={window.innerWidth >= 1024 ? desktopFirstCardRef : firstCardRef}
           text="这是 AI 根据你的研究方向精选的论文，点击查看详情和 AI 解读"
           step={1} total={2} placement="bottom" onNext={advanceHomeTour}/>
       )}
-      {homeTourStep === 2 && (SHOW_LEGACY_FEED || window.innerWidth < 1024) && (
+      {homeTourStep === 2 && SHOW_LEGACY_FEED && (
         <TourBubble
           targetRef={window.innerWidth >= 1024 ? desktopNextPageRef : nextPageRef}
           text="看完这批？点这里获取下一批推荐"
@@ -672,7 +687,7 @@ function WorkbenchDeepReadCard({
       onDragOver={(event) => { event.preventDefault(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
-      className={`flex flex-col bg-warm-white/70 border-2 border-dashed rounded-3xl p-7 transition ${dragOver ? 'border-coral/70 bg-warm-white' : 'border-coral/35'}`}
+      className={`flex flex-col bg-warm-white/70 border-2 border-dashed rounded-3xl p-5 sm:p-7 transition ${dragOver ? 'border-coral/70 bg-warm-white' : 'border-coral/35'}`}
     >
       <div className="flex items-center gap-3.5 mb-5">
         <span className="w-12 h-12 rounded-2xl bg-coral/10 text-coral flex items-center justify-center text-2xl shrink-0">＋</span>
@@ -756,16 +771,17 @@ function WorkbenchDeepReadCard({
 function WorkbenchResumeCard({ lastReading, meta }) {
   if (!lastReading) {
     return (
-      <div className="flex flex-col justify-center bg-warm-white/70 border border-cream-dark/60 rounded-3xl p-7 text-center">
+      <div className="flex flex-col justify-center bg-warm-white/70 border border-cream-dark/60 rounded-3xl p-5 sm:p-7 text-center min-h-40">
         <p className="text-[13.5px] text-navy/70 m-0">还没有进行中的精读</p>
-        <p className="text-[12.5px] text-warm-gray mt-1.5 m-0">从左边放入一篇，接着读会出现在这里。</p>
+        <p className="text-[12.5px] text-warm-gray mt-1.5 m-0">放入一篇论文后，接着读会出现在这里。</p>
       </div>
     )
   }
   const status = meta ? deriveReadStatus(meta) : '在读'
-  const to = `/paper/${lastReading._cache_index ?? lastReading.index ?? 0}`
+  const paperId = meta?.id ?? lastReading._cache_index ?? lastReading.index ?? 0
+  const to = `/paper/${paperId}${meta ? '?library=1' : ''}`
   return (
-    <div className="bg-navy text-warm-white rounded-3xl p-7 relative overflow-hidden flex flex-col">
+    <div className="bg-navy text-warm-white rounded-3xl p-5 sm:p-7 relative overflow-hidden flex flex-col min-h-52">
       <div className="absolute -right-8 -top-10 w-40 h-40 rounded-full bg-navy-light/40 blur-2xl"></div>
       <div className="relative flex flex-col flex-1">
         <div className="flex items-center justify-between mb-4">
@@ -775,17 +791,17 @@ function WorkbenchResumeCard({ lastReading, meta }) {
           </span>
         </div>
         <h3 className="text-[16px] leading-relaxed font-medium line-clamp-2 m-0">{lastReading.title}</h3>
-        <div className="mt-auto pt-5 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 text-[11px] text-warm-white/60">
+        <div className="mt-auto pt-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-warm-white/60">
             {meta && <span>◆ {meta.card_count || 0} 卡片</span>}
             {meta && <span>✎ {meta.note_count || 0} 笔记</span>}
             <span>{lastReading.readAt ? formatTimeAgo(lastReading.readAt) : '刚才'}</span>
           </div>
           <Link
             to={to}
-            state={{ paper: lastReading }}
+            state={{ paper: meta || lastReading }}
             onClick={() => sessionStorage.setItem('home-scroll-y', String(window.scrollY))}
-            className="bg-coral text-warm-white text-[13px] font-medium rounded-full px-5 py-2 hover:bg-coral-light transition shadow-[0_4px_16px_rgba(232,135,122,0.4)] whitespace-nowrap no-underline"
+            className="self-start sm:self-auto bg-coral text-warm-white text-[13px] font-medium rounded-full px-5 py-2 hover:bg-coral-light transition shadow-[0_4px_16px_rgba(232,135,122,0.4)] whitespace-nowrap no-underline"
           >
             接着读 →
           </Link>
@@ -804,7 +820,7 @@ function WorkbenchProjectRow({ p }) {
       to={`/paper/${p.id}?library=1`}
       state={{ paper: p }}
       onClick={() => sessionStorage.setItem('home-scroll-y', String(window.scrollY))}
-      className="group block bg-warm-white rounded-2xl border border-cream-dark/50 p-5 hover:shadow-md hover:-translate-y-0.5 transition no-underline"
+      className="group block bg-warm-white rounded-2xl border border-cream-dark/50 p-4 sm:p-5 hover:shadow-md hover:-translate-y-0.5 transition no-underline"
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
@@ -820,13 +836,13 @@ function WorkbenchProjectRow({ p }) {
           {p.has_export ? <span className="inline-block mt-2 text-[10px] text-mint-deep bg-mint/15 rounded-full px-2 py-0.5">已导出</span> : null}
         </div>
       </div>
-      <div className="mt-3 pt-3 border-t border-cream-dark/40 flex items-center justify-between">
-        <div className="flex items-center gap-3 text-[11px] text-warm-gray">
+      <div className="mt-3 pt-3 border-t border-cream-dark/40 flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-warm-gray">
           <span>◆ {p.card_count || 0} 卡片</span>
           <span>✎ {p.note_count || 0} 笔记</span>
           <span>◌ {p.chat_count || 0} 对话</span>
         </div>
-        <span className="text-[11px] text-coral opacity-0 group-hover:opacity-100 transition">打开工作台 →</span>
+        <span className="hidden sm:inline text-[11px] text-coral opacity-0 group-hover:opacity-100 transition whitespace-nowrap">打开工作台 →</span>
       </div>
     </Link>
   )

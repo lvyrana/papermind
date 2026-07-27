@@ -124,6 +124,40 @@ npm run dev
 
 此时 Vite 会把 `/api` 代理到本机 `8000` 端口。
 
+## 数据与备份（本地运行）
+
+所有用户数据都在本地文件里，请纳入备份习惯：
+
+| 内容 | 位置 |
+|---|---|
+| 主数据库（收藏/笔记/对话/卡片） | `papermind/data/paperdiary.db` |
+| 上传的 PDF | `papermind/data/pdfs/` |
+| 汇报板中的图表截图 | `papermind/data/figures/` |
+| 用户级 LLM 配置 | `papermind/data/config.json` |
+
+备份与恢复：
+
+```bash
+# 备份数据库（后端运行中也可安全执行）
+bash scripts/backup_local.sh
+
+# 同时打包上传的 PDF 和图表截图
+bash scripts/backup_local.sh --with-files
+
+# 可选：直接备份到移动硬盘或受控云盘目录
+BACKUP_DIR="/Volumes/你的备份盘/PaperMind" bash scripts/backup_local.sh --with-files
+
+# 恢复：停止后端后，解压 backups/ 里的 .db.gz 覆盖 papermind/data/paperdiary.db
+```
+
+产物默认在 `backups/` 目录（已 gitignore），保留 30 天，可用 `RETENTION_DAYS` 调整。`config.json` 可能包含 API Key，不会进入未加密文件包；迁移时应单独、安全地重新配置密钥。
+
+## 小范围试用
+
+给同事/同学开放试用前，请阅读 [docs/trial-guide.md](docs/trial-guide.md)——包含试用者使用须知、隐私说明（数据存储位置、内容会发送至第三方 LLM API）、主持人准备清单和反馈收集模板。
+
+当前产品验证采用“中文核心闭环优先”路线。先按 [中文文献精读验收方案](docs/chinese-reading-validation.md) 验证研究逻辑、证据忠实、原文回溯和沉淀价值；通过后再增加英文术语、长句拆解和翻译辅助。
+
 ## 部署（ECS）
 
 仓库内已提供一套面向 Ubuntu 22.04 + ECS 的最小部署文件：
