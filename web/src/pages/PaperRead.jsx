@@ -1122,11 +1122,21 @@ export default function PaperRead() {
             {selection && (
               <div
                 className="fixed z-50 flex items-center gap-1.5"
-                style={{
-                  left: selection.x,
-                  top: selection.y - 12,
-                  transform: 'translate(-50%, -100%)',
-                }}>
+                style={(() => {
+                  // 钳进视口：长选区/贴边选中时，浮窗曾会被顶出屏幕（看起来像「没弹出」）
+                  const margin = 12
+                  const x = Math.min(Math.max(selection.x, 130), window.innerWidth - 130)
+                  const aboveTop = selection.y - margin
+                  // 顶部空间不够就翻到选区下方
+                  const flipDown = aboveTop < 64
+                  return {
+                    left: x,
+                    top: flipDown
+                      ? Math.min(selection.y + 26, window.innerHeight - 56)
+                      : Math.min(aboveTop, window.innerHeight - 16),
+                    transform: flipDown ? 'translate(-50%, 0)' : 'translate(-50%, -100%)',
+                  }
+                })()}>
                 <button
                   onClick={askAboutSelection}
                   className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-navy text-warm-white text-sm font-medium shadow-[0_6px_22px_-6px_rgba(30,58,95,.45)] hover:bg-navy-light transition-all">
@@ -1900,11 +1910,21 @@ function SavedNoteItem({ note, onDelete }) {
         </span>
         <button onClick={onDelete} className="hover:text-coral transition-colors">删除</button>
       </div>
-      <p
-        className="mt-1 text-[13px] text-navy whitespace-pre-wrap leading-relaxed overflow-hidden"
+      {/* 带读/对话总结存下来的笔记本身是 markdown，纯文本直出会露出 ** 星号 */}
+      <div
+        className="mt-1 text-[13px] text-navy leading-relaxed overflow-hidden"
         style={!expanded && long ? { display: '-webkit-box', WebkitLineClamp: 5, WebkitBoxOrient: 'vertical' } : undefined}>
-        {note.content}
-      </p>
+        <ReactMarkdown components={{
+          p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
+          strong: ({ children }) => <strong className="font-semibold text-navy">{children}</strong>,
+          ul: ({ children }) => <ul className="list-disc pl-4 space-y-0.5 mb-1.5">{children}</ul>,
+          ol: ({ children }) => <ol className="list-decimal pl-4 space-y-0.5 mb-1.5">{children}</ol>,
+          li: ({ children }) => <li className="pl-0.5">{children}</li>,
+          h1: ({ children }) => <p className="font-semibold text-navy mt-2 mb-1 first:mt-0">{children}</p>,
+          h2: ({ children }) => <p className="font-semibold text-navy mt-2 mb-1 first:mt-0">{children}</p>,
+          h3: ({ children }) => <p className="font-semibold text-navy mt-2 mb-1 first:mt-0">{children}</p>,
+        }}>{note.content}</ReactMarkdown>
+      </div>
       {long && (
         <button onClick={() => setExpanded(e => !e)}
           className="mt-1 text-[11px] text-coral hover:text-coral-deep">
@@ -1942,9 +1962,11 @@ function QuoteCard({ quote, onJump, onDelete }) {
           <X size={12}/>
         </button>
       )}
-      <p className="border-l-2 border-coral pl-2.5 italic text-[12.5px] leading-snug text-navy/78 mr-8 mb-2"
-        style={{ fontFamily: '"Source Serif Pro", Georgia, serif' }}>
-        &ldquo;{quote.text.length > 220 ? quote.text.slice(0, 220) + '…' : quote.text}&rdquo;
+      {/* 右栏窄：只留 2 行提示定位，核对原文点卡片跳回 PDF */}
+      <p className="border-l-2 border-coral pl-2.5 italic text-[12px] leading-snug text-navy/78 mr-8 mb-2 line-clamp-2"
+        style={{ fontFamily: '"Source Serif Pro", Georgia, serif' }}
+        title={quote.text}>
+        &ldquo;{quote.text}&rdquo;
       </p>
       <p className="text-[11px] text-warm-gray font-mono tracking-wider uppercase mb-2">
         <span className="text-coral-deep">P.{quote.page}</span>

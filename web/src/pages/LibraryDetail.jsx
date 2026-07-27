@@ -598,9 +598,18 @@ function NoteCard({ note, onSave, onDelete }) {
           </p>
         </>
       ) : (
-        <p className="text-sm text-navy/80 leading-relaxed whitespace-pre-wrap cursor-text" onClick={() => setEditing(true)}>
-          {content || <span className="text-warm-gray/40 italic">点击编辑</span>}
-        </p>
+        // 带读/对话总结存下来的笔记是 markdown，纯文本直出会露出 ** 星号
+        <div className="text-sm text-navy/80 leading-relaxed cursor-text" onClick={() => setEditing(true)}>
+          {content ? (
+            <ReactMarkdown components={{
+              p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
+              strong: ({ children }) => <strong className="font-semibold text-navy">{children}</strong>,
+              ul: ({ children }) => <ul className="list-disc pl-4 space-y-0.5 mb-1.5">{children}</ul>,
+              ol: ({ children }) => <ol className="list-decimal pl-4 space-y-0.5 mb-1.5">{children}</ol>,
+              li: ({ children }) => <li className="pl-0.5">{children}</li>,
+            }}>{content}</ReactMarkdown>
+          ) : <span className="text-warm-gray/40 italic">点击编辑</span>}
+        </div>
       )}
     </div>
   )

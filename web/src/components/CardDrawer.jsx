@@ -266,10 +266,11 @@ function ReadingCard({ card, onEdit, onDelete, onJump, onSendToBoard }) {
       </div>
       {card.title && <p className="text-[13px] font-medium text-navy leading-snug mb-1">{card.title}</p>}
       <p className="text-[12px] text-navy/75 leading-relaxed whitespace-pre-wrap">{card.content}</p>
+      {/* 原文不在这里回抄：右栏窄，且卡片已有 P.x 锚点可跳回原文。
+          需要核对原文时点锚点，或悬停看完整引用。 */}
       {card.quote && (
-        <p className={`border-l-2 ${t.border} pl-2 italic text-[11px] leading-snug text-warm-gray mt-2`}
-          style={{ fontFamily: '"Source Serif Pro", Georgia, serif' }}>
-          &ldquo;{card.quote.length > 100 ? card.quote.slice(0, 100) + '…' : card.quote}&rdquo;
+        <p className="mt-1.5 text-[10px] text-warm-gray/55 truncate" title={card.quote}>
+          原文 · {card.quote.slice(0, 24)}…
         </p>
       )}
     </div>

@@ -533,7 +533,8 @@ const PdfViewer = forwardRef(function PdfViewer(
     const handler = () => {
       const sel = window.getSelection()
       const text = sel?.toString().trim()
-      if (!text || text.length < 8) {
+      // 中文术语很短（「静脉危象」才 4 字），阈值按 8 会把选词直接吞掉
+      if (!text || text.length < 2) {
         onSelection(null)
         return
       }
@@ -578,8 +579,15 @@ const PdfViewer = forwardRef(function PdfViewer(
         // 视口坐标，配合浮窗的 position:fixed 使用；
         // 之前加 scrollTop 换算成滚动内容坐标，但浮窗渲染在外层
         // 不滚动的容器里，翻页后浮窗会被定位到屏幕外
-        x: rect.left + rect.width / 2,
-        y: rect.top,
+        //
+        // 跨页/跨栏的长选区，整体 boundingRect 的顶边可能远在视口上方（负值），
+        // 浮窗会被顶出屏幕 → 表现为「划了词但没弹出选项」。
+        // 改用选区最后一个矩形（鼠标松开处）定位，并交给上层做视口钳制。
+        ...(() => {
+          const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0)
+          const last = rects[rects.length - 1] || rect
+          return { x: last.left + last.width / 2, y: last.top }
+        })(),
       })
     }
     // PDF 滚动后选区位置已变，收起浮窗避免悬在错误位置
