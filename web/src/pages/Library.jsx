@@ -252,8 +252,8 @@ export default function Library() {
         </main>
       </div>
 
-      {/* ── 书架 · 桌面（单栏 1080：页头 + 画像卡 + 筛选 + 精读工程列表 + 导出成果）── */}
-      <div className="hidden lg:block max-w-[1080px] mx-auto px-10 pt-24 pb-16">
+      {/* ── 书架 · 桌面（单栏：页头 + 画像卡 + 筛选 + 精读工程列表 + 导出成果）── */}
+      <div className="hidden lg:block max-w-[1280px] mx-auto px-10 pt-24 pb-16">
         <div className="mb-6">
           <h1 className="pm-page-title text-[34px] text-navy leading-tight">我的书架</h1>
           <p className="text-warm-gray text-xs mt-2">
@@ -267,24 +267,26 @@ export default function Library() {
 
         <div className="flex items-center justify-between gap-4 mb-4 mt-8">
           <h2 className="text-lg font-serif text-navy m-0">精读工程</h2>
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray/40" />
-              <input value={search} onChange={e => setSearch(e.target.value)}
-                placeholder="搜索标题…"
-                className="w-[200px] bg-warm-white rounded-full pl-8 pr-3 py-1.5 text-xs text-navy border border-cream-dark/60 outline-none focus:border-coral/40 placeholder:text-warm-gray/40 transition" />
+          {papers.length > 0 && (
+            <div className="flex items-center gap-3">
+              <div className="relative">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-warm-gray/40" />
+                <input value={search} onChange={e => setSearch(e.target.value)}
+                  placeholder="搜索标题…"
+                  className="w-[220px] bg-warm-white rounded-full pl-8 pr-3 py-1.5 text-xs text-navy border border-cream-dark/60 outline-none focus:border-coral/40 placeholder:text-warm-gray/40 transition" />
+              </div>
+              <div className="flex gap-2 text-[11px]">
+                {['全部', '在读', '读过', '有导出'].map(t => (
+                  <button key={t} onClick={() => setShelfFilter(t)}
+                    className={`px-3 py-1.5 rounded-full transition ${
+                      shelfFilter === t ? 'bg-navy text-warm-white' : 'text-warm-gray border border-cream-dark hover:text-navy'
+                    }`}>
+                    {t}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="flex gap-2 text-[11px]">
-              {['全部', '在读', '读过', '有导出'].map(t => (
-                <button key={t} onClick={() => setShelfFilter(t)}
-                  className={`px-3 py-1.5 rounded-full transition ${
-                    shelfFilter === t ? 'bg-navy text-warm-white' : 'text-warm-gray border border-cream-dark hover:text-navy'
-                  }`}>
-                  {t}
-                </button>
-              ))}
-            </div>
-          </div>
+          )}
         </div>
 
         {loading && papers.length === 0 && (
@@ -292,10 +294,18 @@ export default function Library() {
         )}
 
         {!loading && papers.length === 0 && (
-          <div className="text-center py-24">
-            <BookOpen size={40} className="text-cream-dark mx-auto mb-4" />
-            <p className="text-warm-gray text-sm mb-4">还没有精读工程</p>
-            <Link to="/" className="text-coral text-sm hover:underline">去首页放入一篇论文</Link>
+          <div className="rounded-2xl border border-cream-dark/60 bg-warm-white/70 px-6 py-16 text-center">
+            <BookOpen size={36} className="text-navy/15 mx-auto mb-4" />
+            <p className="text-navy/75 text-[15px] mb-1.5">还没有精读工程</p>
+            <p className="text-warm-gray text-[13px] mb-5">放入第一篇论文，开始你的精读书架。</p>
+            <button
+              type="button"
+              onClick={() => setShowAddModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-coral px-4 py-2.5 text-sm font-medium text-warm-white hover:bg-coral-light transition-colors"
+            >
+              <Plus size={14} />
+              放入一篇论文
+            </button>
           </div>
         )}
 
@@ -311,10 +321,12 @@ export default function Library() {
           <div className="text-center py-16 text-warm-gray/60 text-sm">没有符合条件的精读工程</div>
         )}
 
-        <button onClick={() => setShowAddModal(true)}
-          className="mt-6 w-full py-3 rounded-2xl border border-dashed border-coral/40 text-coral text-sm flex items-center justify-center gap-2 hover:bg-coral/5 transition">
-          <Plus size={14} /> 放入一篇论文
-        </button>
+        {papers.length > 0 && (
+          <button onClick={() => setShowAddModal(true)}
+            className="mt-6 w-full py-3 rounded-2xl border border-dashed border-coral/40 text-coral text-sm flex items-center justify-center gap-2 hover:bg-coral/5 transition">
+            <Plus size={14} /> 放入一篇论文
+          </button>
+        )}
       </div>
 
       <Navbar />
