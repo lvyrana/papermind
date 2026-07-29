@@ -3,7 +3,10 @@ import { Presentation, X, Trash2, Loader2, Download, ChevronRight, Pencil } from
 import { apiPatch, apiDelete, API_BASE, getUserId } from '../api'
 
 /* ─────────────────────────────────────────────────────────────
-   Presentation Board — 组会汇报板（PaperMind v0.12.0）
+   Presentation Board — 汇报板（PaperMind v0.12.0）
+   命名：原为「组会汇报板」。它 90% 的时间在帮你读（空板块=还没读到的部分），
+   只有最后一步用来讲；且「组会」假定你有 lab 周会，比实际用途窄，
+   会让没有组会的用户以为这块与自己无关。故去掉场景假设，保留「汇报」。
    ─────────────────────────────────────────────────────────────
    把组会 PPT 倒转为精读的容器：打开论文即有汇报骨架，
    划词/带读/卡片/对话都可「送到汇报」，空板块灰显即阅读进度。
@@ -57,7 +60,7 @@ export async function downloadBoardMarp(paperRowid, title) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `组会汇报-${(title || 'paper').slice(0, 40)}.md`
+  a.download = `汇报-${(title || 'paper').slice(0, 40)}.md`
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -74,7 +77,7 @@ export function BoardRail({ board, onOpen, onExport, exporting, variant = 'secti
       : 'px-6 py-4 border-b border-navy/5'}>
       <div className="flex items-center justify-between mb-2.5">
         <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] tracking-widest uppercase text-coral">
-          <Presentation size={11}/> 组会汇报板
+          <Presentation size={11}/> 汇报板
         </span>
         <span className="font-mono text-[10px] text-warm-gray/60">{filled}/{total} 板块有内容</span>
       </div>
@@ -208,7 +211,7 @@ export default function BoardDrawer({ paper, board, open, onClose, onRefresh, on
         <div className="sticky top-0 z-10 bg-cream/95 backdrop-blur px-6 py-4 border-b border-navy/8 flex items-center justify-between">
           <div className="min-w-0">
             <p className="m-0 font-mono text-[10px] tracking-widest uppercase text-coral inline-flex items-center gap-1.5">
-              <Presentation size={11}/> 组会汇报板
+              <Presentation size={11}/> 汇报板
             </p>
             <p className="m-0 mt-0.5 text-[13px] text-navy font-medium truncate">{paper?.title}</p>
           </div>
