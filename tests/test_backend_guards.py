@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import hashlib
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +27,26 @@ class HeaderRequest:
     def __init__(self, user_id: str = USER_A, cookie_user_id: str = ""):
         self.headers = {"X-User-ID": user_id} if user_id else {}
         self.cookies = {"papermind-uid": cookie_user_id} if cookie_user_id else {}
+
+
+class ZoteroPluginDistributionTests(unittest.TestCase):
+    def test_update_manifest_matches_packaged_xpi(self):
+        response = api.api_zotero_plugin_update()
+        update = response["addons"]["papermind-connector@papermind.local"]["updates"][0]
+        xpi_path = ROOT / "zotero-plugin" / "papermind-connector.xpi"
+        plugin_manifest = json.loads(
+            (ROOT / "zotero-plugin" / "manifest.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(update["version"], plugin_manifest["version"])
+        self.assertEqual(
+            update["update_hash"],
+            "sha256:" + hashlib.sha256(xpi_path.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            update["update_link"],
+            "https://papermindapp.com/api/zotero-plugin/papermind-connector.xpi",
+        )
 
 
 class LLMRouterTests(unittest.IsolatedAsyncioTestCase):

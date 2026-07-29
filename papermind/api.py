@@ -12,6 +12,7 @@ import httpx
 import threading
 import re
 import time
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Optional
@@ -100,7 +101,7 @@ app.add_middleware(
     allow_origins=_allowed_origins,
     allow_credentials=False,   # 跨域仍用 header；cookie 仅作为同源 PDF/图片请求的回退。
     allow_methods=["GET", "POST", "DELETE", "PATCH", "HEAD"],
-    allow_headers=["Content-Type", "X-User-ID"],
+    allow_headers=["Content-Type", "X-User-ID", "Authorization"],
 )
 
 # 启动时初始化数据库
@@ -330,8 +331,47 @@ def api_save_settings(request: Request):
 
 @app.get("/api/zotero-plugin/update.json")
 def api_zotero_plugin_update():
-    """Zotero 插件 update_url 的应答（manifest 必填字段，返回"无更新"即可）"""
-    return {"addons": {"papermind-connector@papermind.local": {"updates": []}}}
+    """返回当前 Zotero 插件版本和安装包校验值。"""
+    plugin_dir = Path(__file__).resolve().parent.parent / "zotero-plugin"
+    manifest_path = plugin_dir / "manifest.json"
+    xpi_path = plugin_dir / "papermind-connector.xpi"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        zotero_manifest = manifest["applications"]["zotero"]
+        digest = hashlib.sha256(xpi_path.read_bytes()).hexdigest()
+    except (OSError, KeyError, json.JSONDecodeError) as exc:
+        raise FastAPIHTTPException(status_code=503, detail="plugin package unavailable") from exc
+
+    return {
+        "addons": {
+            zotero_manifest["id"]: {
+                "updates": [{
+                    "version": manifest["version"],
+                    "update_link": "https://papermindapp.com/api/zotero-plugin/papermind-connector.xpi",
+                    "update_hash": f"sha256:{digest}",
+                    "applications": {
+                        "zotero": {
+                            "strict_min_version": zotero_manifest["strict_min_version"],
+                            "strict_max_version": zotero_manifest["strict_max_version"],
+                        },
+                    },
+                }],
+            },
+        },
+    }
+
+
+@app.get("/api/zotero-plugin/papermind-connector.xpi")
+def api_zotero_plugin_download():
+    """提供 Zotero 插件安装包；该路径不接触任何用户数据。"""
+    xpi_path = Path(__file__).resolve().parent.parent / "zotero-plugin" / "papermind-connector.xpi"
+    if not xpi_path.is_file():
+        raise FastAPIHTTPException(status_code=404, detail="plugin package not found")
+    return FileResponse(
+        xpi_path,
+        media_type="application/x-xpinstall",
+        filename="papermind-connector.xpi",
+    )
 
 
 # ========== 自定义 LLM 通道 ==========
