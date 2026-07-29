@@ -24,7 +24,9 @@ import * as pdfjsLib from 'pdfjs-dist'
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
 if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc
+  // Query version also invalidates any browser-cached response that predates
+  // the production .mjs MIME rule.
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `${workerSrc}?v=5.7.284-1`
 }
 
 // 引入 pdfjs 自带的 text layer 样式（让 textDivs 透明覆盖在 canvas 上）
