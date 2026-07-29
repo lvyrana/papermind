@@ -855,13 +855,32 @@ const PdfViewer = forwardRef(function PdfViewer(
     }, 420)
   }, [goToPage])
 
+  const capturePageImage = useCallback((pageNum = currentPage) => {
+    const source = pageRefs.current[Number(pageNum)]?.canvas
+    if (!source) return ''
+    const maxPixels = 3_000_000
+    const ratio = Math.min(1, Math.sqrt(maxPixels / Math.max(1, source.width * source.height)))
+    if (ratio === 1) return source.toDataURL('image/jpeg', 0.9)
+
+    const output = document.createElement('canvas')
+    output.width = Math.max(1, Math.round(source.width * ratio))
+    output.height = Math.max(1, Math.round(source.height * ratio))
+    const context = output.getContext('2d')
+    if (!context) return ''
+    context.fillStyle = '#ffffff'
+    context.fillRect(0, 0, output.width, output.height)
+    context.drawImage(source, 0, 0, output.width, output.height)
+    return output.toDataURL('image/jpeg', 0.9)
+  }, [currentPage])
+
   useImperativeHandle(ref, () => ({
     goToPage,
     highlightQuote,
+    capturePageImage,
     getCurrentPage: () => currentPage,
     getNumPages: () => numPages,
     setScale,
-  }), [goToPage, highlightQuote, currentPage, numPages])
+  }), [goToPage, highlightQuote, capturePageImage, currentPage, numPages])
 
   // ── render ──
   return (

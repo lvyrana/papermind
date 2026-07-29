@@ -119,6 +119,67 @@ class SelectionOcrTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(content[0]["image_url"]["url"], image)
         self.assertIn("不要总结、改写、补充", content[1]["text"])
 
+    async def test_page_ocr_uses_full_page_instruction_and_larger_output_budget(self):
+        image = "data:image/jpeg;base64," + base64.b64encode(b"fake-page").decode()
+        llm_call = AsyncMock(return_value=(
+            "1 前言\n现有问答系统仍存在准确性不足。",
+            "qwen",
+            "qwen3.5-ocr",
+        ))
+        with patch.object(api, "_has_llm_config", return_value=True), \
+             patch.object(api, "check_rate_limit", return_value=True), \
+             patch.object(api, "increment_rate_limit"), \
+             patch.object(api, "_llm_chat_complete_async", llm_call):
+            result = await api.api_ocr_selection(
+                api.OcrSelectionRequest(image_data_url=image, scope="page"),
+                HeaderRequest(),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(llm_call.await_args.kwargs["max_tokens"], 4000)
+        prompt = llm_call.await_args.args[0][0]["content"][1]["text"]
+        self.assertIn("这一页", prompt)
+        self.assertIn("按阅读顺序", prompt)
+
+    async def test_page_ocr_caches_text_only_for_an_owned_paper(self):
+        image = "data:image/jpeg;base64," + base64.b64encode(b"fake-page").decode()
+        llm_call = AsyncMock(return_value=(
+            "2 前言\n现有问答系统仍存在准确性不足。",
+            "qwen",
+            "qwen3.5-ocr",
+        ))
+        with patch.object(api, "_get_owned_paper_or_none", return_value={"id": 4}), \
+             patch.object(api, "_has_llm_config", return_value=True), \
+             patch.object(api, "check_rate_limit", return_value=True), \
+             patch.object(api, "increment_rate_limit"), \
+             patch.object(api, "save_paper_page_ocr") as save_ocr, \
+             patch.object(api, "_llm_chat_complete_async", llm_call):
+            result = await api.api_ocr_selection(
+                api.OcrSelectionRequest(
+                    image_data_url=image,
+                    scope="page",
+                    paper_rowid=4,
+                    page_number=2,
+                ),
+                HeaderRequest(),
+            )
+
+        self.assertTrue(result["ok"])
+        save_ocr.assert_called_once_with(
+            4,
+            2,
+            "2 前言\n现有问答系统仍存在准确性不足。",
+            "qwen3.5-ocr",
+        )
+
+    def test_cached_ocr_pages_require_paper_ownership(self):
+        with patch.object(api, "_get_owned_paper_or_none", return_value=None), \
+             patch.object(api, "get_paper_page_ocr") as get_pages:
+            result = api.api_get_paper_ocr_pages(4, HeaderRequest(USER_B))
+
+        self.assertEqual(result, {"ok": False, "error": "not found"})
+        get_pages.assert_not_called()
+
     async def test_card_draft_with_quote_excludes_abstract_and_forbids_added_facts(self):
         llm_call = AsyncMock(return_value=(
             '{"title":"训练流程","content":"采用监督微调和检索增强生成。"}',
@@ -162,6 +223,35 @@ class SelectionOcrTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertIn("无法可靠提取", result["error"])
         save_card.assert_not_called()
+
+    def test_self_test_discards_garbled_page_and_quote_from_corpus(self):
+        garbled = r'W-XYZ[E\]^_`abcBCEdefg"OhijklmXnopqrEabcBCsAtuEvwBC'
+        with patch.object(api, "get_cards", return_value=[]), \
+             patch.object(api, "get_quotes", return_value=[{"text": garbled, "page": 2}]), \
+             patch.object(api, "get_or_create_board", return_value={"sections": []}), \
+             patch.object(api, "get_board_items", return_value=[]):
+            sources, corpus = api._build_source_context(
+                4,
+                "现有问答系统在准确性和可溯源性方面存在不足。",
+                garbled,
+            )
+
+        self.assertNotIn(garbled, sources)
+        self.assertNotIn(garbled, corpus)
+        self.assertIn("准确性和可溯源性", corpus)
+
+    def test_anchor_page_is_derived_from_verified_full_text(self):
+        corpus = (
+            "[第 1 页]\n摘要与关键词。\n\n"
+            "[第 2 页]\n然而，通用的大语言模型在回答医学问题时准确性和可溯源性不足。\n\n"
+            "[第 3 页]\n本研究采用监督微调和检索增强生成技术。"
+        )
+
+        self.assertEqual(
+            api._find_anchor_page("回答医学问题时准确性和可溯源性不足", corpus),
+            2,
+        )
+        self.assertIsNone(api._find_anchor_page("原文中不存在的句子", corpus))
 
 
 class MemoryServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -426,12 +516,28 @@ class DeviceIsolationTests(unittest.TestCase):
             self.assertEqual([paper["id"] for paper in database.get_saved_papers(USER_A)], [first_id])
             self.assertEqual([paper["id"] for paper in database.get_saved_papers(USER_B)], [second_id])
 
+    def test_page_ocr_cache_upserts_and_returns_pages_in_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             patch.object(database, "DB_PATH", Path(temp_dir) / "ocr-cache.db"):
+            database.init_db()
+            paper_id = database.save_paper({"title": "OCR paper"}, USER_A)
+            database.save_paper_page_ocr(paper_id, 2, "旧的第二页", "model-a")
+            database.save_paper_page_ocr(paper_id, 1, "第一页", "model-a")
+            database.save_paper_page_ocr(paper_id, 2, "新的第二页", "model-b")
+
+            pages = database.get_paper_page_ocr(paper_id)
+
+            self.assertEqual([page["page_number"] for page in pages], [1, 2])
+            self.assertEqual(pages[1]["text"], "新的第二页")
+            self.assertEqual(pages[1]["model"], "model-b")
+
     def test_deleting_paper_removes_self_test_and_detaches_history(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
              patch.object(database, "DB_PATH", Path(temp_dir) / "cleanup.db"):
             database.init_db()
             paper_id = database.save_paper({"title": "Cleanup paper"}, USER_A)
             database.init_self_test(paper_id)
+            database.save_paper_page_ocr(paper_id, 2, "缓存的第二页正文", "qwen3.5-ocr")
             database.record_reading(paper_id, "Cleanup paper", USER_A)
             database.record_method_gap(USER_A, "selection bias", paper_id)
 
@@ -442,6 +548,13 @@ class DeviceIsolationTests(unittest.TestCase):
                 self.assertEqual(
                     conn.execute(
                         "SELECT COUNT(*) FROM self_test_sessions WHERE paper_rowid = ?",
+                        (paper_id,),
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM paper_page_ocr WHERE paper_rowid = ?",
                         (paper_id,),
                     ).fetchone()[0],
                     0,

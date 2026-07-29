@@ -15,6 +15,11 @@ import CardDrawer from '../components/CardDrawer'
 import SocraticRail from '../components/SocraticRail'
 import BoardDrawer, { BoardRail, BoardSectionPicker, CARD_SECTION_MAP, downloadBoardMarp } from '../components/BoardDrawer'
 import { getSelectionToolbarPosition } from '../utils/selectionToolbar'
+import {
+  buildSelfTestSourceText,
+  getOcrClipboardText,
+  shouldOcrPage,
+} from '../utils/selectionText'
 
 /* ─────────────────────────────────────────────────────────────
    PaperRead — 三栏版 (PDF + 记忆通道)
@@ -135,6 +140,9 @@ export default function PaperRead() {
   const [chatLoading, setChatLoading] = useState(false)
   // 自测打开时，语音输入改灌进自测答题框（否则灌进对话输入框）
   const [selfTestOpen, setSelfTestOpen] = useState(false)
+  const [selfTestPreparing, setSelfTestPreparing] = useState(false)
+  const [selfTestPrepareError, setSelfTestPrepareError] = useState('')
+  const [selfTestPrepareProgress, setSelfTestPrepareProgress] = useState(null)
   const [speechDraft, setSpeechDraft] = useState('')
   const selfTestOpenRef = useRef(false)
   useEffect(() => { selfTestOpenRef.current = selfTestOpen }, [selfTestOpen])
@@ -216,6 +224,7 @@ export default function PaperRead() {
     return [...persisted, ...localOnly].map((q, index) => ({ ...q, n: index + 1 }))
   }, [structuredQuotes, chatMessages])
   const currentPageText = pdfPageTexts[currentPage] || ''
+  const selfTestSourceText = buildSelfTestSourceText(pdfPageTexts)
 
   useLayoutEffect(() => {
     const toolbar = selectionToolbarRef.current
@@ -277,6 +286,7 @@ export default function PaperRead() {
         const text = data.text.trim()
         setSelection(current => current === nextSelection ? {
           ...current,
+          rawText: current.text,
           text,
           needsOcr: false,
           selectionImage: '',
@@ -299,6 +309,93 @@ export default function PaperRead() {
         }
       })
   }, [])
+
+  useEffect(() => {
+    if (selection?.textSource !== 'ocr' || !selection.rawText || !selection.text) return
+    const handleCopy = (event) => {
+      const nativeText = window.getSelection()?.toString() || ''
+      const clipboardText = getOcrClipboardText(nativeText, selection)
+      if (!clipboardText) return
+      event.preventDefault()
+      event.clipboardData?.setData('text/plain', clipboardText)
+    }
+    document.addEventListener('copy', handleCopy)
+    return () => document.removeEventListener('copy', handleCopy)
+  }, [selection])
+
+  const openSelfTest = useCallback(async () => {
+    if (!savedRowId || selfTestPreparing) return
+    setSelfTestPrepareError('')
+    setSelfTestPrepareProgress(null)
+    const preferCjk = /[\u3400-\u9fff\uf900-\ufaff]/.test(paper?.title || '')
+    const totalPages = pdfViewerRef.current?.getNumPages() || 0
+    if (!totalPages) {
+      setSelfTestPrepareError('全文还没加载完成，请稍后再试。')
+      return
+    }
+    if (totalPages > 30) {
+      setSelfTestPrepareError(`这篇 PDF 有 ${totalPages} 页，全文自测暂支持 30 页以内。`)
+      return
+    }
+
+    setSelfTestPreparing(true)
+    try {
+      const cached = await apiGet(`/papers/${savedRowId}/ocr-pages`)
+      if (!cached.ok) {
+        setSelfTestPrepareError(cached.error || '全文缓存读取失败，请稍后重试。')
+        return
+      }
+
+      const nextTexts = { ...pdfPageTexts }
+      const cachedPageNumbers = new Set()
+      for (const page of cached.pages || []) {
+        if (page.page_number && page.text?.trim()) {
+          nextTexts[page.page_number] = page.text.trim()
+          cachedPageNumbers.add(Number(page.page_number))
+        }
+      }
+
+      const missingPages = Array.from({ length: totalPages }, (_, index) => index + 1)
+        .filter(page => (
+          !cachedPageNumbers.has(page)
+          && shouldOcrPage(nextTexts[page] || '', { preferCjk })
+        ))
+      setSelfTestPrepareProgress({ done: 0, total: missingPages.length })
+
+      for (let index = 0; index < missingPages.length; index += 1) {
+        const pageNumber = missingPages[index]
+        let pageImage = ''
+        for (let attempt = 0; attempt < 20 && !pageImage; attempt += 1) {
+          pageImage = pdfViewerRef.current?.capturePageImage(pageNumber) || ''
+          if (!pageImage) await new Promise(resolve => window.setTimeout(resolve, 150))
+        }
+        if (!pageImage) {
+          setSelfTestPrepareError(`第 ${pageNumber} 页还没加载完成，请稍后重试。`)
+          return
+        }
+        const data = await apiPost('/ocr/selection', {
+          image_data_url: pageImage,
+          scope: 'page',
+          paper_rowid: savedRowId,
+          page_number: pageNumber,
+        })
+        if (!data.ok || !data.text?.trim()) {
+          setSelfTestPrepareError(data.error || `第 ${pageNumber} 页识别失败，请稍后重试。`)
+          return
+        }
+        nextTexts[pageNumber] = data.text.trim()
+        setPdfPageTexts({ ...nextTexts })
+        setSelfTestPrepareProgress({ done: index + 1, total: missingPages.length })
+      }
+
+      setPdfPageTexts(nextTexts)
+      setSelfTestOpen(true)
+    } catch {
+      setSelfTestPrepareError('全文识别服务暂时不可用。已完成页面会保留，下次只补缺页。')
+    } finally {
+      setSelfTestPreparing(false)
+    }
+  }, [paper?.title, pdfPageTexts, savedRowId, selfTestPreparing])
 
   // ── load paper: 推荐缓存 → last-reading → 收藏库（Zotero 等外部深链冷打开） ──
   useEffect(() => {
@@ -1311,6 +1408,7 @@ export default function PaperRead() {
             jumpToPage={jumpToPage}
             currentPage={currentPage}
             currentPageText={currentPageText}
+            selfTestSourceText={selfTestSourceText}
             deepReadGuide={deepReadGuide}
             deepReadSource={deepReadSource}
             deepReadMode={deepReadMode}
@@ -1340,7 +1438,10 @@ export default function PaperRead() {
             setNotesOpen={setNotesOpen}
             savedRowId={savedRowId}
             selfTestOpen={selfTestOpen}
-            onOpenSelfTest={() => setSelfTestOpen(true)}
+            selfTestPreparing={selfTestPreparing}
+            selfTestPrepareError={selfTestPrepareError}
+            selfTestPrepareProgress={selfTestPrepareProgress}
+            onOpenSelfTest={openSelfTest}
             onCloseSelfTest={() => setSelfTestOpen(false)}
             onHandoffToChat={handoffToChat}
             onMakeCardFromSelfTest={makeCardFromSelfTest}
@@ -1516,11 +1617,12 @@ function MemoryChannel(props) {
     savedNotes, manualNoteId, onDeleteNote, notesOpen, setNotesOpen,
     cards, setCards, ensureSaved, cardSeed, setCardSeed,
     jumpToPage,
-    currentPage, currentPageText, deepReadGuide, deepReadSource,
+    currentPage, currentPageText, selfTestSourceText, deepReadGuide, deepReadSource,
     deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
     board, onOpenBoard, onExportBoard, boardExporting,
     onSendDeepReadToBoard, onSendCardToBoard, onDeleteQuote,
     savedRowId, selfTestOpen, onOpenSelfTest, onCloseSelfTest,
+    selfTestPreparing, selfTestPrepareError, selfTestPrepareProgress,
     onHandoffToChat, onMakeCardFromSelfTest,
     speechDraft, onClearSpeechDraft,
   } = props
@@ -1683,14 +1785,20 @@ function MemoryChannel(props) {
         <button
           type="button"
           onClick={onOpenSelfTest}
-          disabled={!savedRowId}
+          disabled={!savedRowId || selfTestPreparing}
           title={savedRowId ? '' : '收藏这篇后即可自测'}
           className="group w-full text-left bg-warm-white border border-cream-dark/60 rounded-2xl px-3.5 py-3 flex items-center gap-3 hover:border-coral/50 hover:shadow-sm transition disabled:opacity-55 disabled:cursor-not-allowed">
           <span className="w-8 h-8 rounded-xl bg-coral/10 text-coral flex items-center justify-center text-[15px] shrink-0">?</span>
           <div className="min-w-0 flex-1">
-            <p className="text-[12.5px] font-medium text-navy leading-tight m-0">让 papermind 考考你</p>
+            <p className="text-[12.5px] font-medium text-navy leading-tight m-0">
+              {selfTestPreparing
+                ? `正在读取全文${selfTestPrepareProgress?.total
+                  ? ` ${selfTestPrepareProgress.done}/${selfTestPrepareProgress.total}`
+                  : '…'}`
+                : '让 papermind 考考你'}
+            </p>
             <p className="text-[10.5px] text-warm-gray/70 mt-0.5 m-0">
-              苏格拉底式追问 · 基于这 {cards.length} 张卡片
+              {selfTestPrepareError || `苏格拉底式追问 · 基于全文与 ${cards.length} 张卡片`}
             </p>
           </div>
           <span className="text-[11px] text-coral opacity-0 group-hover:opacity-100 transition shrink-0">开始 →</span>
@@ -1715,7 +1823,7 @@ function MemoryChannel(props) {
             paper={paper}
             paperRowid={savedRowId}
             currentPage={currentPage}
-            currentPageText={currentPageText}
+            currentPageText={selfTestSourceText}
             onExit={() => onCloseSelfTest()}
             onJumpToPage={jumpToPage}
             onHandoffToChat={onHandoffToChat}

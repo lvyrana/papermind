@@ -45,6 +45,7 @@ from src.database import (
     increment_recent_events,
     save_feedback, get_user_stats, get_portrait,
     get_self_test, init_self_test, update_self_test,
+    get_paper_page_ocr, save_paper_page_ocr,
     record_method_gap, get_method_gaps,
     create_project, get_projects, update_project, delete_project, set_paper_project,
     set_paper_has_pdf,
@@ -238,6 +239,9 @@ class DraftCardRequest(BaseModel):
 
 class OcrSelectionRequest(BaseModel):
     image_data_url: str = Field(max_length=6_000_000)
+    scope: str = Field(default="selection", max_length=20)
+    paper_rowid: Optional[int] = Field(default=None, ge=1)
+    page_number: Optional[int] = Field(default=None, ge=1, le=500)
 
 class DeepReadGuideRequest(BaseModel):
     paper_title: str = Field(max_length=500)
@@ -1769,9 +1773,14 @@ def _validated_selection_image(data_url: str) -> str:
 
 @app.post("/api/ocr/selection")
 async def api_ocr_selection(data: OcrSelectionRequest, request: Request):
-    """仅识别用户当前划选的文字截图，不保存图片。"""
+    """识别选区或论文页面；页面模式只缓存文字，不保存图片。"""
     uid = _get_user_id(request)
     is_owner = OWNER_UID and uid == OWNER_UID
+    if data.scope == "page" and data.paper_rowid:
+        if not _get_owned_paper_or_none(data.paper_rowid, uid):
+            return {"ok": False, "error": "not found"}
+        if not data.page_number:
+            return {"ok": False, "error": "缺少页码。"}
     try:
         image_data_url = _validated_selection_image(data.image_data_url)
     except (ValueError, TypeError):
@@ -1784,6 +1793,15 @@ async def api_ocr_selection(data: OcrSelectionRequest, request: Request):
     if not _has_llm_config(task="ocr"):
         return {"ok": False, "error": "当前模型不支持选区文字识别。"}
 
+    is_page = data.scope == "page"
+    instruction = (
+        "请按阅读顺序逐字识别这一页实际出现的正文，只输出识别结果。"
+        "保留标题、中文标点和段落顺序，不要总结、改写、补充或解释。"
+        if is_page
+        else
+        "请逐字识别图片中实际出现的文字，只输出识别结果。"
+        "保留原有中文标点和段落顺序，不要总结、改写、补充或解释。"
+    )
     raw, _, model = await _llm_chat_complete_async(
         [{
             "role": "user",
@@ -1794,14 +1812,11 @@ async def api_ocr_selection(data: OcrSelectionRequest, request: Request):
                 },
                 {
                     "type": "text",
-                    "text": (
-                        "请逐字识别图片中实际出现的文字，只输出识别结果。"
-                        "保留原有中文标点和段落顺序，不要总结、改写、补充或解释。"
-                    ),
+                    "text": instruction,
                 },
             ],
         }],
-        max_tokens=1800,
+        max_tokens=4000 if is_page else 1800,
         temperature=0,
         task="ocr",
     )
@@ -1809,10 +1824,22 @@ async def api_ocr_selection(data: OcrSelectionRequest, request: Request):
     if not text or _looks_like_garbled_selection(text):
         return {"ok": False, "error": "未能可靠识别这段文字，请缩短选区后重试。"}
 
+    if is_page and data.paper_rowid and data.page_number:
+        save_paper_page_ocr(data.paper_rowid, data.page_number, text, model)
+
     increment_rate_limit("__global__", "chat")
     if not is_owner:
         increment_rate_limit(uid, "chat")
     return {"ok": True, "text": text, "model": model}
+
+
+@app.get("/api/papers/{paper_rowid}/ocr-pages")
+def api_get_paper_ocr_pages(paper_rowid: int, request: Request):
+    """返回当前用户这篇论文已缓存的逐页 OCR 文本。"""
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(paper_rowid, uid):
+        return {"ok": False, "error": "not found"}
+    return {"ok": True, "pages": get_paper_page_ocr(paper_rowid)}
 
 
 @app.post("/api/cards")
@@ -1972,7 +1999,7 @@ class SelfTestAskRequest(BaseModel):
     pillar_key: str
     paper_title: str = ""
     paper_abstract: str = ""
-    current_page_text: str = ""
+    current_page_text: str = Field(default="", max_length=60_000)
 
 
 class SelfTestAnswerRequest(BaseModel):
@@ -1980,7 +2007,7 @@ class SelfTestAnswerRequest(BaseModel):
     answer: str
     paper_title: str = ""
     paper_abstract: str = ""
-    current_page_text: str = ""
+    current_page_text: str = Field(default="", max_length=60_000)
 
 
 class SelfTestHandoffRequest(BaseModel):
@@ -2007,12 +2034,23 @@ def _build_source_context(paper_rowid: int, abstract: str, page_text: str) -> tu
     """
     cards = get_cards(paper_rowid)
     quotes = get_quotes(paper_rowid)
+    readable_quotes = [
+        quote for quote in quotes
+        if not _looks_like_garbled_selection(quote.get("text") or "")
+    ]
     board = get_or_create_board(paper_rowid)
     board_items = get_board_items(paper_rowid)
 
     # ② 划了但没做卡片的段落
-    card_quotes = " ".join((c.get("quote") or "") for c in cards)
-    orphan_quotes = [q for q in quotes if q.get("text") and q["text"][:30] not in card_quotes]
+    card_quotes = " ".join(
+        (card.get("quote") or "")
+        for card in cards
+        if not _looks_like_garbled_selection(card.get("quote") or "")
+    )
+    orphan_quotes = [
+        quote for quote in readable_quotes
+        if quote.get("text") and quote["text"][:30] not in card_quotes
+    ]
 
     # ③ 完全没碰的板块
     filled = {it["section"] for it in board_items}
@@ -2030,14 +2068,16 @@ def _build_source_context(paper_rowid: int, abstract: str, page_text: str) -> tu
     if not parts:
         parts.append("用户还没有任何卡片或划词，请直接基于原文出题。")
 
-    # 可引用原文：有 PDF 当前页则用之，否则降级用摘要 + 卡片 + 划词
+    # 可引用原文：优先使用带页码标记的 PDF 全文，否则降级用摘要 + 卡片 + 划词
     corpus = page_text.strip()
+    if _looks_like_garbled_selection(corpus):
+        corpus = ""
     if len(corpus) < 200:
         fallback = [abstract or ""]
         fallback += [(c.get("content") or "") for c in cards]
-        fallback += [(q.get("text") or "") for q in quotes]
+        fallback += [(q.get("text") or "") for q in readable_quotes]
         corpus = "\n".join(x for x in fallback if x)
-    return "\n\n".join(parts), corpus[:6000]
+    return "\n\n".join(parts), corpus[:30_000]
 
 
 def _verify_anchor(quote: str, corpus: str) -> bool:
@@ -2048,6 +2088,22 @@ def _verify_anchor(quote: str, corpus: str) -> bool:
     q = re.sub(r"\s+", "", quote or "")
     c = re.sub(r"\s+", "", corpus or "")
     return len(q) >= 6 and q in c
+
+
+def _find_anchor_page(quote: str, corpus: str) -> Optional[int]:
+    """根据逐字锚点反查正文页码，不信任模型自行填写的页码。"""
+    compact_quote = re.sub(r"\s+", "", quote or "")
+    if len(compact_quote) < 6:
+        return None
+    page_blocks = re.findall(
+        r"\[第\s*(\d+)\s*页\]\s*(.*?)(?=\n\s*\[第\s*\d+\s*页\]|\Z)",
+        corpus or "",
+        flags=re.DOTALL,
+    )
+    for page, text in page_blocks:
+        if compact_quote in re.sub(r"\s+", "", text):
+            return int(page)
+    return None
 
 
 @app.get("/api/self-test/{paper_rowid}")
@@ -2097,7 +2153,7 @@ async def api_self_test_ask(paper_rowid: int, data: SelfTestAskRequest, request:
 {sources}
 
 可引用的原文：
-{corpus[:3000]}
+{corpus[:20_000]}
 
 严格输出 JSON，不要其他内容：
 {{"question": "你要问的问题（40 字以内，具体、可回答）"}}"""
@@ -2173,7 +2229,7 @@ async def api_self_test_answer(paper_rowid: int, data: SelfTestAnswerRequest, re
 你问他的是：{asked}
 
 原文（判定和锚点只能依据这里）：
-{corpus[:4000]}
+{corpus[:24_000]}
 
 严格输出 JSON，不要其他内容：
 {{"verdict": "solid|partial|off",
@@ -2203,6 +2259,7 @@ async def api_self_test_answer(paper_rowid: int, data: SelfTestAnswerRequest, re
 
     # 锚点逐字校验：编造的锚点一律剥掉，并把 solid 降级——没有锚点的反馈不可信
     anchor_ok = _verify_anchor(anchor_quote, corpus)
+    anchor_page = _find_anchor_page(anchor_quote, corpus) if anchor_ok else None
     if not anchor_ok:
         anchor_quote = ""
         if verdict == "solid":
@@ -2223,7 +2280,7 @@ async def api_self_test_answer(paper_rowid: int, data: SelfTestAnswerRequest, re
         {"role": "me", "text": data.answer.strip()},
         {"role": "ai", "text": gap or ("站住了。" if verdict == "solid" else ""),
          "verdict": verdict, "anchor_quote": anchor_quote,
-         "anchor_page": parsed.get("anchor_page"), "judged": True},
+         "anchor_page": anchor_page, "judged": True},
     ]
     if not closed and next_probe:
         turns.append({"role": "ai", "text": next_probe, "probe": True, "n": turn_count + 1})
@@ -2232,7 +2289,7 @@ async def api_self_test_answer(paper_rowid: int, data: SelfTestAnswerRequest, re
     update_self_test(paper_rowid, data.pillar_key, state=state, turns=turns, turn_count=turn_count)
     return {
         "ok": True, "verdict": verdict, "gap": gap,
-        "anchor_quote": anchor_quote, "anchor_page": parsed.get("anchor_page"),
+        "anchor_quote": anchor_quote, "anchor_page": anchor_page,
         "anchor_verified": anchor_ok,
         "next_probe": None if closed else next_probe,
         "closed": closed, "state": state, "turns": turns,

@@ -204,6 +204,19 @@ def _ensure_db():
         )
     """)
 
+    # PDF 文字层损坏时的逐页 OCR 缓存。只存识别文本，不保存页面图片。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_page_ocr (
+            paper_rowid INTEGER NOT NULL,
+            page_number INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            model TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (paper_rowid, page_number),
+            FOREIGN KEY (paper_rowid) REFERENCES saved_papers(id)
+        )
+    """)
+
     # 苏格拉底自测：方法学盲区（跨论文累积 = 画像的另一半）
     conn.execute("""
         CREATE TABLE IF NOT EXISTS method_gaps (
@@ -301,6 +314,7 @@ def _ensure_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_saved_papers_project ON saved_papers(project_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reading_cards_paper ON reading_cards(paper_rowid)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_quotes_paper ON paper_quotes(paper_rowid)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_page_ocr_paper ON paper_page_ocr(paper_rowid)")
 
     conn.commit()
     return conn
@@ -683,6 +697,35 @@ def update_self_test(paper_rowid: int, pillar_key: str, state: str = None,
     conn.close()
 
 
+def get_paper_page_ocr(paper_rowid: int) -> list[dict]:
+    """读取一篇论文已缓存的逐页 OCR 文本。"""
+    conn = _ensure_db()
+    rows = conn.execute(
+        """SELECT page_number, text, model, updated_at
+           FROM paper_page_ocr WHERE paper_rowid = ? ORDER BY page_number""",
+        (paper_rowid,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def save_paper_page_ocr(paper_rowid: int, page_number: int, text: str, model: str = ""):
+    """覆盖保存单页 OCR 结果；图片不落盘。"""
+    conn = _ensure_db()
+    conn.execute(
+        """INSERT INTO paper_page_ocr
+           (paper_rowid, page_number, text, model, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(paper_rowid, page_number) DO UPDATE SET
+             text = excluded.text,
+             model = excluded.model,
+             updated_at = excluded.updated_at""",
+        (paper_rowid, page_number, text, model, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
 def record_method_gap(user_id: str, term: str, paper_rowid: int = None):
     """记一次方法学盲区（同一术语累加次数）。"""
     term = (term or "").strip()
@@ -766,6 +809,7 @@ def get_saved_paper(paper_id: int) -> Optional[dict]:
 def delete_saved_paper(paper_id: int):
     conn = _ensure_db()
     conn.execute("DELETE FROM self_test_sessions WHERE paper_rowid = ?", (paper_id,))
+    conn.execute("DELETE FROM paper_page_ocr WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM paper_notes WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM paper_chats WHERE paper_rowid = ?", (paper_id,))
     conn.execute("DELETE FROM reading_cards WHERE paper_rowid = ?", (paper_id,))
