@@ -1325,7 +1325,11 @@ function RailContent({
         </span>
         {paper.source && (
           <span className="text-[10px] text-warm-gray/60">
-            {paper.source === 'pubmed' ? 'PubMed' : 'Semantic Scholar'}
+            {paper.source === 'pubmed'
+              ? 'PubMed'
+              : paper.source === 'zotero'
+                ? 'Zotero'
+                : 'Semantic Scholar'}
           </span>
         )}
       </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from 'react'
 import { ChevronLeft, ChevronRight, Loader2, ZoomIn, ZoomOut, AlertCircle, Download, Crop } from 'lucide-react'
+import { getUserId } from '../api'
 
 /* ─────────────────────────────────────────────────────────────
    PdfViewer · 基于 pdfjs-dist 的轻量 PDF 渲染器
@@ -360,14 +361,38 @@ const PdfViewer = forwardRef(function PdfViewer(
     setError(null)
     pageRefs.current = {}
 
-    const task = pdfjsLib.getDocument({ url, withCredentials: false })
-    task.promise.then(pdf => {
+    let task = null
+    const controller = new AbortController()
+
+    ;(async () => {
+      const resolvedUrl = new URL(url, window.location.href)
+      const isSameOrigin = resolvedUrl.origin === window.location.origin
+
+      if (isSameOrigin) {
+        // 库内 PDF 受设备身份和预览认证保护。先由主线程带齐凭据取回，
+        // 再把二进制交给 pdf.js，避免 worker 的独立请求丢失认证信息。
+        const response = await fetch(resolvedUrl, {
+          credentials: 'include',
+          headers: { 'X-User-ID': getUserId() },
+          signal: controller.signal,
+        })
+        if (!response.ok) {
+          throw new Error(`PDF 请求失败 (${response.status})`)
+        }
+        const data = new Uint8Array(await response.arrayBuffer())
+        if (cancelled) return
+        task = pdfjsLib.getDocument({ data })
+      } else {
+        task = pdfjsLib.getDocument({ url, withCredentials: false })
+      }
+
+      const pdf = await task.promise
       if (cancelled) return
       pdfRef.current = pdf
       setNumPages(pdf.numPages)
       setLoading(false)
-    }).catch(err => {
-      if (cancelled) return
+    })().catch(err => {
+      if (cancelled || err?.name === 'AbortError') return
       // CORS / 404 / 文件不是 PDF 都会到这
       setError(err.message || '加载失败')
       setLoading(false)
@@ -375,7 +400,8 @@ const PdfViewer = forwardRef(function PdfViewer(
 
     return () => {
       cancelled = true
-      task.destroy()
+      controller.abort()
+      task?.destroy()
       if (pdfRef.current) {
         pdfRef.current.cleanup().catch(() => {})
         pdfRef.current.destroy().catch(() => {})
