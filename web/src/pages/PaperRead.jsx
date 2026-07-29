@@ -1317,16 +1317,20 @@ export default function PaperRead() {
                 aria-label="选中文字操作"
                 className="fixed z-50 grid max-w-[calc(100vw-24px)] grid-cols-2 items-center gap-0.5 rounded-xl border border-navy/10 bg-warm-white/95 p-1 shadow-[0_10px_30px_-12px_rgba(30,58,95,.38)] backdrop-blur-md sm:flex"
                 style={getSelectionToolbarPosition(selection)}>
-                {selectionOcrPending ? (
-                  <span className="col-span-2 flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-xs text-navy sm:col-auto">
-                    <Loader2 size={13} className="animate-spin text-coral"/>
-                    正在识别选中文字…
+                {/* OCR 是增强不是闸门：识别中/失败都不能挡住操作。
+                    文字层原文永远可用，OCR 成功只是把它替换成更准的版本。
+                    （曾经把按钮整组换成 spinner/错误文案，导致识别一失败就什么都点不了） */}
+                {(selectionOcrPending || selectionOcrError) && (
+                  <span className={`col-span-2 flex items-center gap-1.5 whitespace-nowrap px-2 py-1 text-[11px] sm:col-auto ${
+                    selectionOcrError ? 'text-warm-gray' : 'text-navy/70'
+                  }`}
+                    title={selectionOcrError || ''}>
+                    {selectionOcrPending
+                      ? <><Loader2 size={11} className="animate-spin text-coral"/>识别中</>
+                      : <span className="text-warm-gray/80">用原文</span>}
                   </span>
-                ) : selectionOcrError ? (
-                  <span className="col-span-2 max-w-[360px] px-3 py-1.5 text-xs leading-relaxed text-coral sm:col-auto">
-                    {selectionOcrError}
-                  </span>
-                ) : (
+                )}
+                {(
                   <>
                     <button
                       onClick={askAboutSelection}
