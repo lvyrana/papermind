@@ -25,6 +25,29 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* PDF.js 把一行拆成许多透明 span；原生选区会在重叠 span 上反复着色。
+   保留浏览器文字选择，只由 PdfViewer 的合并行高亮层负责视觉反馈。 */
+.pdf-page-wrap .textLayer ::selection {
+  background: transparent !important;
+}
+
+.pdf-page-wrap .textLayer ::-moz-selection {
+  background: transparent !important;
+}
+
+.pdf-active-selection {
+  box-shadow: inset 0 0 0 1px rgba(65, 111, 176, 0.08);
+}
+
+@keyframes deep-read-arrival {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(232, 135, 122, 0); }
+  18%, 68% { box-shadow: 0 0 0 2px rgba(232, 135, 122, 0.45); }
+}
+
+.deep-read-arrival {
+  animation: deep-read-arrival 1.6s ease-out both;
+}
+
 .pm-page-title {
   font-family: "Songti SC", "Noto Serif SC", "Source Han Serif SC", STSong, Georgia, serif;
   font-weight: 400;

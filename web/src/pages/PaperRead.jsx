@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useLocation, Link } from 'react-router-dom'
 import {
   ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2,
@@ -58,6 +58,50 @@ function getStoredRightPanelWidth() {
     }
   } catch { /* ignore */ }
   return RIGHT_PANEL_DEFAULT_WIDTH
+}
+
+function getSelectionToolbarPosition(selection, toolbarRect = {}) {
+  if (typeof window === 'undefined') return { left: 12, top: 12 }
+  const edge = 12
+  const gap = 10
+  const viewportWidth = window.innerWidth
+  const viewportHeight = window.innerHeight
+  const width = Math.min(toolbarRect.width || 420, viewportWidth - edge * 2)
+  const height = Math.min(toolbarRect.height || 42, viewportHeight - edge * 2)
+  const bounds = selection?.bounds || {
+    left: selection?.x || viewportWidth / 2,
+    right: selection?.x || viewportWidth / 2,
+    top: selection?.y || viewportHeight / 2,
+    bottom: selection?.y || viewportHeight / 2,
+  }
+  const centerX = (bounds.left + bounds.right) / 2
+  const centerY = (bounds.top + bounds.bottom) / 2
+  const centeredLeft = clampNumber(centerX - width / 2, edge, viewportWidth - edge - width)
+
+  if (bounds.bottom + gap + height <= viewportHeight - edge) {
+    return { left: centeredLeft, top: bounds.bottom + gap }
+  }
+  if (bounds.top - gap - height >= edge) {
+    return { left: centeredLeft, top: bounds.top - gap - height }
+  }
+  if (bounds.right + gap + width <= viewportWidth - edge) {
+    return {
+      left: bounds.right + gap,
+      top: clampNumber(centerY - height / 2, edge, viewportHeight - edge - height),
+    }
+  }
+  if (bounds.left - gap - width >= edge) {
+    return {
+      left: bounds.left - gap - width,
+      top: clampNumber(centerY - height / 2, edge, viewportHeight - edge - height),
+    }
+  }
+
+  const belowSpace = viewportHeight - bounds.bottom
+  const top = belowSpace >= bounds.top
+    ? viewportHeight - edge - height
+    : edge
+  return { left: centeredLeft, top }
 }
 
 // 把 chat 历史里出现过的 user-with-quote 抽出来形成 quote 卡片
@@ -195,6 +239,7 @@ export default function PaperRead() {
   const actionRecordedRef = useRef({})
   const bookmarkBtnRef = useRef(null)
   const pdfViewerRef = useRef(null)
+  const selectionToolbarRef = useRef(null)
   const paperTourStartedRef = useRef(false)
   const [paperTourStep, setPaperTourStep] = useState(0)
   const externalLinkRef = useRef(null)
@@ -211,6 +256,27 @@ export default function PaperRead() {
     return [...persisted, ...localOnly].map((q, index) => ({ ...q, n: index + 1 }))
   }, [structuredQuotes, chatMessages])
   const currentPageText = pdfPageTexts[currentPage] || ''
+
+  useLayoutEffect(() => {
+    const toolbar = selectionToolbarRef.current
+    if (!selection || !toolbar) return
+
+    const updatePosition = () => {
+      const position = getSelectionToolbarPosition(selection, toolbar.getBoundingClientRect())
+      toolbar.style.left = `${Math.round(position.left)}px`
+      toolbar.style.top = `${Math.round(position.top)}px`
+    }
+    updatePosition()
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(updatePosition)
+    resizeObserver?.observe(toolbar)
+    window.addEventListener('resize', updatePosition)
+    return () => {
+      resizeObserver?.disconnect()
+      window.removeEventListener('resize', updatePosition)
+    }
+  }, [selection])
 
   useEffect(() => {
     if (!forceLibraryPaper || !/^\d+$/.test(String(id))) return
@@ -314,6 +380,18 @@ export default function PaperRead() {
     apiGet('/projects').then(data => setProjects(data.projects || [])).catch(() => {})
   }, [])
 
+  // ── 汇报板：加载 / 投递 / 导出 ──
+  const refreshBoard = useCallback((rowId) => {
+    const rid = rowId || savedRowId
+    if (!rid) return
+    apiGet(`/board/${rid}`)
+      .then(d => {
+        if (!d.ok) return
+        setBoard({ sections: d.sections, items: d.items, whyReading: d.why_reading, paperRowid: rid })
+      })
+      .catch(() => {})
+  }, [savedRowId])
+
   useEffect(() => {
     if (!savedRowId) return
     apiGet(`/library/${savedRowId}`)
@@ -335,19 +413,7 @@ export default function PaperRead() {
       .then(data => setStructuredQuotes(data.quotes || []))
       .catch(() => {})
     refreshBoard(savedRowId)
-  }, [savedRowId])
-
-  // ── 组会汇报板：加载 / 投递 / 导出 ──
-  const refreshBoard = (rowId) => {
-    const rid = rowId || savedRowId
-    if (!rid) return
-    apiGet(`/board/${rid}`)
-      .then(d => {
-        if (!d.ok) return
-        setBoard({ sections: d.sections, items: d.items, whyReading: d.why_reading, paperRowid: rid })
-      })
-      .catch(() => {})
-  }
+  }, [refreshBoard, savedRowId])
 
   // 各入口（划词/带读/卡片/对话）调用：塞 seed → 弹板块选单
   // 未收藏时先自动收藏（board 惰性创建依赖 rowId），选单等 board 加载后出现
@@ -1124,43 +1190,32 @@ export default function PaperRead() {
                 滚动后坐标不再错位（PdfViewer 会在滚动时收起浮窗） */}
             {selection && (
               <div
-                className="fixed z-50 flex items-center gap-1.5"
-                style={(() => {
-                  // 钳进视口：长选区/贴边选中时，浮窗曾会被顶出屏幕（看起来像「没弹出」）
-                  const margin = 12
-                  const x = Math.min(Math.max(selection.x, 130), window.innerWidth - 130)
-                  const aboveTop = selection.y - margin
-                  // 顶部空间不够就翻到选区下方
-                  const flipDown = aboveTop < 64
-                  return {
-                    left: x,
-                    top: flipDown
-                      ? Math.min(selection.y + 26, window.innerHeight - 56)
-                      : Math.min(aboveTop, window.innerHeight - 16),
-                    transform: flipDown ? 'translate(-50%, 0)' : 'translate(-50%, -100%)',
-                  }
-                })()}>
+                ref={selectionToolbarRef}
+                role="toolbar"
+                aria-label="选中文字操作"
+                className="fixed z-50 grid max-w-[calc(100vw-24px)] grid-cols-2 items-center gap-0.5 rounded-xl border border-navy/10 bg-warm-white/95 p-1 shadow-[0_10px_30px_-12px_rgba(30,58,95,.38)] backdrop-blur-md sm:flex"
+                style={getSelectionToolbarPosition(selection)}>
                 <button
                   onClick={askAboutSelection}
-                  className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-navy text-warm-white text-sm font-medium shadow-[0_6px_22px_-6px_rgba(30,58,95,.45)] hover:bg-navy-light transition-all">
+                  className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-navy px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-navy-light transition-colors">
                   <Sparkles size={13}/>
                   问 papermind
                 </button>
                 <button
                   onClick={deepReadSelection}
-                  className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-warm-white text-navy text-sm font-medium border border-navy/10 shadow-[0_6px_22px_-10px_rgba(30,58,95,.28)] hover:border-coral/35 transition-all">
+                  className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-navy/5 transition-colors">
                   <FileText size={13}/>
                   精读这段
                 </button>
                 <button
                   onClick={saveSelectionAsCard}
-                  className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-coral text-warm-white text-sm font-medium shadow-[0_6px_22px_-6px_rgba(224,122,95,.5)] hover:bg-coral-deep transition-all">
+                  className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-coral px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-coral-deep transition-colors">
                   <Layers size={13}/>
                   存为卡片
                 </button>
                 <button
                   onClick={sendSelectionToBoard}
-                  className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-warm-white text-navy text-sm font-medium border border-navy/10 shadow-[0_6px_22px_-10px_rgba(30,58,95,.28)] hover:border-mint-deep/50 hover:text-mint-deep transition-all">
+                  className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-mint/20 hover:text-mint-deep transition-colors">
                   <Presentation size={13}/>
                   送到汇报
                 </button>
@@ -1773,19 +1828,12 @@ function DeepReadPanel({
   const hasAbstract = !!paper?.abstract
   const hasPageText = currentPageText.trim().length > 80
   const rootRef = useRef(null)
-  const [justArrived, setJustArrived] = useState(false)
 
   // 动作发生在 PDF 中间、反馈出现在右栏——没有视线引导用户会找不到结果。
-  // 生成开始就把工作台滚进视野（能看到 loading），结果到达再闪一下。
+  // 生成开始就把工作台滚进视野（能看到 loading），结果到达由 CSS animation 闪一下。
   useEffect(() => {
     if (loading) rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [loading])
-  useEffect(() => {
-    if (!guide || loading) return
-    setJustArrived(true)
-    const t = setTimeout(() => setJustArrived(false), 1600)
-    return () => clearTimeout(t)
-  }, [guide, loading])
 
   return (
     <section ref={rootRef} className={variant === 'rail'
@@ -1846,7 +1894,7 @@ function DeepReadPanel({
         {error && <p className="px-3.5 py-3 text-[12px] text-coral leading-relaxed">{error}</p>}
 
         {guide && (
-          <div className={`rounded-xl transition-shadow duration-700 ${justArrived ? 'ring-2 ring-coral/45' : 'ring-0 ring-transparent'}`}>
+          <div key={`${mode}:${source}:${guide}`} className="deep-read-arrival rounded-xl">
             <div className="px-3.5 py-2.5 border-b border-navy/6 bg-cream/35 flex items-center justify-between gap-2">
               <p className="m-0 font-mono text-[9.5px] tracking-widest uppercase text-warm-gray/65">
                 {source || formatDeepReadSource(mode, currentPage)}

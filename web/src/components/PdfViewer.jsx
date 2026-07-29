@@ -39,6 +39,20 @@ const MAX_SCALE = 3.0
 const MAX_CANVAS_DPR = 2
 const MAX_CANVAS_PIXELS = 6_000_000
 
+function normalizeSelectedText(value) {
+  return String(value || '')
+    .replace(/\u00ad/g, '')
+    .replace(/[\u200b-\u200d\u2060\ufeff]/g, '')
+    .replace(/\s*([，。！？；：、（）【】《》“”‘’「」『』])\s*/g, '$1')
+    .replace(
+      /([\u3400-\u9fff\uf900-\ufaff，。！？；：、）】》”’」』])\s+(?=[\u3400-\u9fff\uf900-\ufaff（【《“‘「『])/g,
+      '$1',
+    )
+    .replace(/([a-z0-9])-\s+(?=[a-z0-9])/gi, '$1-')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 function getCanvasOutputScale(viewport) {
   const deviceScale = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR)
   const cssPixels = viewport.width * viewport.height
@@ -169,11 +183,83 @@ const PdfViewer = forwardRef(function PdfViewer(
         lines.push({ x1: r.x, x2: r.x + r.width, y1: r.y, y2: r.y + r.height, cy, h: r.height })
       }
     }
-    return lines.map(L => ({
-      x: +L.x1.toFixed(2), y: +L.y1.toFixed(2),
-      width: +(L.x2 - L.x1).toFixed(2), height: +(L.y2 - L.y1).toFixed(2),
+    const merged = lines.map(L => ({
+      x: L.x1, y: L.y1,
+      width: L.x2 - L.x1, height: L.y2 - L.y1,
+    }))
+    // 中文 PDF 的文字框高度有时略大于真实行距，相邻两行会重叠约 1px。
+    // 在两行中点处分界，避免半透明色块再次叠出深色横线。
+    for (let i = 0; i < merged.length - 1; i++) {
+      const current = merged[i]
+      const next = merged[i + 1]
+      const overlap = current.y + current.height - next.y
+      if (overlap <= 0) continue
+      const boundary = (current.y + current.height + next.y) / 2
+      current.height = Math.max(2, boundary - current.y)
+      next.height = Math.max(2, next.y + next.height - boundary)
+      next.y = boundary
+    }
+    return merged.map(r => ({
+      x: +r.x.toFixed(2), y: +r.y.toFixed(2),
+      width: +r.width.toFixed(2), height: +r.height.toFixed(2),
     }))
   }, [])
+
+  const clearActiveSelection = useCallback(() => {
+    Object.values(pageRefs.current).forEach((pageInfo) => {
+      if (pageInfo?.activeSelectionLayer) pageInfo.activeSelectionLayer.innerHTML = ''
+      pageInfo?.textLayer?.classList.remove('selecting')
+    })
+  }, [])
+
+  const paintActiveSelection = useCallback((selection) => {
+    clearActiveSelection()
+    const container = containerRef.current
+    if (!container || !selection?.rangeCount
+      || !container.contains(selection.anchorNode)
+      || !container.contains(selection.focusNode)) return
+
+    const range = selection.getRangeAt(0)
+    const clientRects = Array.from(range.getClientRects())
+      .filter(rect => rect.width >= 1 && rect.height >= 1)
+    if (!clientRects.length) return
+
+    Object.values(pageRefs.current).forEach((pageInfo) => {
+      const wrapRect = pageInfo?.wrapEl?.getBoundingClientRect()
+      const layer = pageInfo?.activeSelectionLayer
+      if (!wrapRect || !layer) return
+
+      const localRects = clientRects.flatMap((rect) => {
+        const left = Math.max(rect.left, wrapRect.left)
+        const top = Math.max(rect.top, wrapRect.top)
+        const right = Math.min(rect.right, wrapRect.right)
+        const bottom = Math.min(rect.bottom, wrapRect.bottom)
+        if (right - left < 1 || bottom - top < 1) return []
+        return [{
+          x: left - wrapRect.left,
+          y: top - wrapRect.top,
+          width: right - left,
+          height: bottom - top,
+        }]
+      })
+
+      const lineRects = mergeLineRects(localRects)
+      if (!lineRects.length) return
+      pageInfo.textLayer?.classList.add('selecting')
+      for (const rect of lineRects) {
+        const marker = document.createElement('div')
+        marker.className = 'pdf-active-selection'
+        marker.style.cssText = `
+          position:absolute;
+          left:${rect.x}px; top:${rect.y}px;
+          width:${rect.width}px; height:${rect.height}px;
+          border-radius:2px;
+          background:rgba(92, 145, 220, .26);
+        `
+        layer.appendChild(marker)
+      }
+    })
+  }, [clearActiveSelection, mergeLineRects])
 
   // 第一性原理：高亮锚定的是文本而不是像素。绘制时优先在当前文字层里
   // 重新定位 quote 原文，从真实 span 几何推导矩形——任何缩放下都精确贴字
@@ -469,9 +555,19 @@ const PdfViewer = forwardRef(function PdfViewer(
         z-index:1;
       `
 
+      const activeSelectionLayer = document.createElement('div')
+      activeSelectionLayer.className = 'activeSelectionLayer'
+      activeSelectionLayer.style.cssText = `
+        position:absolute; inset:0;
+        width:${viewport.width}px; height:${viewport.height}px;
+        pointer-events:none;
+        z-index:3;
+      `
+
       pageWrap.appendChild(canvas)
       pageWrap.appendChild(highlightLayer)
       pageWrap.appendChild(textLayer)
+      pageWrap.appendChild(activeSelectionLayer)
       pagesContainerRef.current?.appendChild(pageWrap)
 
       const ctx = canvas.getContext('2d')
@@ -500,7 +596,8 @@ const PdfViewer = forwardRef(function PdfViewer(
       }
 
       pageRefs.current[pageNum] = {
-        wrapEl: pageWrap, canvas, highlightLayer, textLayer, viewport, scale: theScale, outputScale,
+        wrapEl: pageWrap, canvas, highlightLayer, textLayer, activeSelectionLayer,
+        viewport, scale: theScale, outputScale,
         // PDF 空间文字条目（transform/width/height），高亮按真实字形坐标绘制用
         textItems: textContent.items,
       }
@@ -555,12 +652,28 @@ const PdfViewer = forwardRef(function PdfViewer(
     return () => { io.disconnect(); mo.disconnect() }
   }, [numPages, onPageChange])
 
+  // 浏览器会分别给 PDF.js 的透明文字 span 着色，中文行内常出现重叠深色块。
+  // 原生选区保持可复制，只把视觉反馈换成按行合并后的单层矩形。
+  useEffect(() => {
+    let frame = 0
+    const handleSelectionChange = () => {
+      window.cancelAnimationFrame(frame)
+      frame = window.requestAnimationFrame(() => paintActiveSelection(window.getSelection()))
+    }
+    document.addEventListener('selectionchange', handleSelectionChange)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      document.removeEventListener('selectionchange', handleSelectionChange)
+      clearActiveSelection()
+    }
+  }, [clearActiveSelection, paintActiveSelection])
+
   // ── selection bubble: listen for mouseup inside text layer ──
   useEffect(() => {
     if (!containerRef.current || !onSelection) return
     const handler = () => {
       const sel = window.getSelection()
-      const text = sel?.toString().trim()
+      const text = normalizeSelectedText(sel?.toString())
       // 中文术语很短（「静脉危象」才 4 字），阈值按 8 会把选词直接吞掉
       if (!text || text.length < 2) {
         onSelection(null)
@@ -577,21 +690,51 @@ const PdfViewer = forwardRef(function PdfViewer(
         return
       }
       const range = sel.getRangeAt(0)
-      const rect = range.getBoundingClientRect()
       // 找当前 page
       const wrap = node.closest('.pdf-page-wrap')
       const pageNum = wrap ? parseInt(wrap.dataset.pageNum, 10) : currentPage
       const wrapRect = wrap?.getBoundingClientRect()
+      const rangeRects = Array.from(range.getClientRects())
+        .filter(r => r.width >= 1 && r.height >= 1)
       const selectedRects = wrapRect
-        ? mergeLineRects(Array.from(range.getClientRects())
-            .map(r => ({
-              x: +(r.left - wrapRect.left).toFixed(2),
-              y: +(r.top - wrapRect.top).toFixed(2),
-              width: +r.width.toFixed(2),
-              height: +r.height.toFixed(2),
-            })))
+        ? mergeLineRects(rangeRects.flatMap((r) => {
+            const left = Math.max(r.left, wrapRect.left)
+            const top = Math.max(r.top, wrapRect.top)
+            const right = Math.min(r.right, wrapRect.right)
+            const bottom = Math.min(r.bottom, wrapRect.bottom)
+            if (right - left < 1 || bottom - top < 1) return []
+            return [{
+              x: +(left - wrapRect.left).toFixed(2),
+              y: +(top - wrapRect.top).toFixed(2),
+              width: +(right - left).toFixed(2),
+              height: +(bottom - top).toFixed(2),
+            }]
+          }))
         : []
       const pageInfo = pageRefs.current[pageNum]
+      const viewportLineRects = mergeLineRects(rangeRects.map(r => ({
+        x: r.left,
+        y: r.top,
+        width: r.width,
+        height: r.height,
+      })))
+      const visibleLineRects = viewportLineRects.flatMap((r) => {
+        const left = Math.max(0, r.x)
+        const top = Math.max(0, r.y)
+        const right = Math.min(window.innerWidth, r.x + r.width)
+        const bottom = Math.min(window.innerHeight, r.y + r.height)
+        if (right - left < 1 || bottom - top < 1) return []
+        return [{ x: left, y: top, width: right - left, height: bottom - top }]
+      })
+      const toolbarRects = visibleLineRects.length ? visibleLineRects : viewportLineRects
+      const bounds = toolbarRects.length
+        ? {
+            left: Math.min(...toolbarRects.map(r => r.x)),
+            top: Math.min(...toolbarRects.map(r => r.y)),
+            right: Math.max(...toolbarRects.map(r => r.x + r.width)),
+            bottom: Math.max(...toolbarRects.map(r => r.y + r.height)),
+          }
+        : null
 
       onSelection({
         text,
@@ -604,18 +747,9 @@ const PdfViewer = forwardRef(function PdfViewer(
           textStart: text.slice(0, 120),
           textEnd: text.slice(-120),
         },
-        // 视口坐标，配合浮窗的 position:fixed 使用；
-        // 之前加 scrollTop 换算成滚动内容坐标，但浮窗渲染在外层
-        // 不滚动的容器里，翻页后浮窗会被定位到屏幕外
-        //
-        // 跨页/跨栏的长选区，整体 boundingRect 的顶边可能远在视口上方（负值），
-        // 浮窗会被顶出屏幕 → 表现为「划了词但没弹出选项」。
-        // 改用选区最后一个矩形（鼠标松开处）定位，并交给上层做视口钳制。
-        ...(() => {
-          const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0)
-          const last = rects[rects.length - 1] || rect
-          return { x: last.left + last.width / 2, y: last.top }
-        })(),
+        bounds,
+        x: bounds ? (bounds.left + bounds.right) / 2 : window.innerWidth / 2,
+        y: bounds?.top ?? 80,
       })
     }
     // PDF 滚动后选区位置已变，收起浮窗避免悬在错误位置
@@ -627,7 +761,7 @@ const PdfViewer = forwardRef(function PdfViewer(
       document.removeEventListener('mouseup', handler)
       scroller?.removeEventListener('scroll', onScroll)
     }
-  }, [currentPage, onSelection, scale])
+  }, [currentPage, mergeLineRects, onSelection, scale])
 
   // ── repaint persisted quote highlights whenever backend quotes change ──
   useEffect(() => {
