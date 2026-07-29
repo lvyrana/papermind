@@ -3,10 +3,11 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import base64
 import hashlib
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +69,99 @@ class LLMRouterTests(unittest.IsolatedAsyncioTestCase):
                 task="chat",
             )
             self.assertEqual((content, provider_name, provider_model), ("", "", ""))
+
+    def test_ocr_task_only_keeps_vision_capable_models(self):
+        providers = [
+            {"name": "qwen", "api_key": "key", "base_url": "https://example.com", "model": "qwen3.5-ocr"},
+            {"name": "qwen", "api_key": "key", "base_url": "https://example.com", "model": "qwen3.7-plus"},
+            {"name": "qwen", "api_key": "key", "base_url": "https://example.com", "model": "qwen3.5-flash"},
+            {"name": "deepseek", "api_key": "key", "base_url": "https://example.com", "model": "deepseek-chat"},
+        ]
+        with patch.object(llm_router, "_get_llm_slots", return_value=providers):
+            models = [provider["model"] for provider in llm_router._ordered_llm_slots(task="ocr")]
+
+        self.assertEqual(models, ["qwen3.5-ocr", "qwen3.7-plus"])
+
+
+class SelectionOcrTests(unittest.IsolatedAsyncioTestCase):
+    def test_garbled_selection_detector_rejects_scrambled_font_text(self):
+        self.assertTrue(api._looks_like_garbled_selection(
+            r'W-XYZ[E\]^_`abcBCEdefg"OhijklmXnopqrEabcBCsAtuEvwBC'
+        ))
+        self.assertFalse(api._looks_like_garbled_selection(
+            "采用监督微调和检索增强生成技术，提高模型回答的准确性。"
+        ))
+        self.assertFalse(api._looks_like_garbled_selection(
+            "The model was evaluated in a prospective usability study."
+        ))
+
+    async def test_selection_ocr_sends_only_the_crop_to_a_vision_model(self):
+        image = "data:image/jpeg;base64," + base64.b64encode(b"fake-image").decode()
+        llm_call = AsyncMock(return_value=(
+            "采用监督微调和检索增强生成技术。",
+            "qwen",
+            "qwen3.5-ocr",
+        ))
+        with patch.object(api, "_has_llm_config", return_value=True), \
+             patch.object(api, "check_rate_limit", return_value=True), \
+             patch.object(api, "increment_rate_limit"), \
+             patch.object(api, "_llm_chat_complete_async", llm_call):
+            result = await api.api_ocr_selection(
+                api.OcrSelectionRequest(image_data_url=image),
+                HeaderRequest(),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "采用监督微调和检索增强生成技术。")
+        kwargs = llm_call.await_args.kwargs
+        self.assertEqual(kwargs["task"], "ocr")
+        content = llm_call.await_args.args[0][0]["content"]
+        self.assertEqual(content[0]["image_url"]["url"], image)
+        self.assertIn("不要总结、改写、补充", content[1]["text"])
+
+    async def test_card_draft_with_quote_excludes_abstract_and_forbids_added_facts(self):
+        llm_call = AsyncMock(return_value=(
+            '{"title":"训练流程","content":"采用监督微调和检索增强生成。"}',
+            "qwen",
+            "qwen3.7-plus",
+        ))
+        payload = api.DraftCardRequest(
+            paper_title="护理证据智慧问答模型",
+            paper_abstract="摘要中的 BLEU 和 Likert 不应进入这张卡。",
+            quote="采用监督微调和检索增强生成技术，提高模型回答的准确性。",
+            card_type="method",
+            page=3,
+        )
+        with patch.object(api, "_has_llm_config", return_value=True), \
+             patch.object(api, "check_rate_limit", return_value=True), \
+             patch.object(api, "increment_rate_limit"), \
+             patch.object(api, "get_profile", return_value={}), \
+             patch.object(api, "_llm_chat_complete_async", llm_call):
+            result = await api.api_draft_card(payload, HeaderRequest())
+
+        self.assertTrue(result["ok"])
+        system_prompt = llm_call.await_args.args[0][0]["content"]
+        self.assertNotIn("摘要中的 BLEU", system_prompt)
+        self.assertIn("只能概括该段原文", system_prompt)
+        self.assertIn("不得从论文摘要", system_prompt)
+
+    def test_card_create_rejects_garbled_quote_before_saving(self):
+        payload = api.CreateCardRequest(
+            paper_rowid=4,
+            card_type="method",
+            title="错误卡片",
+            content="看似正常的内容",
+            quote=r'W-XYZ[E\]^_`abcBCEdefg"OhijklmXnopqrEabcBCsAtuEvwBC',
+            page=3,
+            source="quote",
+        )
+        with patch.object(api, "_get_owned_paper_or_none", return_value={"id": 4}), \
+             patch.object(api, "save_card") as save_card:
+            result = api.api_create_card(payload, HeaderRequest())
+
+        self.assertFalse(result["ok"])
+        self.assertIn("无法可靠提取", result["error"])
+        save_card.assert_not_called()
 
 
 class MemoryServiceTests(unittest.IsolatedAsyncioTestCase):

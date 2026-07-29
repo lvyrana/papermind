@@ -14,6 +14,7 @@ import PdfViewer from '../components/PdfViewer'
 import CardDrawer from '../components/CardDrawer'
 import SocraticRail from '../components/SocraticRail'
 import BoardDrawer, { BoardRail, BoardSectionPicker, CARD_SECTION_MAP, downloadBoardMarp } from '../components/BoardDrawer'
+import { getSelectionToolbarPosition } from '../utils/selectionToolbar'
 
 /* ─────────────────────────────────────────────────────────────
    PaperRead — 三栏版 (PDF + 记忆通道)
@@ -58,50 +59,6 @@ function getStoredRightPanelWidth() {
     }
   } catch { /* ignore */ }
   return RIGHT_PANEL_DEFAULT_WIDTH
-}
-
-function getSelectionToolbarPosition(selection, toolbarRect = {}) {
-  if (typeof window === 'undefined') return { left: 12, top: 12 }
-  const edge = 12
-  const gap = 10
-  const viewportWidth = window.innerWidth
-  const viewportHeight = window.innerHeight
-  const width = Math.min(toolbarRect.width || 420, viewportWidth - edge * 2)
-  const height = Math.min(toolbarRect.height || 42, viewportHeight - edge * 2)
-  const bounds = selection?.bounds || {
-    left: selection?.x || viewportWidth / 2,
-    right: selection?.x || viewportWidth / 2,
-    top: selection?.y || viewportHeight / 2,
-    bottom: selection?.y || viewportHeight / 2,
-  }
-  const centerX = (bounds.left + bounds.right) / 2
-  const centerY = (bounds.top + bounds.bottom) / 2
-  const centeredLeft = clampNumber(centerX - width / 2, edge, viewportWidth - edge - width)
-
-  if (bounds.bottom + gap + height <= viewportHeight - edge) {
-    return { left: centeredLeft, top: bounds.bottom + gap }
-  }
-  if (bounds.top - gap - height >= edge) {
-    return { left: centeredLeft, top: bounds.top - gap - height }
-  }
-  if (bounds.right + gap + width <= viewportWidth - edge) {
-    return {
-      left: bounds.right + gap,
-      top: clampNumber(centerY - height / 2, edge, viewportHeight - edge - height),
-    }
-  }
-  if (bounds.left - gap - width >= edge) {
-    return {
-      left: bounds.left - gap - width,
-      top: clampNumber(centerY - height / 2, edge, viewportHeight - edge - height),
-    }
-  }
-
-  const belowSpace = viewportHeight - bounds.bottom
-  const top = belowSpace >= bounds.top
-    ? viewportHeight - edge - height
-    : edge
-  return { left: centeredLeft, top }
 }
 
 // 把 chat 历史里出现过的 user-with-quote 抽出来形成 quote 卡片
@@ -210,6 +167,8 @@ export default function PaperRead() {
 
   // — three-pane new state —
   const [selection, setSelection] = useState(null)  // {text, page, x, y}
+  const [selectionOcrPending, setSelectionOcrPending] = useState(false)
+  const [selectionOcrError, setSelectionOcrError] = useState('')
   const [pendingQuote, setPendingQuote] = useState(null)  // quote about to be sent
   const [currentPage, setCurrentPage] = useState(1)
   const [chatOpen, setChatOpen] = useState(false)  // V1：对话按需唤出，不常驻右栏
@@ -240,6 +199,7 @@ export default function PaperRead() {
   const bookmarkBtnRef = useRef(null)
   const pdfViewerRef = useRef(null)
   const selectionToolbarRef = useRef(null)
+  const selectionOcrRequestRef = useRef(0)
   const paperTourStartedRef = useRef(false)
   const [paperTourStep, setPaperTourStep] = useState(0)
   const externalLinkRef = useRef(null)
@@ -292,6 +252,52 @@ export default function PaperRead() {
       .trim()
     if (!text) return
     setPdfPageTexts(prev => prev[pageNum] === text ? prev : { ...prev, [pageNum]: text })
+  }, [])
+
+  const handlePdfSelection = useCallback((nextSelection) => {
+    const requestId = selectionOcrRequestRef.current + 1
+    selectionOcrRequestRef.current = requestId
+    setSelection(nextSelection)
+    setSelectionOcrPending(false)
+    setSelectionOcrError('')
+    if (!nextSelection?.needsOcr) return
+    if (!nextSelection.selectionImage) {
+      setSelectionOcrError('这份 PDF 的文字层不可读，请缩短选区后重试。')
+      return
+    }
+
+    setSelectionOcrPending(true)
+    apiPost('/ocr/selection', { image_data_url: nextSelection.selectionImage })
+      .then((data) => {
+        if (selectionOcrRequestRef.current !== requestId) return
+        if (!data.ok || !data.text?.trim()) {
+          setSelectionOcrError(data.error || '未能识别这段文字，请缩短选区后重试。')
+          return
+        }
+        const text = data.text.trim()
+        setSelection(current => current === nextSelection ? {
+          ...current,
+          text,
+          needsOcr: false,
+          selectionImage: '',
+          textSource: 'ocr',
+          anchor: {
+            ...(current.anchor || {}),
+            textStart: text.slice(0, 120),
+            textEnd: text.slice(-120),
+          },
+        } : current)
+      })
+      .catch(() => {
+        if (selectionOcrRequestRef.current === requestId) {
+          setSelectionOcrError('文字识别服务暂时不可用，请稍后重试。')
+        }
+      })
+      .finally(() => {
+        if (selectionOcrRequestRef.current === requestId) {
+          setSelectionOcrPending(false)
+        }
+      })
   }, [])
 
   // ── load paper: 推荐缓存 → last-reading → 收藏库（Zotero 等外部深链冷打开） ──
@@ -652,7 +658,7 @@ export default function PaperRead() {
 
   // ── selection bubble → preload quote ──
   const askAboutSelection = () => {
-    if (!selection) return
+    if (!selection || selection.needsOcr || selectionOcrPending) return
     setPendingQuote({
       text: selection.text,
       page: selection.page,
@@ -671,7 +677,7 @@ export default function PaperRead() {
 
   // ── selection bubble → save as reading card ──
   const saveSelectionAsCard = () => {
-    if (!selection) return
+    if (!selection || selection.needsOcr || selectionOcrPending) return
     setCardSeed({ quote: selection.text, page: selection.page })
     persistStructuredQuote({
       text: selection.text,
@@ -686,7 +692,7 @@ export default function PaperRead() {
 
   // ── selection bubble → 送到汇报（板块选单在 pickBoardSection 落库） ──
   const sendSelectionToBoard = () => {
-    if (!selection) return
+    if (!selection || selection.needsOcr || selectionOcrPending) return
     sendToBoard({
       content: selection.text,
       quote: selection.text,
@@ -734,7 +740,7 @@ export default function PaperRead() {
   }
 
   const deepReadSelection = () => {
-    if (!selection) return
+    if (!selection || selection.needsOcr || selectionOcrPending) return
     const selected = selection
     setSelection(null)
     window.getSelection()?.removeAllRanges()
@@ -1155,13 +1161,14 @@ export default function PaperRead() {
                 ref={pdfViewerRef}
                 url={pdfUrl}
                 originalUrl={pdfOriginalUrl}
-                onSelection={setSelection}
+                onSelection={handlePdfSelection}
                 onSnip={handleSnip}
                 onPageChange={setCurrentPage}
                 onTextReady={handlePdfTextReady}
                 onUploadLocalPdf={handleUploadPdf}
                 uploadingLocalPdf={uploadingPdf}
                 highlights={quotes}
+                preferChineseText={/[\u3400-\u9fff\uf900-\ufaff]/.test(paper?.title || '')}
                 sectionHint={null}
                 headerLeft={
                   <button
@@ -1195,30 +1202,43 @@ export default function PaperRead() {
                 aria-label="选中文字操作"
                 className="fixed z-50 grid max-w-[calc(100vw-24px)] grid-cols-2 items-center gap-0.5 rounded-xl border border-navy/10 bg-warm-white/95 p-1 shadow-[0_10px_30px_-12px_rgba(30,58,95,.38)] backdrop-blur-md sm:flex"
                 style={getSelectionToolbarPosition(selection)}>
-                <button
-                  onClick={askAboutSelection}
-                  className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-navy px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-navy-light transition-colors">
-                  <Sparkles size={13}/>
-                  问 papermind
-                </button>
-                <button
-                  onClick={deepReadSelection}
-                  className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-navy/5 transition-colors">
-                  <FileText size={13}/>
-                  精读这段
-                </button>
-                <button
-                  onClick={saveSelectionAsCard}
-                  className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-coral px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-coral-deep transition-colors">
-                  <Layers size={13}/>
-                  存为卡片
-                </button>
-                <button
-                  onClick={sendSelectionToBoard}
-                  className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-mint/20 hover:text-mint-deep transition-colors">
-                  <Presentation size={13}/>
-                  送到汇报
-                </button>
+                {selectionOcrPending ? (
+                  <span className="col-span-2 flex items-center gap-2 whitespace-nowrap px-3 py-1.5 text-xs text-navy sm:col-auto">
+                    <Loader2 size={13} className="animate-spin text-coral"/>
+                    正在识别选中文字…
+                  </span>
+                ) : selectionOcrError ? (
+                  <span className="col-span-2 max-w-[360px] px-3 py-1.5 text-xs leading-relaxed text-coral sm:col-auto">
+                    {selectionOcrError}
+                  </span>
+                ) : (
+                  <>
+                    <button
+                      onClick={askAboutSelection}
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-navy px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-navy-light transition-colors">
+                      <Sparkles size={13}/>
+                      问 papermind
+                    </button>
+                    <button
+                      onClick={deepReadSelection}
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-navy/5 transition-colors">
+                      <FileText size={13}/>
+                      精读这段
+                    </button>
+                    <button
+                      onClick={saveSelectionAsCard}
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-coral px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-coral-deep transition-colors">
+                      <Layers size={13}/>
+                      存为卡片
+                    </button>
+                    <button
+                      onClick={sendSelectionToBoard}
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-mint/20 hover:text-mint-deep transition-colors">
+                      <Presentation size={13}/>
+                      送到汇报
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>

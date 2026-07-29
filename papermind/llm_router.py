@@ -44,6 +44,7 @@ _TASK_MODEL_ENV = {
     "enrich": "LLM_TASK_ENRICH_MODELS",
     "summary": "LLM_TASK_SUMMARY_MODELS",
     "chat": "LLM_TASK_CHAT_MODELS",
+    "ocr": "LLM_TASK_OCR_MODELS",
 }
 
 _COMMON_TEXT_MODELS = [
@@ -70,7 +71,14 @@ _TASK_MODEL_DEFAULTS = {
     "categorize": list(_COMMON_TEXT_MODELS),
     "enrich": list(_COMMON_TEXT_MODELS),
     "chat": list(_COMMON_TEXT_MODELS),
+    "ocr": [
+        "qwen3.5-ocr",
+        "qwen-vl-ocr-latest",
+        "qwen3.7-plus",
+    ],
 }
+
+_VISION_MODEL_MARKERS = ("qwen3.5-ocr", "qwen-vl-ocr", "qwen3.7")
 
 
 def _get_task_preferred_models(task: str) -> list[str]:
@@ -215,6 +223,11 @@ def _build_async_llm_client(provider: dict) -> AsyncOpenAI:
 
 def _ordered_llm_slots(task: str = "", prefer_model: str = "") -> list[dict]:
     all_slots = _get_llm_slots()
+    if task == "ocr":
+        all_slots = [
+            provider for provider in all_slots
+            if any(marker in provider.get("model", "") for marker in _VISION_MODEL_MARKERS)
+        ]
     # 自定义通道不参与按任务重排——用户显式配置的模型永远最优先
     custom_slots = [p for p in all_slots if _is_custom_slot(p)]
     slots = [p for p in all_slots if not _is_custom_slot(p)]

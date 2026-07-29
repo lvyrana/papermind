@@ -19,6 +19,7 @@ import { getUserId } from '../api'
    ───────────────────────────────────────────────────────────── */
 
 import * as pdfjsLib from 'pdfjs-dist'
+import { shouldOcrSelection } from '../utils/selectionText'
 // Vite 专属语法：?url 导入资源得到最终构建后的 URL，绕过 import 解析
 // 如果项目用 webpack/parcel，看 README 末尾的替代方案
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
@@ -53,6 +54,44 @@ function normalizeSelectedText(value) {
     .trim()
 }
 
+function captureSelectionImage(pageInfo, rects) {
+  const canvas = pageInfo?.canvas
+  const outputScale = pageInfo?.outputScale || 1
+  if (!canvas || !rects?.length) return ''
+
+  const left = Math.max(0, Math.min(...rects.map(rect => rect.x)))
+  const top = Math.max(0, Math.min(...rects.map(rect => rect.y)))
+  const right = Math.min(canvas.clientWidth, Math.max(...rects.map(rect => rect.x + rect.width)))
+  const bottom = Math.min(canvas.clientHeight, Math.max(...rects.map(rect => rect.y + rect.height)))
+  if (right <= left || bottom <= top) return ''
+
+  const padding = 8
+  const crop = document.createElement('canvas')
+  crop.width = Math.ceil((right - left + padding * 2) * outputScale)
+  crop.height = Math.ceil((bottom - top + padding * 2) * outputScale)
+  const context = crop.getContext('2d')
+  if (!context) return ''
+  context.fillStyle = '#ffffff'
+  context.fillRect(0, 0, crop.width, crop.height)
+
+  // Only copy the selected line rectangles. This keeps text before the first
+  // selected character and after the last selected character out of OCR.
+  for (const rect of rects) {
+    context.drawImage(
+      canvas,
+      rect.x * outputScale,
+      rect.y * outputScale,
+      rect.width * outputScale,
+      rect.height * outputScale,
+      (rect.x - left + padding) * outputScale,
+      (rect.y - top + padding) * outputScale,
+      rect.width * outputScale,
+      rect.height * outputScale,
+    )
+  }
+  return crop.toDataURL('image/jpeg', 0.92)
+}
+
 function getCanvasOutputScale(viewport) {
   const deviceScale = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR)
   const cssPixels = viewport.width * viewport.height
@@ -65,7 +104,7 @@ const PdfViewer = forwardRef(function PdfViewer(
   {
     url, originalUrl, onSelection, onPageChange, onTextReady, sectionHint,
     headerLeft, headerRight, onUploadLocalPdf, uploadingLocalPdf, highlights = [],
-    onSnip,
+    onSnip, preferChineseText = false,
   },
   ref,
 ) {
@@ -174,7 +213,13 @@ const PdfViewer = forwardRef(function PdfViewer(
     const lines = []
     for (const r of kept.sort((p, q) => (p.y + p.height / 2) - (q.y + q.height / 2))) {
       const cy = r.y + r.height / 2
-      const line = lines.find(L => Math.abs(L.cy - cy) < Math.max(L.h, r.height) * 0.6)
+      const line = lines.find((L) => {
+        const overlap = Math.min(L.y2, r.y + r.height) - Math.max(L.y1, r.y)
+        const overlapRatio = overlap / Math.max(1, Math.min(L.h, r.height))
+        const centerDistance = Math.abs(L.cy - cy)
+        return overlapRatio >= 0.45
+          || centerDistance < Math.max(L.h, r.height) * 0.65
+      })
       if (line) {
         line.x1 = Math.min(line.x1, r.x); line.x2 = Math.max(line.x2, r.x + r.width)
         line.y1 = Math.min(line.y1, r.y); line.y2 = Math.max(line.y2, r.y + r.height)
@@ -712,6 +757,10 @@ const PdfViewer = forwardRef(function PdfViewer(
           }))
         : []
       const pageInfo = pageRefs.current[pageNum]
+      const needsOcr = shouldOcrSelection(text, { preferCjk: preferChineseText })
+      const selectionImage = needsOcr
+        ? captureSelectionImage(pageInfo, selectedRects)
+        : ''
       const viewportLineRects = mergeLineRects(rangeRects.map(r => ({
         x: r.left,
         y: r.top,
@@ -747,7 +796,15 @@ const PdfViewer = forwardRef(function PdfViewer(
           textStart: text.slice(0, 120),
           textEnd: text.slice(-120),
         },
+        needsOcr,
+        selectionImage,
         bounds,
+        selectionRects: toolbarRects.map(r => ({
+          left: r.x,
+          top: r.y,
+          right: r.x + r.width,
+          bottom: r.y + r.height,
+        })),
         x: bounds ? (bounds.left + bounds.right) / 2 : window.innerWidth / 2,
         y: bounds?.top ?? 80,
       })
@@ -761,7 +818,7 @@ const PdfViewer = forwardRef(function PdfViewer(
       document.removeEventListener('mouseup', handler)
       scroller?.removeEventListener('scroll', onScroll)
     }
-  }, [currentPage, mergeLineRects, onSelection, scale])
+  }, [currentPage, mergeLineRects, onSelection, preferChineseText, scale])
 
   // ── repaint persisted quote highlights whenever backend quotes change ──
   useEffect(() => {

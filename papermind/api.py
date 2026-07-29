@@ -236,6 +236,9 @@ class DraftCardRequest(BaseModel):
     question: str = Field(default="", max_length=2000)
     answer: str = Field(default="", max_length=4000)
 
+class OcrSelectionRequest(BaseModel):
+    image_data_url: str = Field(max_length=6_000_000)
+
 class DeepReadGuideRequest(BaseModel):
     paper_title: str = Field(max_length=500)
     paper_abstract: str = Field(default="", max_length=5000)
@@ -1741,6 +1744,76 @@ CARD_TYPE_GUIDES = {
     "transfer": "提炼可迁移的启发：这个方法/思路能否用到用户自己的研究里，具体怎么用，需要注意什么。",
 }
 
+def _looks_like_garbled_selection(value: str) -> bool:
+    text = re.sub(r"\s+", "", str(value or ""))
+    if len(text) < 12:
+        return False
+    if re.search(r"[\x7f-\x9f\ufffd]", text):
+        return True
+    suspicious = len(re.findall(r"[\\\[\]\^_`{|}~]", text))
+    return suspicious >= 4 and suspicious / len(text) > 0.06
+
+
+def _validated_selection_image(data_url: str) -> str:
+    match = re.fullmatch(
+        r"data:image/(?:png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=\r\n]+)",
+        str(data_url or ""),
+    )
+    if not match:
+        raise ValueError("invalid image data")
+    image_bytes = base64.b64decode(match.group(1), validate=True)
+    if not image_bytes or len(image_bytes) > 4 * 1024 * 1024:
+        raise ValueError("image too large")
+    return data_url
+
+
+@app.post("/api/ocr/selection")
+async def api_ocr_selection(data: OcrSelectionRequest, request: Request):
+    """仅识别用户当前划选的文字截图，不保存图片。"""
+    uid = _get_user_id(request)
+    is_owner = OWNER_UID and uid == OWNER_UID
+    try:
+        image_data_url = _validated_selection_image(data.image_data_url)
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "选区图像无效，请重新划选。"}
+
+    if not check_rate_limit("__global__", "chat", GLOBAL_DAILY_CHAT_LIMIT):
+        return {"ok": False, "error": "今日 AI 服务使用量已达上限，明天恢复。"}
+    if not is_owner and not check_rate_limit(uid, "chat", DAILY_CHAT_LIMIT):
+        return {"ok": False, "error": f"你今天的 AI 次数已用完（每天 {DAILY_CHAT_LIMIT} 次）。"}
+    if not _has_llm_config(task="ocr"):
+        return {"ok": False, "error": "当前模型不支持选区文字识别。"}
+
+    raw, _, model = await _llm_chat_complete_async(
+        [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_data_url},
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "请逐字识别图片中实际出现的文字，只输出识别结果。"
+                        "保留原有中文标点和段落顺序，不要总结、改写、补充或解释。"
+                    ),
+                },
+            ],
+        }],
+        max_tokens=1800,
+        temperature=0,
+        task="ocr",
+    )
+    text = re.sub(r"^```(?:text)?\s*|\s*```$", "", raw or "", flags=re.IGNORECASE).strip()
+    if not text or _looks_like_garbled_selection(text):
+        return {"ok": False, "error": "未能可靠识别这段文字，请缩短选区后重试。"}
+
+    increment_rate_limit("__global__", "chat")
+    if not is_owner:
+        increment_rate_limit(uid, "chat")
+    return {"ok": True, "text": text, "model": model}
+
 
 @app.post("/api/cards")
 def api_create_card(data: CreateCardRequest, request: Request):
@@ -1751,6 +1824,11 @@ def api_create_card(data: CreateCardRequest, request: Request):
         return {"ok": False, "error": "not found"}
     if data.card_type not in CARD_TYPES:
         return {"ok": False, "error": "invalid card_type"}
+    if data.quote and _looks_like_garbled_selection(data.quote):
+        return {
+            "ok": False,
+            "error": "选区文字无法可靠提取，请重新划选并等待文字识别完成。",
+        }
     card_id = save_card(
         data.paper_rowid, data.card_type, data.title, data.content,
         quote=data.quote, page=data.page, source=data.source,
@@ -1793,6 +1871,11 @@ async def api_draft_card(data: DraftCardRequest, request: Request):
     """AI 起草一张卡片（不落库，前端展示可编辑草稿）"""
     uid = _get_user_id(request)
     is_owner = OWNER_UID and uid == OWNER_UID
+    if data.quote and _looks_like_garbled_selection(data.quote):
+        return {
+            "ok": False,
+            "error": "选区文字无法可靠提取，请重新划选并等待文字识别完成。",
+        }
 
     if not check_rate_limit("__global__", "chat", GLOBAL_DAILY_CHAT_LIMIT):
         return {"ok": False, "error": "今日 AI 服务使用量已达上限，明天恢复。"}
@@ -1815,11 +1898,25 @@ async def api_draft_card(data: DraftCardRequest, request: Request):
         context_parts.append(f"AI 此前的回答：{data.answer[:2000]}")
     context = "\n\n".join(context_parts) if context_parts else "（用户没有提供划选段落，请基于论文摘要提炼）"
 
+    abstract_context = (
+        ""
+        if data.quote
+        else f"\n论文摘要：{data.paper_abstract[:1500]}"
+    )
+    evidence_rule = (
+        "用户提供了划选原文。卡片只能概括该段原文，不得从论文摘要、常识或其他段落补充"
+        "原文未出现的指标、数字、步骤或结论。"
+        if data.quote
+        else "用户未提供划选原文，可基于论文摘要提炼。"
+    )
+
     system_prompt = f"""你是一位学术阅读助手，帮用户把读到的内容沉淀为一张「{CARD_TYPE_LABELS[card_type]}」。
 {CARD_TYPE_GUIDES[card_type]}
 
 论文标题：{data.paper_title}
-论文摘要：{data.paper_abstract[:1500]}
+{abstract_context}
+
+证据边界：{evidence_rule}
 
 {f"用户研究背景：{chr(10)}{profile_text}" if profile_text else ""}
 
