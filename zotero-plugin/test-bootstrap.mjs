@@ -71,3 +71,10 @@ test('adds Basic Auth and the device header after configuration', () => {
     },
   )
 })
+
+test('opens Zotero imports explicitly as saved library papers', () => {
+  assert.equal(
+    PaperMind.buildReadingUrl('https://papermindapp.com', 42, validUid),
+    `https://papermindapp.com/paper/42?library=1&uid=${validUid}`,
+  )
+})

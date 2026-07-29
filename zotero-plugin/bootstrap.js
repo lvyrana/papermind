@@ -95,6 +95,10 @@ var PaperMind = {
     }
   },
 
+  buildReadingUrl(base, paperId, uid) {
+    return `${base}/paper/${encodeURIComponent(paperId)}?library=1&uid=${encodeURIComponent(uid)}`
+  },
+
   async readError(resp) {
     try {
       const text = (await resp.text()).slice(0, 500)
@@ -292,7 +296,7 @@ var PaperMind = {
       }
 
       // 3. 打开浏览器进入阅读页（?uid= 让新浏览器自动继承设备身份）
-      Zotero.launchURL(`${base}/paper/${saved.id}?uid=${encodeURIComponent(uid)}`)
+      Zotero.launchURL(this.buildReadingUrl(base, saved.id, uid))
     } catch (e) {
       this.log('openSelected failed: ' + e)
       Services.prompt.alert(win, 'PaperMind',
