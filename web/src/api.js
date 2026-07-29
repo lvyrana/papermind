@@ -89,17 +89,28 @@ async function handleResponse(r) {
   return r.json()
 }
 
-export async function apiGet(path) {
-  const r = await fetch(`${API_BASE}${path}`, { headers: headers() })
+async function fetchWithTimeout(url, init, timeoutMs = 0) {
+  if (!timeoutMs) return fetch(url, init)
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+export async function apiGet(path, { timeoutMs = 0 } = {}) {
+  const r = await fetchWithTimeout(`${API_BASE}${path}`, { headers: headers() }, timeoutMs)
   return handleResponse(r)
 }
 
-export async function apiPost(path, body) {
-  const r = await fetch(`${API_BASE}${path}`, {
+export async function apiPost(path, body, { timeoutMs = 0 } = {}) {
+  const r = await fetchWithTimeout(`${API_BASE}${path}`, {
     method: 'POST',
     headers: headers({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
-  })
+  }, timeoutMs)
   return handleResponse(r)
 }
 

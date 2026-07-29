@@ -20,6 +20,7 @@ import {
   getOcrClipboardText,
   shouldOcrPage,
 } from '../utils/selectionText'
+import { retryAsync } from '../utils/retryAsync'
 
 /* ─────────────────────────────────────────────────────────────
    PaperRead — 三栏版 (PDF + 记忆通道)
@@ -340,7 +341,16 @@ export default function PaperRead() {
 
     setSelfTestPreparing(true)
     try {
-      const cached = await apiGet(`/papers/${savedRowId}/ocr-pages`)
+      let cached
+      try {
+        cached = await retryAsync(
+          () => apiGet(`/papers/${savedRowId}/ocr-pages`, { timeoutMs: 10_000 }),
+          { attempts: 3, delayMs: 700 },
+        )
+      } catch {
+        setSelfTestPrepareError('网络连接不稳定，全文缓存读取失败。请稍后重试。')
+        return
+      }
       if (!cached.ok) {
         setSelfTestPrepareError(cached.error || '全文缓存读取失败，请稍后重试。')
         return
@@ -373,12 +383,20 @@ export default function PaperRead() {
           setSelfTestPrepareError(`第 ${pageNumber} 页还没加载完成，请稍后重试。`)
           return
         }
-        const data = await apiPost('/ocr/selection', {
-          image_data_url: pageImage,
-          scope: 'page',
-          paper_rowid: savedRowId,
-          page_number: pageNumber,
-        })
+        let data
+        try {
+          data = await apiPost('/ocr/selection', {
+            image_data_url: pageImage,
+            scope: 'page',
+            paper_rowid: savedRowId,
+            page_number: pageNumber,
+          }, { timeoutMs: 150_000 })
+        } catch {
+          setSelfTestPrepareError(
+            `第 ${pageNumber} 页识别时网络连接中断。已完成页面会保留，请重试。`,
+          )
+          return
+        }
         if (!data.ok || !data.text?.trim()) {
           setSelfTestPrepareError(data.error || `第 ${pageNumber} 页识别失败，请稍后重试。`)
           return
