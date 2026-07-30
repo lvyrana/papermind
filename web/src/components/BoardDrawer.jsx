@@ -50,8 +50,13 @@ function countBySection(items) {
   return m
 }
 
-export async function downloadBoardMarp(paperRowid, title) {
-  const res = await fetch(`${API_BASE}/board/${paperRowid}/export/marp`, {
+export const EXPORT_FORMATS = [
+  { key: 'pptx', label: 'PowerPoint', hint: '.pptx · 双击即开，可直接讲', ext: 'pptx' },
+  { key: 'md',   label: 'Markdown',   hint: '.md · 粘进 Obsidian / Notion', ext: 'md' },
+]
+
+export async function downloadBoard(paperRowid, title, format = 'pptx') {
+  const res = await fetch(`${API_BASE}/board/${paperRowid}/export/${format}`, {
     headers: { 'X-User-ID': getUserId() },
   })
   if (!res.ok) throw new Error('export failed')
@@ -59,9 +64,46 @@ export async function downloadBoardMarp(paperRowid, title) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `汇报-${(title || 'paper').slice(0, 40)}.md`
+  const ext = (EXPORT_FORMATS.find(f => f.key === format) || {}).ext || format
+  a.download = `汇报-${(title || 'paper').slice(0, 40)}.${ext}`
   a.click()
   URL.revokeObjectURL(url)
+}
+
+// 兼容旧调用
+export const downloadBoardMarp = (paperRowid, title) => downloadBoard(paperRowid, title, 'pptx')
+
+
+/* ── 导出按钮：默认给真 PPT，可切 Markdown ── */
+function ExportButton({ onExport, exporting, compact = false }) {
+  const [open, setOpen] = useState(false)
+  const pick = (fmt) => { setOpen(false); onExport(fmt) }
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(o => !o)} disabled={exporting}
+        className={compact
+          ? 'inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg text-[11.5px] font-medium bg-navy text-warm-white hover:bg-navy-light transition-colors disabled:opacity-50'
+          : 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-navy text-warm-white hover:bg-navy-light transition-colors disabled:opacity-50'}>
+        {exporting ? <Loader2 size={11} className="animate-spin"/> : <Download size={11}/>}
+        导出
+        <ChevronRight size={10} className={`transition-transform ${open ? 'rotate-90' : ''}`}/>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}/>
+          <div className="absolute right-0 bottom-full mb-1.5 z-50 w-52 rounded-xl border border-cream-dark bg-warm-white shadow-[0_12px_32px_-10px_rgba(30,58,95,.32)] p-1.5">
+            {EXPORT_FORMATS.map(f => (
+              <button key={f.key} onClick={() => pick(f.key)}
+                className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-cream transition-colors">
+                <span className="block text-[12.5px] text-navy font-medium">{f.label}</span>
+                <span className="block text-[10.5px] text-warm-gray/80 mt-0.5">{f.hint}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 /* ── 右栏紧凑区块 ─────────────────────────────────────────── */
@@ -98,10 +140,7 @@ export function BoardRail({ board, onOpen, onExport, exporting, variant = 'secti
           className="flex-1 inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg text-[11.5px] font-medium border border-navy/12 text-navy hover:border-coral/40 hover:text-coral transition-colors">
           打开汇报板 <ChevronRight size={11}/>
         </button>
-        <button onClick={onExport} disabled={exporting}
-          className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg text-[11.5px] font-medium bg-navy text-warm-white hover:bg-navy-light transition-colors disabled:opacity-50">
-          {exporting ? <Loader2 size={11} className="animate-spin"/> : <Download size={11}/>} 导出 PPT
-        </button>
+        <ExportButton onExport={onExport} exporting={exporting} compact/>
       </div>
       {variant !== 'rail' && (
         <p className="mt-2 text-[10.5px] text-warm-gray/55 leading-relaxed m-0">
@@ -195,9 +234,9 @@ export default function BoardDrawer({ paper, board, open, onClose, onRefresh, on
     onRefresh()
   }
 
-  const doExport = async () => {
+  const doExport = async (format = 'pptx') => {
     setExporting(true)
-    try { await downloadBoardMarp(paperRowid, paper?.title) } catch { /* ignore */ }
+    try { await downloadBoard(paperRowid, paper?.title, format) } catch { /* ignore */ }
     setExporting(false)
   }
 
@@ -215,10 +254,7 @@ export default function BoardDrawer({ paper, board, open, onClose, onRefresh, on
             <p className="m-0 mt-0.5 text-[13px] text-navy font-medium truncate">{paper?.title}</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button onClick={doExport} disabled={exporting}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-navy text-warm-white hover:bg-navy-light disabled:opacity-50">
-              {exporting ? <Loader2 size={11} className="animate-spin"/> : <Download size={11}/>} 导出 PPT
-            </button>
+            <ExportButton onExport={doExport} exporting={exporting}/>
             <button onClick={onClose} className="text-warm-gray/70 hover:text-navy p-1"><X size={16}/></button>
           </div>
         </div>
