@@ -267,25 +267,36 @@ export default function PaperRead() {
   const handlePdfSelection = useCallback((nextSelection) => {
     const requestId = selectionOcrRequestRef.current + 1
     selectionOcrRequestRef.current = requestId
-    setSelection(nextSelection)
+    // 用请求号给这次选区盖章：后续只认号，不认对象身份。
+    // 曾用 current === nextSelection 比对，中间任何一次 setSelection
+    // （滚动收起浮窗、重新划选）都会让 === 不成立 → OCR 结果被静默丢弃，
+    // needsOcr 永远留 true → 工具条看着正常却点不动。
+    const stamped = nextSelection ? { ...nextSelection, ocrRequestId: requestId } : nextSelection
+    setSelection(stamped)
     setSelectionOcrPending(false)
     setSelectionOcrError('')
-    if (!nextSelection?.needsOcr) return
-    if (!nextSelection.selectionImage) {
-      setSelectionOcrError('这份 PDF 的文字层不可读，请缩短选区后重试。')
+    if (!stamped?.needsOcr) return
+    if (!stamped.selectionImage) {
+      // 拿不到选区图就没法识别：清掉 needsOcr，改用文字层原文，别把用户卡死
+      setSelection(current => current?.ocrRequestId === requestId
+        ? { ...current, needsOcr: false, textSource: 'raw' } : current)
+      setSelectionOcrError('这份 PDF 的文字层不可读，识别不可用，已改用原文。')
       return
     }
 
     setSelectionOcrPending(true)
-    apiPost('/ocr/selection', { image_data_url: nextSelection.selectionImage })
+    apiPost('/ocr/selection', { image_data_url: stamped.selectionImage })
       .then((data) => {
         if (selectionOcrRequestRef.current !== requestId) return
         if (!data.ok || !data.text?.trim()) {
-          setSelectionOcrError(data.error || '未能识别这段文字，请缩短选区后重试。')
+          // 识别失败也必须解除标记，否则四个操作被永久锁死（handler 里还有二道守卫）
+          setSelection(current => current?.ocrRequestId === requestId
+            ? { ...current, needsOcr: false, textSource: 'raw' } : current)
+          setSelectionOcrError(data.error || '未能识别这段文字，已改用原文。')
           return
         }
         const text = data.text.trim()
-        setSelection(current => current === nextSelection ? {
+        setSelection(current => current?.ocrRequestId === requestId ? {
           ...current,
           rawText: current.text,
           text,
@@ -301,7 +312,9 @@ export default function PaperRead() {
       })
       .catch(() => {
         if (selectionOcrRequestRef.current === requestId) {
-          setSelectionOcrError('文字识别服务暂时不可用，请稍后重试。')
+          setSelection(current => current?.ocrRequestId === requestId
+            ? { ...current, needsOcr: false, textSource: 'raw' } : current)
+          setSelectionOcrError('文字识别服务暂时不可用，已改用原文。')
         }
       })
       .finally(() => {
@@ -773,7 +786,7 @@ export default function PaperRead() {
 
   // ── selection bubble → preload quote ──
   const askAboutSelection = () => {
-    if (!selection || selection.needsOcr || selectionOcrPending) return
+    if (!selection) return
     setPendingQuote({
       text: selection.text,
       page: selection.page,
@@ -792,7 +805,7 @@ export default function PaperRead() {
 
   // ── selection bubble → save as reading card ──
   const saveSelectionAsCard = () => {
-    if (!selection || selection.needsOcr || selectionOcrPending) return
+    if (!selection) return
     setCardSeed({ quote: selection.text, page: selection.page })
     persistStructuredQuote({
       text: selection.text,
@@ -807,7 +820,7 @@ export default function PaperRead() {
 
   // ── selection bubble → 送到汇报（板块选单在 pickBoardSection 落库） ──
   const sendSelectionToBoard = () => {
-    if (!selection || selection.needsOcr || selectionOcrPending) return
+    if (!selection) return
     sendToBoard({
       content: selection.text,
       quote: selection.text,
@@ -855,7 +868,7 @@ export default function PaperRead() {
   }
 
   const deepReadSelection = () => {
-    if (!selection || selection.needsOcr || selectionOcrPending) return
+    if (!selection) return
     const selected = selection
     setSelection(null)
     window.getSelection()?.removeAllRanges()
@@ -1195,7 +1208,6 @@ export default function PaperRead() {
     )
   }
 
-  const selectionActionsDisabled = selectionOcrPending || Boolean(selection?.needsOcr)
 
   // ════════════════════════════════════════════════════════════
   // RENDER
@@ -1319,20 +1331,21 @@ export default function PaperRead() {
                 aria-label="选中文字操作"
                 className="fixed z-50 grid max-w-[calc(100vw-24px)] grid-cols-2 items-center gap-0.5 rounded-xl border border-navy/10 bg-warm-white/95 p-1 shadow-[0_10px_30px_-12px_rgba(30,58,95,.38)] backdrop-blur-md sm:flex"
                 style={getSelectionToolbarPosition(selection)}>
-                {/* 操作始终可见；只有确认文字可靠后才允许沉淀到对话、卡片或汇报。 */}
+                {/* OCR 只增强不阻断：四个操作任何时候都能点，识别成功只是把文字换成更准的版本。
+                    别再用 disabled 关它们——识别一失败就会永久锁死（needsOcr 不会自己清）。 */}
                 {(selectionOcrPending || selectionOcrError) && (
                   <span className={`col-span-2 flex items-center gap-1.5 whitespace-nowrap px-2 py-1 text-[11px] sm:col-auto ${
-                    selectionOcrError ? 'text-coral' : 'text-navy/70'
+                    selectionOcrError ? 'text-warm-gray' : 'text-navy/70'
                   }`}
                     title={selectionOcrError || ''}>
                     {selectionOcrPending
-                      ? <><Loader2 size={11} className="animate-spin text-coral"/>识别中，完成后可用</>
+                      ? <><Loader2 size={11} className="animate-spin text-coral"/>识别中</>
                       : (
                         <button
                           type="button"
                           onClick={() => handlePdfSelection(selection)}
-                          className="rounded-md px-1.5 py-0.5 hover:bg-coral/10 transition-colors">
-                          识别失败 · 重试
+                          className="rounded-md px-1.5 py-0.5 text-warm-gray hover:bg-coral/10 hover:text-coral transition-colors">
+                          用原文 · 重试识别
                         </button>
                       )}
                   </span>
@@ -1341,29 +1354,25 @@ export default function PaperRead() {
                   <>
                     <button
                       onClick={askAboutSelection}
-                      disabled={selectionActionsDisabled}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-navy px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-navy-light transition-colors disabled:cursor-not-allowed disabled:opacity-40">
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-navy px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-navy-light transition-colors">
                       <Sparkles size={13}/>
                       问 papermind
                     </button>
                     <button
                       onClick={deepReadSelection}
-                      disabled={selectionActionsDisabled}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-navy/5 transition-colors disabled:cursor-not-allowed disabled:opacity-40">
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-navy/5 transition-colors">
                       <FileText size={13}/>
                       精读这段
                     </button>
                     <button
                       onClick={saveSelectionAsCard}
-                      disabled={selectionActionsDisabled}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-coral px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-coral-deep transition-colors disabled:cursor-not-allowed disabled:opacity-40">
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-coral px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-coral-deep transition-colors">
                       <Layers size={13}/>
                       存为卡片
                     </button>
                     <button
                       onClick={sendSelectionToBoard}
-                      disabled={selectionActionsDisabled}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-mint/20 hover:text-mint-deep transition-colors disabled:cursor-not-allowed disabled:opacity-40">
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-mint/20 hover:text-mint-deep transition-colors">
                       <Presentation size={13}/>
                       送到汇报
                     </button>
