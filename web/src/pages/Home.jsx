@@ -388,9 +388,8 @@ export default function Home() {
       {/* ═══ W2 精读工作台：桌面与窄屏共用同一条产品路径 ═══ */}
       <div className={`${SHOW_LEGACY_FEED ? 'hidden lg:block' : 'block'} max-w-[1280px] mx-auto px-4 sm:px-6 lg:px-10 pt-20 sm:pt-24 pb-12`}>
 
-        {/* ─── W2 header：日期 · 问候 · 一行「papermind 还记得」 ─── */}
+        {/* ─── W2 header：问候 · 一行「papermind 还记得」 ─── */}
         <header className="mb-7 sm:mb-9">
-          <p className="text-warm-gray text-xs mb-2.5 font-mono">{formatToday()}</p>
           <h1 className="pm-page-title text-[36px] sm:text-[40px] text-navy leading-[1.15] m-0">{greeting}</h1>
           {memoryRecent && (
             <div className="mt-4 sm:mt-5 max-w-[660px] flex flex-col sm:flex-row items-start gap-1 sm:gap-2.5 text-[13px] leading-[1.75]">
@@ -858,11 +857,6 @@ function WbStatusDot({ status }) {
   )
 }
 
-function formatToday() {
-  const d = new Date()
-  const week = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][d.getDay()]
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${week}`
-}
 
 function DeepReadEntry({
   query, setQuery, results, searching, saving, uploading, error,
