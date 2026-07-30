@@ -354,6 +354,16 @@ async def update_memory_recent(uid: str, force: bool = False) -> dict:
     reset_recent_events(uid)
     refreshed_profile = get_profile(uid)
     auto_merged = await maybe_auto_refresh_memory_core(uid, refreshed_profile)
+
+    # 「你说过的」搭同一班车：update_memory_recent 本身已被事件数/时间节流，
+    # 挂在它成功之后就天然共用那套节流，不必再造一套阈值。
+    # 失败不影响 recent 的结果——记忆是增强，不该因为一次提取失败就整体报错。
+    stated_result = {"ok": True, "skipped": True, "reason": "not_run"}
+    try:
+        stated_result = await update_stated_memory(uid)
+    except Exception as exc:  # noqa: BLE001 - 提取失败不应影响主流程
+        print(f"[memory] stated 提取失败：{exc}")
+
     latest = get_profile(uid)
     return {
         "ok": True,
@@ -361,6 +371,7 @@ async def update_memory_recent(uid: str, force: bool = False) -> dict:
         "core": latest.get("memory_core", ""),
         "core_generated": core_generated,
         "core_auto_updated": auto_merged,
+        "stated_updated": not stated_result.get("skipped", False),
     }
 
 
