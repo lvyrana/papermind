@@ -271,6 +271,8 @@ def _ensure_db():
         ("last_recent_updated_at", "''"),
         ("last_core_merged_at", "''"),
         ("core_source", "''"),
+        # 「你说过的」：跨对话保留的明确自我陈述，逐条存 JSON，每条可单独删
+        ("memory_stated", "'[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE user_profiles ADD COLUMN {col} TEXT DEFAULT {default}")
@@ -754,6 +756,124 @@ def get_method_gaps(user_id: str, limit: int = 20) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_deep_reading_signals(user_id: str, days: int = 90, limit: int = 40) -> dict:
+    """精读行为信号：记忆改为从这里学，而不是从早已停用的画像表单。
+
+    卡片是最高质量的信号——它是用户自己动手沉淀下来的判断。
+    """
+    conn = _ensure_db()
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    cards = [
+        dict(r) for r in conn.execute(
+            """SELECT rc.card_type, rc.title, rc.content, sp.title AS paper_title, sp.category
+               FROM reading_cards rc JOIN saved_papers sp ON rc.paper_rowid = sp.id
+               WHERE sp.user_id = ? AND rc.created_at >= ?
+               ORDER BY rc.created_at DESC LIMIT ?""",
+            (user_id, since, limit),
+        ).fetchall()
+    ]
+    papers = [
+        dict(r) for r in conn.execute(
+            """SELECT title, category FROM saved_papers
+               WHERE user_id = ? AND COALESCE(last_read_at, saved_at) >= ?
+               ORDER BY COALESCE(last_read_at, saved_at) DESC LIMIT ?""",
+            (user_id, since, limit),
+        ).fetchall()
+    ]
+    questions = [
+        r["content"] for r in conn.execute(
+            """SELECT pc.content FROM paper_chats pc
+               JOIN saved_papers sp ON pc.paper_rowid = sp.id
+               WHERE sp.user_id = ? AND pc.role = 'user' AND pc.created_at >= ?
+               ORDER BY pc.created_at DESC LIMIT ?""",
+            (user_id, since, limit),
+        ).fetchall()
+    ]
+    conn.close()
+    return {"cards": cards, "papers": papers, "questions": questions}
+
+
+def get_stated_memory(user_id: str) -> list[dict]:
+    """「你说过的」——用户在对话里明确讲过的自我陈述，跨对话保留。
+
+    与阅读画像分开存：这里每条都能追到某次对话，画像每句能追到论文和卡片，
+    两边都可查证、可单独删除；混在一段里就又变成无从核实的话。
+    """
+    conn = _ensure_db()
+    row = conn.execute(
+        "SELECT memory_stated FROM user_profiles WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    conn.close()
+    if not row or not row["memory_stated"]:
+        return []
+    try:
+        items = json.loads(row["memory_stated"])
+        return items if isinstance(items, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def save_stated_memory(user_id: str, items: list[dict]):
+    conn = _ensure_db()
+    conn.execute(
+        """INSERT INTO user_profiles (user_id, memory_stated, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET
+             memory_stated = excluded.memory_stated, updated_at = excluded.updated_at""",
+        (user_id, json.dumps(items[:12], ensure_ascii=False), datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def wipe_memory(user_id: str, include_legacy_profile: bool = True):
+    """彻底清空记忆。
+
+    只清 memory_* 不够：早年画像表单写入的 focus_areas / background / discipline 等
+    仍留在库里，任何一处代码读到就会让「用户根本不认的旧描述」重新出现。
+    要清就连它们一起清。
+    """
+    cols = ["memory_core = ''", "memory_recent = ''", "memory_stated = '[]'"]
+    if include_legacy_profile:
+        cols += [
+            "focus_areas = ''", "exclude_areas = ''", "method_interests = ''",
+            "current_goal = ''", "background = ''",
+        ]
+        # discipline 是后加的列，老库可能没有
+        try:
+            conn = _ensure_db()
+            conn.execute("SELECT discipline FROM user_profiles LIMIT 1").fetchone()
+            cols.append("discipline = ''")
+            conn.close()
+        except sqlite3.OperationalError:
+            pass
+    conn = _ensure_db()
+    conn.execute(
+        f"UPDATE user_profiles SET {', '.join(cols)}, updated_at = ? WHERE user_id = ?",
+        (datetime.now().isoformat(), user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_memory_fields(user_id: str, memory_core: Optional[str] = None,
+                         memory_recent: Optional[str] = None):
+    """让用户直接改写/清空记忆。记忆必须可纠正，否则就是黑箱。"""
+    sets, params = [], []
+    if memory_core is not None:
+        sets.append("memory_core = ?"); params.append(memory_core)
+    if memory_recent is not None:
+        sets.append("memory_recent = ?"); params.append(memory_recent)
+    if not sets:
+        return
+    sets.append("updated_at = ?"); params.append(datetime.now().isoformat())
+    params.append(user_id)
+    conn = _ensure_db()
+    conn.execute(f"UPDATE user_profiles SET {', '.join(sets)} WHERE user_id = ?", params)
+    conn.commit()
+    conn.close()
 
 
 def get_portrait(user_id: str) -> dict:

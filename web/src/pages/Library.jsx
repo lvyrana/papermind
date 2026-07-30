@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowLeft, BookOpen, MessageCircle, FileText, Search, Trash2, Plus, X, Loader2, FolderOpen } from 'lucide-react'
 import Navbar from '../components/Navbar'
-import { apiGet, apiDelete, apiPost } from '../api'
+import { apiGet, apiDelete, apiPost, apiPatch } from '../api'
 
 // 「在读」判定与首页一致：last_read_at（缺则 saved_at）在近 14 天内
 const READING_WINDOW_DAYS = 14
@@ -345,8 +345,48 @@ export default function Library() {
    书架 · 画像卡（只读副产品）+ 精读工程行
    ═══════════════════════════════════════════════════════════════ */
 
-// 画像卡：全部由行为聚合，无任何输入控件；数据不足（少于 3 篇精读）时不渲染
+// 画像卡：上半部是行为聚合的统计，点开是「记忆」——可读、可改、可删。
+// 记忆是 papermind 的卖点，但不可见不可纠正的记忆是负担：AI 曾据此断言
+// 「你关注护理资源效率」，而用户既看不到来源也改不了。
 function PortraitCard({ portrait }) {
+  const [open, setOpen] = useState(false)
+  const [memory, setMemory] = useState(null)
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState('')
+
+  useEffect(() => {
+    if (!open || memory) return
+    apiGet('/memory')
+      .then(d => { setMemory(d); setDraft(d.memory_core || '') })
+      .catch(() => setMemory({ error: true }))
+  }, [open, memory])
+
+  const saveCore = async () => {
+    setBusy('save')
+    const d = await apiPatch('/memory', { memory_core: draft }).catch(() => null)
+    if (d?.ok) setMemory(m => ({ ...m, memory_core: d.memory_core }))
+    setBusy('')
+  }
+  const rebuild = async () => {
+    setBusy('rebuild')
+    const d = await apiPost('/memory/rebuild-core', {}).catch(() => null)
+    if (d?.ok) { setMemory(m => ({ ...m, memory_core: d.memory_core })); setDraft(d.memory_core) }
+    else if (d?.error) alert(d.error)
+    setBusy('')
+  }
+  const wipe = async () => {
+    if (!confirm('清空全部记忆？包括早年画像表单残留的字段，不可撤销。')) return
+    setBusy('wipe')
+    await apiDelete('/memory').catch(() => {})
+    setMemory({ memory_core: '', memory_recent: '', stated: [] })
+    setDraft('')
+    setBusy('')
+  }
+  const dropStated = async (text) => {
+    const d = await apiPost('/memory/stated/delete', { text }).catch(() => null)
+    if (d?.ok) setMemory(m => ({ ...m, stated: d.stated }))
+  }
+
   if (!portrait || (portrait.total_papers ?? 0) < 3) return null
 
   const topics = (portrait.topics || []).filter(t => t.n > 0)
@@ -408,6 +448,85 @@ function PortraitCard({ portrait }) {
             )}
           </div>
         )}
+
+        {/* ── 记忆：可读 · 可改 · 可删 ── */}
+        <div className="mt-5 pt-4 border-t border-warm-white/12">
+          <button onClick={() => setOpen(o => !o)}
+            className="flex items-center gap-1.5 text-[11px] text-warm-white/60 hover:text-warm-white/90 transition">
+            {open ? '收起记忆' : 'papermind 记住的你'}
+            <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
+          </button>
+
+          {open && (
+            <div className="mt-4 space-y-5">
+              {!memory ? (
+                <p className="text-[12px] text-warm-white/50 m-0">读取中…</p>
+              ) : (
+                <>
+                  {/* 阅读画像：我观察到的 */}
+                  <div>
+                    <div className="flex items-baseline justify-between mb-2">
+                      <p className="text-[10px] uppercase tracking-[0.16em] text-warm-white/45 m-0">
+                        阅读画像 · 我观察到的
+                      </p>
+                      <span className="text-[10px] text-warm-white/35">
+                        据 {memory.learned_from?.papers ?? 0} 篇精读 · {memory.learned_from?.cards ?? 0} 张卡片
+                      </span>
+                    </div>
+                    <textarea
+                      value={draft}
+                      onChange={e => setDraft(e.target.value)}
+                      placeholder="还没有足够的精读记录。读几篇、沉淀几张卡片后点「重新生成」。"
+                      className="w-full bg-warm-white/10 rounded-xl px-3 py-2.5 text-[12.5px] leading-[1.8] text-warm-white/90 outline-none resize-none min-h-[96px] placeholder:text-warm-white/30 focus:bg-warm-white/[0.14] transition"/>
+                    <div className="mt-2 flex items-center gap-3 text-[11px]">
+                      <button onClick={saveCore} disabled={busy === 'save' || draft === (memory.memory_core || '')}
+                        className="text-coral-light hover:underline disabled:opacity-35 disabled:no-underline">
+                        {busy === 'save' ? '保存中…' : '保存改写'}
+                      </button>
+                      <button onClick={rebuild} disabled={busy === 'rebuild'}
+                        className="text-warm-white/55 hover:text-warm-white/90 disabled:opacity-35">
+                        {busy === 'rebuild' ? '重新生成中…' : '按精读历史重新生成'}
+                      </button>
+                      <button onClick={wipe} disabled={busy === 'wipe'}
+                        className="ml-auto text-warm-white/40 hover:text-coral-light disabled:opacity-35">
+                        清空全部
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 你说过的：跨对话保留，每条可删 */}
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.16em] text-warm-white/45 mb-2 m-0">
+                      你说过的 · 我记下的
+                    </p>
+                    {(memory.stated || []).length === 0 ? (
+                      <p className="text-[11.5px] text-warm-white/40 m-0">
+                        还没有。你在对话里明确讲过的课题、兴趣会记在这里。
+                      </p>
+                    ) : (
+                      <div className="space-y-1">
+                        {memory.stated.map(it => (
+                          <div key={it.text} className="group flex items-start gap-2 text-[12px] text-warm-white/80">
+                            <span className="text-warm-white/30 mt-0.5">·</span>
+                            <span className="flex-1">{it.text}</span>
+                            <button onClick={() => dropStated(it.text)}
+                              className="opacity-0 group-hover:opacity-100 text-warm-white/40 hover:text-coral-light transition shrink-0">
+                              删除
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <p className="text-[10.5px] text-warm-white/35 leading-relaxed m-0">
+                    这里显示什么，AI 就拿到什么；删空了它就什么背景都不知道。
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -44,6 +44,8 @@ from src.database import (
     get_enrichment_cache, save_enrichment_cache,
     increment_recent_events,
     save_feedback, get_user_stats, get_portrait,
+    get_deep_reading_signals, update_memory_fields, wipe_memory,
+    get_stated_memory, save_stated_memory,
     get_self_test, init_self_test, update_self_test,
     get_paper_page_ocr, save_paper_page_ocr,
     record_method_gap, get_method_gaps,
@@ -69,6 +71,7 @@ from llm_router import (
 from memory_service import (
     build_memory_context,
     ensure_memory_core,
+    update_stated_memory,
     merge_recent_to_core,
     update_memory_recent,
 )
@@ -555,6 +558,96 @@ async def api_merge_recent_to_core(data: MemoryActionRequest, request: Request):
     return await merge_recent_to_core(uid)
 
 
+# ── 记忆面板：可见 + 可改 + 可删 ────────────────────────────────
+# 记忆是 papermind 的卖点，但不可见、不可纠正的记忆是负担而不是卖点。
+# 面板里显示什么，AI 就拿到什么（见 _build_understanding_profile_text）。
+
+class MemoryPatchRequest(BaseModel):
+    memory_core: Optional[str] = Field(default=None, max_length=4000)
+    memory_recent: Optional[str] = Field(default=None, max_length=4000)
+
+
+@app.get("/api/memory")
+async def api_get_memory(request: Request):
+    """读取记忆面板：两段记忆 + 它们是从哪些行为学来的。"""
+    uid = _get_user_id(request)
+    profile = get_profile(uid)
+    signals = get_deep_reading_signals(uid, days=90, limit=40)
+    return {
+        "ok": True,
+        "memory_core": profile.get("memory_core") or "",
+        "memory_recent": profile.get("memory_recent") or "",
+        "stated": get_stated_memory(uid),
+        "updated_at": profile.get("updated_at") or "",
+        # 出处：让用户知道这些话是根据什么长出来的
+        "learned_from": {
+            "papers": len(signals.get("papers") or []),
+            "cards": len(signals.get("cards") or []),
+            "questions": len(signals.get("questions") or []),
+            "window_days": 90,
+        },
+    }
+
+
+@app.patch("/api/memory")
+async def api_patch_memory(data: MemoryPatchRequest, request: Request):
+    """改写或清空记忆。传空字符串即删除该段。"""
+    uid = _get_user_id(request)
+    if data.memory_core is None and data.memory_recent is None:
+        return {"ok": False, "error": "没有要更新的内容。"}
+    update_memory_fields(
+        uid,
+        memory_core=None if data.memory_core is None else data.memory_core.strip(),
+        memory_recent=None if data.memory_recent is None else data.memory_recent.strip(),
+    )
+    profile = get_profile(uid)
+    return {
+        "ok": True,
+        "memory_core": profile.get("memory_core") or "",
+        "memory_recent": profile.get("memory_recent") or "",
+    }
+
+
+@app.delete("/api/memory")
+async def api_wipe_memory(request: Request):
+    """清空全部记忆，连同早年画像表单残留的字段一起清。"""
+    uid = _get_user_id(request)
+    wipe_memory(uid, include_legacy_profile=True)
+    return {"ok": True, "memory_core": "", "memory_recent": ""}
+
+
+class StatedDeleteRequest(BaseModel):
+    text: str = Field(max_length=200)
+
+
+@app.post("/api/memory/stated/delete")
+async def api_delete_stated(data: StatedDeleteRequest, request: Request):
+    """删掉「你说过的」里的某一条。"""
+    uid = _get_user_id(request)
+    items = [it for it in get_stated_memory(uid) if (it.get("text") or "") != data.text]
+    save_stated_memory(uid, items)
+    return {"ok": True, "stated": items}
+
+
+@app.post("/api/memory/refresh-stated")
+async def api_refresh_stated(request: Request):
+    """从最近对话里重新提取「你说过的」。"""
+    uid = _get_user_id(request)
+    result = await update_stated_memory(uid)
+    return {"ok": True, "stated": get_stated_memory(uid), "detail": result}
+
+
+@app.post("/api/memory/rebuild-core")
+async def api_rebuild_memory_core(request: Request):
+    """按当前精读历史重新长一遍长期记忆（先清空，再由行为生成）。"""
+    uid = _get_user_id(request)
+    update_memory_fields(uid, memory_core="")
+    core, created = await ensure_memory_core(uid, get_profile(uid))
+    if not core:
+        return {"ok": False, "error": "精读记录还不够，先读几篇、沉淀几张卡片再来。"}
+    return {"ok": True, "memory_core": core, "created": created}
+
+
 @app.post("/api/profile/interests-summary")
 async def api_update_interests_summary_compat(data: MemoryActionRequest, request: Request):
     """兼容旧前端调用，内部转到 memory_recent 逻辑。"""
@@ -877,20 +970,15 @@ def _extract_json_object(raw: str) -> dict:
     raise ValueError("json object not found")
 
 
-def _build_understanding_profile_text(profile: dict) -> str:
-    parts = []
-    if profile.get("discipline"):
-        parts.append(f"学科领域：{profile['discipline']}")
-    if profile.get("focus_areas"):
-        parts.append(f"追踪主题：{profile['focus_areas']}")
-    if profile.get("method_interests"):
-        parts.append(f"方法兴趣：{profile['method_interests']}")
-    if profile.get("background"):
-        parts.append(f"补充说明：{profile['background']}")
-    memory_context = build_memory_context(profile)
-    if memory_context:
-        parts.append(memory_context)
-    return "\n".join(parts)
+def _build_understanding_profile_text(profile: dict, uid: str = "") -> str:
+    """喂给 AI 的用户背景 = 用户在记忆面板里看得见的那两项，别的一律不给。
+
+    以前还会拼进 discipline / focus_areas / method_interests / background —— 这些
+    表单入口早已隐藏，用户既看不到也改不了，AI 却一直拿它当「你是谁」，
+    于是出现「结合你关注的护理资源效率」这种用户根本不认的断言。
+    所见即所得：面板里改了什么，AI 拿到的就变什么；删空了就什么都不拿。
+    """
+    return build_memory_context(profile, get_stated_memory(uid) if uid else [])
 
 
 def _enrich_single_paper(paper: dict, profile_text: str, cache_control: bool = False):
@@ -983,7 +1071,7 @@ JSON 格式：
 def _enrich_papers_with_llm(papers: list[dict], profile: dict, user_id: str = ""):
     """为论文添加详细中文解读和个性化相关性分析（并发执行）"""
     print(f"[api] _enrich_papers_with_llm 入口: {len(papers)} 篇论文")
-    profile_text = _build_understanding_profile_text(profile)
+    profile_text = _build_understanding_profile_text(profile, uid)
 
     is_qwen = any("qwen" in p["name"] for p in _get_llm_slots() if p["api_key"].strip())
     with ThreadPoolExecutor(max_workers=5) as pool:
@@ -1052,7 +1140,7 @@ async def api_deep_read_guide(data: DeepReadGuideRequest, request: Request):
     if not _has_llm_config(task="chat"):
         return {"ok": False, "error": "AI 服务暂不可用"}
 
-    profile_text = _build_understanding_profile_text(get_profile(uid))
+    profile_text = _build_understanding_profile_text(get_profile(uid), uid)
     mode = (data.mode or "page").strip().lower()
     source_text = ""
     if mode == "selection":
@@ -1913,7 +2001,7 @@ async def api_draft_card(data: DraftCardRequest, request: Request):
 
     card_type = data.card_type if data.card_type in CARD_TYPES else "method"
     profile = get_profile(uid)
-    profile_text = _build_understanding_profile_text(profile)
+    profile_text = _build_understanding_profile_text(profile, uid)
 
     context_parts = []
     if data.quote:
@@ -2340,7 +2428,7 @@ async def api_chat(data: ChatRequest, request: Request):
         return {"reply": f"你今天的 AI 对话次数已用完（每天 {DAILY_CHAT_LIMIT} 次），明天再来吧。", "ok": False, "rate_limited": True}
 
     profile = get_profile(uid)
-    profile_text = _build_understanding_profile_text(profile)
+    profile_text = _build_understanding_profile_text(profile, uid)
 
     # 获取该论文的历史笔记
     notes_context = ""
