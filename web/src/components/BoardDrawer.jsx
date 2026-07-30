@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Presentation, X, Trash2, Loader2, Download, ChevronRight, Pencil } from 'lucide-react'
-import { apiPatch, apiDelete, API_BASE, getUserId } from '../api'
+import { apiPatch, apiDelete } from '../api'
+import { EXPORT_FORMATS, SOURCE_LABELS, downloadBoard, figureUrl } from './boardUtils'
 
 /* ─────────────────────────────────────────────────────────────
    Presentation Board — 汇报板（PaperMind v0.12.0）
@@ -17,27 +18,6 @@ import { apiPatch, apiDelete, API_BASE, getUserId } from '../api'
    - BoardDrawer        全览抽屉：分板块整理条目、编辑、删除、导出
    ───────────────────────────────────────────────────────────── */
 
-export const SOURCE_LABELS = {
-  selection: '划词',
-  deep_read: '带读',
-  card: '卡片',
-  chat: '对话',
-  manual: '手动',
-  figure: '图表',
-}
-
-export function figureUrl(paperRowid, name) {
-  return `${API_BASE}/board/${paperRowid}/figures/${name}`
-}
-
-// 卡片类型 → 默认板块映射（可在选单里改投）
-export const CARD_SECTION_MAP = {
-  method: 'methods',
-  finding: 'results',
-  critique: 'critique',
-  transfer: 'implications',
-}
-
 // pub_date 格式不定（"2026-09" / "09/2026" / "Sep 2026"），统一正则提取四位年份
 function yearOf(pubDate) {
   const m = /\b(19|20)\d{2}\b/.exec(String(pubDate || ''))
@@ -49,30 +29,6 @@ function countBySection(items) {
   for (const it of items) m[it.section] = (m[it.section] || 0) + 1
   return m
 }
-
-export const EXPORT_FORMATS = [
-  { key: 'pptx', label: 'PowerPoint', hint: '.pptx · 双击即开，可直接讲', ext: 'pptx' },
-  { key: 'md',   label: 'Markdown',   hint: '.md · 粘进 Obsidian / Notion', ext: 'md' },
-]
-
-export async function downloadBoard(paperRowid, title, format = 'pptx') {
-  const res = await fetch(`${API_BASE}/board/${paperRowid}/export/${format}`, {
-    headers: { 'X-User-ID': getUserId() },
-  })
-  if (!res.ok) throw new Error('export failed')
-  const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  const ext = (EXPORT_FORMATS.find(f => f.key === format) || {}).ext || format
-  a.download = `汇报-${(title || 'paper').slice(0, 40)}.${ext}`
-  a.click()
-  URL.revokeObjectURL(url)
-}
-
-// 兼容旧调用
-export const downloadBoardMarp = (paperRowid, title) => downloadBoard(paperRowid, title, 'pptx')
-
 
 /* ── 导出按钮：默认给真 PPT，可切 Markdown ── */
 function ExportButton({ onExport, exporting, compact = false }) {

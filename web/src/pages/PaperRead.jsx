@@ -13,7 +13,8 @@ import TourBubble from '../components/TourBubble'
 import PdfViewer from '../components/PdfViewer'
 import CardDrawer from '../components/CardDrawer'
 import SocraticRail from '../components/SocraticRail'
-import BoardDrawer, { BoardRail, BoardSectionPicker, CARD_SECTION_MAP, downloadBoard } from '../components/BoardDrawer'
+import BoardDrawer, { BoardRail, BoardSectionPicker } from '../components/BoardDrawer'
+import { CARD_SECTION_MAP, downloadBoard } from '../components/boardUtils'
 import { getSelectionToolbarPosition } from '../utils/selectionToolbar'
 import {
   buildSelfTestSourceText,

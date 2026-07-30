@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ChevronLeft, Upload, Check, Plus, X, Loader2, ArrowRight, Sparkles, ExternalLink } from 'lucide-react'
 import { apiPost } from '../api'
-import Terrain, { buildHills, buildTrails, clusterPapersToHills } from '../components/Terrain'
+import Terrain from '../components/Terrain'
+import { buildHills, buildTrails, clusterPapersToHills } from '../components/terrainUtils'
 
 /* ─────────────────────────────────────────────────────────────
    Onboarding — Zotero 导入版
