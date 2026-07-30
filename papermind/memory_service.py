@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 
 from llm_router import _llm_chat_complete_async
 from src.database import (
     get_all_recent_chats_since,
+    get_deep_reading_signals,
     get_profile,
+    get_stated_memory,
+    save_stated_memory,
     get_reading_history_since,
     get_saved_titles_since,
     reset_recent_events,
@@ -17,6 +21,7 @@ from src.database import (
 RECENT_EVENT_THRESHOLD = 8
 RECENT_TIME_THRESHOLD = 7 * 86400
 RECENT_WINDOW_DAYS = 7
+CORE_WINDOW_DAYS = 90
 AUTO_CORE_REFRESH_DAYS = 14
 
 
@@ -27,14 +32,28 @@ def has_profile_seed(profile: dict) -> bool:
     )
 
 
-def build_memory_context(profile: dict) -> str:
+def build_memory_context(profile: dict, stated: list[dict] | None = None) -> str:
     parts = []
     core = (profile.get("memory_core") or "").strip()
     recent = (profile.get("memory_recent") or "").strip()
     if core:
-        parts.append(f"---\n系统观察（辅助参考，低于以上明确输入）：\n长期研究画像：{core}")
+        parts.append(
+            "---\n关于这位读者（由他的精读行为总结，用户可随时改写；仅作参考）：\n"
+            f"阅读画像：{core}"
+        )
     if recent:
         parts.append(f"近期关注变化：{recent}")
+    # 「你说过的」单独标注来源：这是他亲口讲的，可信度高于上面的行为推断
+    said = [(it.get("text") or "").strip() for it in (stated or []) if (it.get("text") or "").strip()]
+    if said:
+        parts.append("他自己讲过（可信度高于以上推断）：\n" + "\n".join(f"- {t}" for t in said))
+    if parts:
+        # 曾出现「结合你关注的护理资源效率」这类用户不认的断言：把旧画像硬套到不相干的论文上
+        parts.append(
+            "使用要求：只有当上述背景与当前论文**确实相关**时才引用；不相关就完全不要提，"
+            "更不要为了显得贴心而生硬联系。聊到课题启发、他以前做过什么、对什么感兴趣时，"
+            "才是该主动调用这些背景的时候。"
+        )
     return "\n".join(parts)
 
 
@@ -78,29 +97,41 @@ async def ensure_memory_core(uid: str, profile: dict) -> tuple[str, bool]:
     existing = (profile.get("memory_core") or "").strip()
     if existing:
         return existing, False
-    if not has_profile_seed(profile):
+    # 不再要求「先填画像」：记忆从精读行为长出来，没填过表单的用户同样应该有记忆
+
+    # 记忆从「精读行为」学，而不是从早已停用的画像表单。
+    # 表单隐藏后仍拿它生成画像，会让 AI 长期引用一份用户不再维护、也看不见的旧描述。
+    signals = get_deep_reading_signals(uid, days=CORE_WINDOW_DAYS)
+    cards = signals.get("cards") or []
+    papers = signals.get("papers") or []
+    questions = signals.get("questions") or []
+    if not (cards or papers):
         return "", False
 
-    focus = profile.get("focus_areas", "")
-    method_interests = profile.get("method_interests", "")
-    background = profile.get("background", "")
-    exclude = profile.get("exclude_areas", "")
-    discipline = profile.get("discipline", "")
-    current_goal = profile.get("current_goal", "")
+    card_lines = "\n".join(
+        f"- [{c.get('card_type', '')}] {c.get('title') or ''}：{(c.get('content') or '')[:120]}"
+        for c in cards[:20]
+    ) or "（还没有卡片）"
+    paper_lines = "\n".join(
+        f"- {p.get('title', '')[:70]}（{p.get('category') or '未分类'}）" for p in papers[:20]
+    ) or "（还没有精读记录）"
+    question_lines = "\n".join(f"- {q[:80]}" for q in questions[:12]) or "（还没有提问）"
 
-    prompt = f"""请根据以下用户的明确画像，生成一段稳定的长期研究画像（memory_core）。
+    prompt = f"""请根据这位研究者的**精读行为**，总结一段稳定的长期研究画像（memory_core）。
 
-明确输入：
-- 研究方向：{focus or '（未填）'}
-- 方法兴趣：{method_interests or '（未填）'}
-- 当前目标：{current_goal or '（未填）'}
-- 补充说明：{background or '（未填）'}
-- 不想看的内容：{exclude or '（未填）'}
-- 学科领域：{discipline or '（未填）'}
+他精读过的论文：
+{paper_lines}
+
+他自己动手沉淀的阅读卡片（最能代表他真正在意什么）：
+{card_lines}
+
+他追问过的问题：
+{question_lines}
 
 要求：
-- 这是一段长期骨架，不要写“最近”“近期”等短期词
-- 总结稳定的研究主线、方法偏好、不偏好内容、阅读时常关注的角度
+- 只依据上面的行为证据，**不要编造**没有出现过的研究方向或身份
+- 这是长期骨架，不要写“最近”“近期”等短期词
+- 总结稳定的研究主线、方法偏好、读论文时习惯盯的角度
 - 语言像内部研究备忘录，简洁、稳、可长期复用
 - 控制在 140-220 字
 - 只输出正文，不要标题"""
@@ -149,12 +180,6 @@ async def maybe_auto_refresh_memory_core(uid: str, profile: dict) -> bool:
 近期关注变化：
 {profile.get("memory_recent", "")}
 
-用户明确画像（优先级最高）：
-- 研究方向：{profile.get("focus_areas", "") or '（未填）'}
-- 方法兴趣：{profile.get("method_interests", "") or '（未填）'}
-- 当前目标：{profile.get("current_goal", "") or '（未填）'}
-- 补充说明：{profile.get("background", "") or '（未填）'}
-- 不想看的内容：{profile.get("exclude_areas", "") or '（未填）'}
 
 要求：
 - 保持长期骨架稳定，不要被短期噪音带偏
@@ -180,6 +205,72 @@ async def maybe_auto_refresh_memory_core(uid: str, profile: dict) -> bool:
     }
     save_profile(uid, updated_profile)
     return True
+
+
+async def update_stated_memory(uid: str, days: int = RECENT_WINDOW_DAYS) -> dict:
+    """「你说过的」：从对话里挑出用户**明确讲过**的自我陈述，跨对话保留。
+
+    和阅读画像分开：画像是「我观察到的」（可对着论文和卡片查证），
+    这里是「你亲口说的」（可对着某次对话查证）。两边都有出处，都能单独删。
+    沿用原记忆系统最值钱的一点：增量更新——把已有条目喂回去，只做新增与合并，
+    不推倒重写，否则记忆每次都像失忆后重新认识你。
+    """
+    existing = get_stated_memory(uid)
+    chats = get_all_recent_chats_since(uid, days=days, limit=60)
+    said = [m["content"] for m in chats if m.get("role") == "user" and (m.get("content") or "").strip()]
+    if not said:
+        return {"ok": True, "skipped": True, "reason": "no_messages"}
+
+    existing_lines = "\n".join(f"- {it.get('text','')}" for it in existing) or "（暂无）"
+    said_lines = "\n".join(f"- {t[:150]}" for t in said[:30])
+
+    prompt = f"""从用户最近的对话发言里，挑出他**明确讲过的、关于自己的事实**。
+
+已经记下的（不要重复，仍然成立的保留原样）：
+{existing_lines}
+
+用户最近说过的话：
+{said_lines}
+
+只挑这几类：
+- 在做什么课题 / 做过什么研究
+- 对什么方法、人群、问题感兴趣
+- 所处的学科、岗位、工作场景
+
+严格要求：
+- **只记他明确说出口的**。提问不算陈述（问「PSM 怎么用」≠ 他在做 PSM 研究）
+- **不要推断、不要延伸**。宁可少记，也不要替他下结论
+- 每条一句话，不超过 25 字，用他自己的说法
+- 没有任何符合的就返回空数组
+
+只输出 JSON 数组，不要其他内容：
+["在做基层 COPD 管理相关课题", "对倾向评分匹配的适用边界感兴趣"]"""
+
+    raw, _, _ = await _llm_chat_complete_async(
+        [{"role": "user", "content": prompt}],
+        max_tokens=400, temperature=0.1, task="summary",
+    )
+    match = re.search(r"\[.*\]", raw or "", re.DOTALL)
+    if not match:
+        return {"ok": True, "skipped": True, "reason": "nothing_extracted"}
+    try:
+        items = json.loads(match.group(0))
+    except (json.JSONDecodeError, TypeError):
+        return {"ok": True, "skipped": True, "reason": "parse_failed"}
+
+    now = datetime.now().isoformat()
+    seen = {(it.get("text") or "").strip() for it in existing}
+    merged = list(existing)
+    for text in items:
+        text = str(text or "").strip()[:60]
+        if text and text not in seen:
+            seen.add(text)
+            merged.append({"text": text, "said_at": now})
+    if len(merged) == len(existing):
+        return {"ok": True, "skipped": True, "reason": "no_new"}
+
+    save_stated_memory(uid, merged[-12:])
+    return {"ok": True, "stated": get_stated_memory(uid)}
 
 
 async def update_memory_recent(uid: str, force: bool = False) -> dict:
@@ -234,11 +325,6 @@ async def update_memory_recent(uid: str, force: bool = False) -> dict:
 最近 { RECENT_WINDOW_DAYS } 天阅读轨迹：
 {chr(10).join(f'- {t}' for t in signals["recent_reads"][:12]) if signals["recent_reads"] else '（暂无）'}
 
-用户当前明确画像（优先级最高）：
-- 研究方向：{profile.get("focus_areas", "") or '（未填）'}
-- 方法兴趣：{profile.get("method_interests", "") or '（未填）'}
-- 当前目标：{profile.get("current_goal", "") or '（未填）'}
-- 补充说明：{profile.get("background", "") or '（未填）'}
 
 要求：
 - 这是近期增量，不要重复长期骨架里已经稳定存在的内容
@@ -297,12 +383,6 @@ async def merge_recent_to_core(uid: str) -> dict:
 近期关注变化：
 {profile.get("memory_recent", "")}
 
-用户明确画像（优先级最高）：
-- 研究方向：{profile.get("focus_areas", "") or '（未填）'}
-- 方法兴趣：{profile.get("method_interests", "") or '（未填）'}
-- 当前目标：{profile.get("current_goal", "") or '（未填）'}
-- 补充说明：{profile.get("background", "") or '（未填）'}
-- 不想看的内容：{profile.get("exclude_areas", "") or '（未填）'}
 
 要求：
 - 产出稳定、长期可复用的研究骨架
