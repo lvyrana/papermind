@@ -31,6 +31,16 @@ test('does not OCR short English terms selected in Chinese papers', () => {
   assert.equal(shouldOcrSelection('RAG model', { preferCjk: true }), false)
 })
 
+test('does not mistake a normal English passage in a Chinese paper for garbled text', () => {
+  assert.equal(
+    shouldOcrSelection(
+      'Development and usability evaluation of a generative artificial intelligence question-answering model',
+      { preferCjk: true },
+    ),
+    false,
+  )
+})
+
 test('replaces native clipboard gibberish with OCR text for the active selection', () => {
   const selection = {
     textSource: 'ocr',

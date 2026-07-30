@@ -1195,6 +1195,8 @@ export default function PaperRead() {
     )
   }
 
+  const selectionActionsDisabled = selectionOcrPending || Boolean(selection?.needsOcr)
+
   // ════════════════════════════════════════════════════════════
   // RENDER
   // ════════════════════════════════════════════════════════════
@@ -1317,42 +1319,51 @@ export default function PaperRead() {
                 aria-label="选中文字操作"
                 className="fixed z-50 grid max-w-[calc(100vw-24px)] grid-cols-2 items-center gap-0.5 rounded-xl border border-navy/10 bg-warm-white/95 p-1 shadow-[0_10px_30px_-12px_rgba(30,58,95,.38)] backdrop-blur-md sm:flex"
                 style={getSelectionToolbarPosition(selection)}>
-                {/* OCR 是增强不是闸门：识别中/失败都不能挡住操作。
-                    文字层原文永远可用，OCR 成功只是把它替换成更准的版本。
-                    （曾经把按钮整组换成 spinner/错误文案，导致识别一失败就什么都点不了） */}
+                {/* 操作始终可见；只有确认文字可靠后才允许沉淀到对话、卡片或汇报。 */}
                 {(selectionOcrPending || selectionOcrError) && (
                   <span className={`col-span-2 flex items-center gap-1.5 whitespace-nowrap px-2 py-1 text-[11px] sm:col-auto ${
-                    selectionOcrError ? 'text-warm-gray' : 'text-navy/70'
+                    selectionOcrError ? 'text-coral' : 'text-navy/70'
                   }`}
                     title={selectionOcrError || ''}>
                     {selectionOcrPending
-                      ? <><Loader2 size={11} className="animate-spin text-coral"/>识别中</>
-                      : <span className="text-warm-gray/80">用原文</span>}
+                      ? <><Loader2 size={11} className="animate-spin text-coral"/>识别中，完成后可用</>
+                      : (
+                        <button
+                          type="button"
+                          onClick={() => handlePdfSelection(selection)}
+                          className="rounded-md px-1.5 py-0.5 hover:bg-coral/10 transition-colors">
+                          识别失败 · 重试
+                        </button>
+                      )}
                   </span>
                 )}
                 {(
                   <>
                     <button
                       onClick={askAboutSelection}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-navy px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-navy-light transition-colors">
+                      disabled={selectionActionsDisabled}
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-navy px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-navy-light transition-colors disabled:cursor-not-allowed disabled:opacity-40">
                       <Sparkles size={13}/>
                       问 papermind
                     </button>
                     <button
                       onClick={deepReadSelection}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-navy/5 transition-colors">
+                      disabled={selectionActionsDisabled}
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-navy/5 transition-colors disabled:cursor-not-allowed disabled:opacity-40">
                       <FileText size={13}/>
                       精读这段
                     </button>
                     <button
                       onClick={saveSelectionAsCard}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-coral px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-coral-deep transition-colors">
+                      disabled={selectionActionsDisabled}
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-coral px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-coral-deep transition-colors disabled:cursor-not-allowed disabled:opacity-40">
                       <Layers size={13}/>
                       存为卡片
                     </button>
                     <button
                       onClick={sendSelectionToBoard}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-mint/20 hover:text-mint-deep transition-colors">
+                      disabled={selectionActionsDisabled}
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-mint/20 hover:text-mint-deep transition-colors disabled:cursor-not-allowed disabled:opacity-40">
                       <Presentation size={13}/>
                       送到汇报
                     </button>
