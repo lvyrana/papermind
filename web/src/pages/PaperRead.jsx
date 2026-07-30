@@ -13,7 +13,7 @@ import TourBubble from '../components/TourBubble'
 import PdfViewer from '../components/PdfViewer'
 import CardDrawer from '../components/CardDrawer'
 import SocraticRail from '../components/SocraticRail'
-import BoardDrawer, { BoardRail, BoardSectionPicker, CARD_SECTION_MAP, downloadBoardMarp } from '../components/BoardDrawer'
+import BoardDrawer, { BoardRail, BoardSectionPicker, CARD_SECTION_MAP, downloadBoard } from '../components/BoardDrawer'
 import { getSelectionToolbarPosition } from '../utils/selectionToolbar'
 import {
   buildSelfTestSourceText,
@@ -607,10 +607,10 @@ export default function PaperRead() {
     })
   }
 
-  const exportBoard = async () => {
+  const exportBoard = async (format = 'pptx') => {
     if (!board?.paperRowid || boardExporting) return
     setBoardExporting(true)
-    try { await downloadBoardMarp(board.paperRowid, paper?.title) } catch { /* ignore */ }
+    try { await downloadBoard(board.paperRowid, paper?.title, format) } catch { /* ignore */ }
     setBoardExporting(false)
   }
 

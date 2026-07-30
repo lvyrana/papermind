@@ -10,7 +10,9 @@ import json
 import base64
 import httpx
 import threading
+import io
 import re
+from urllib.parse import quote
 import time
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,7 +24,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from fastapi import FastAPI, Query, Request, UploadFile, File, Form, HTTPException as FastAPIHTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, RedirectResponse, FileResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -263,6 +265,18 @@ class UpdateProjectRequest(BaseModel):
 
 class SetPaperProjectRequest(BaseModel):
     project_id: Optional[int] = None
+
+
+def _content_disposition(title: str, ext: str) -> str:
+    """生成带中文标题的下载文件名。
+
+    HTTP 头只接受 latin-1，中文直接放进 filename 会 UnicodeEncodeError，
+    故按 RFC 5987 用 filename* 传 UTF-8，并保留一个纯 ASCII 的 filename 兜底。
+    """
+    name = re.sub(r'[\\/:*?"<>|\r\n\t]', "", (title or "").strip())[:60].strip()
+    full = f"汇报-{name or 'paper'}.{ext}"
+    quoted = quote(full, safe="")
+    return f"attachment; filename=\"board.{ext}\"; filename*=UTF-8''{quoted}"
 
 
 # ========== User ID ==========
@@ -1807,8 +1821,9 @@ def api_export_board_marp(paper_rowid: int, request: Request):
             content = esc(it["content"]).replace("\n", "\n  ")
             lines.append(f"- {content}")
             quote = esc(it.get("quote") or "")
-            # 划词条目 quote 即 content，重复输出没有信息量，只留页码
-            if quote and quote != esc(it["content"]):
+            # 划词条目的 quote 常与 content 同源，只差空白/OCR 归一化，
+            # 原样比对拦不住 → 同一段话在一页里出现两遍。改为压掉空白与标点后再比。
+            if quote and not _same_text(quote, it["content"]):
                 page_tag = f"（P.{it['page']}）" if it.get("page") else ""
                 lines.append(f"  > {quote[:300]}{page_tag}")
             elif it.get("page"):
@@ -1817,7 +1832,176 @@ def api_export_board_marp(paper_rowid: int, request: Request):
     return PlainTextResponse(
         md,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="board-{paper_rowid}.md"'},
+        headers={"Content-Disposition": _content_disposition(paper.get("title"), "marp.md")},
+    )
+
+
+
+# ── 纯 Markdown 导出：去掉 Marp 前言，可直接粘进 Obsidian / Notion ──
+@app.get("/api/board/{paper_rowid}/export/md")
+def api_export_board_md(paper_rowid: int, request: Request):
+    """导出普通 Markdown（无 marp frontmatter），用于笔记软件而非放映。"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_rowid, uid)
+    if not paper:
+        return PlainTextResponse("not found", status_code=404)
+    board = get_or_create_board(paper_rowid, why_reading=paper.get("relevance") or "")
+    items = get_board_items(paper_rowid)
+    mark_exported(paper_rowid)
+    by_section: dict = {}
+    for it in items:
+        by_section.setdefault(it["section"], []).append(it)
+
+    def esc(x: str) -> str:
+        return (x or "").replace("\r", "").strip()
+
+    year_m = re.search(r"\b(19|20)\d{2}\b", paper.get("pub_date") or "")
+    year = year_m.group(0) if year_m else ""
+    meta = " · ".join(x for x in [esc(paper.get("journal")), year] if x)
+    lines = [f"# {esc(paper.get('title'))}", ""]
+    if esc(paper.get("authors")):
+        lines += [esc(paper.get("authors")), ""]
+    if meta:
+        lines += [meta, ""]
+    if esc(board.get("why_reading")):
+        lines += [f"> 为什么读这篇：{esc(board['why_reading'])}", ""]
+
+    for sec in board["sections"]:
+        sec_items = by_section.get(sec["key"], [])
+        if not sec_items:
+            continue          # 笔记场景不需要「（待填入）」占位
+        lines += [f"## {sec['title']}", ""]
+        for it in sec_items:
+            content = esc(it["content"])
+            page = f"（P.{it['page']}）" if it.get("page") else ""
+            lines.append(f"- {content}{page}")
+            quote = esc(it.get("quote") or "")
+            if quote and not _same_text(quote, it["content"]):
+                lines.append(f"  > {quote[:300]}")
+        lines.append("")
+
+    md = "\n".join(lines).rstrip() + "\n"
+    return PlainTextResponse(
+        md, media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": _content_disposition(paper.get("title"), "md")},
+    )
+
+
+# ── PPTX 导出：真正的 PowerPoint，双击即开，无需 Marp ──
+@app.get("/api/board/{paper_rowid}/export/pptx")
+def api_export_board_pptx(paper_rowid: int, request: Request):
+    """导出 .pptx。按钮写着「导出 PPT」，就该给真的 PPT。"""
+    uid = _get_user_id(request)
+    paper = _get_owned_paper_or_none(paper_rowid, uid)
+    if not paper:
+        return PlainTextResponse("not found", status_code=404)
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
+    except ImportError:
+        return PlainTextResponse("服务器缺少 python-pptx，请先安装依赖。", status_code=503)
+
+    board = get_or_create_board(paper_rowid, why_reading=paper.get("relevance") or "")
+    items = get_board_items(paper_rowid)
+    mark_exported(paper_rowid)
+    by_section: dict = {}
+    for it in items:
+        by_section.setdefault(it["section"], []).append(it)
+
+    def esc(x: str) -> str:
+        return (x or "").replace("\r", "").strip()
+
+    NAVY = RGBColor(0x1E, 0x3A, 0x5F)
+    GRAY = RGBColor(0x6B, 0x6B, 0x6B)
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)   # 16:9
+
+    # ── 封面 ──
+    slide = prs.slides.add_slide(prs.slide_layouts[6])   # 空白版式，避免默认占位符
+    box = slide.shapes.add_textbox(Inches(0.9), Inches(1.6), Inches(11.5), Inches(4.4))
+    tf = box.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = esc(paper.get("title"))
+    p.runs[0].font.size, p.runs[0].font.bold, p.runs[0].font.color.rgb = Pt(30), True, NAVY
+
+    year_m = re.search(r"\b(19|20)\d{2}\b", paper.get("pub_date") or "")
+    year = year_m.group(0) if year_m else ""
+    for text, size in [
+        (esc(paper.get("authors")), 15),
+        (" · ".join(x for x in [esc(paper.get("journal")), year] if x), 14),
+    ]:
+        if not text:
+            continue
+        q = tf.add_paragraph()
+        q.text = text
+        q.runs[0].font.size, q.runs[0].font.color.rgb = Pt(size), GRAY
+        q.space_before = Pt(14)
+
+    if esc(board.get("why_reading")):
+        q = tf.add_paragraph()
+        q.text = f"为什么读这篇：{esc(board['why_reading'])}"
+        q.runs[0].font.size, q.runs[0].font.color.rgb = Pt(13), GRAY
+        q.space_before = Pt(26)
+
+    foot = slide.shapes.add_textbox(Inches(0.9), Inches(6.4), Inches(11.5), Inches(0.5))
+    fp = foot.text_frame.paragraphs[0]
+    fp.text = "汇报人：＿＿＿＿　　日期：＿＿＿＿"
+    fp.runs[0].font.size, fp.runs[0].font.color.rgb = Pt(12), GRAY
+
+    # ── 每个板块一页；空板块也出页，骨架即进度 ──
+    for sec in board["sections"]:
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        head = slide.shapes.add_textbox(Inches(0.9), Inches(0.55), Inches(11.5), Inches(0.9))
+        hp = head.text_frame.paragraphs[0]
+        hp.text = sec["title"]
+        hp.runs[0].font.size, hp.runs[0].font.bold, hp.runs[0].font.color.rgb = Pt(26), True, NAVY
+
+        body = slide.shapes.add_textbox(Inches(0.9), Inches(1.6), Inches(11.5), Inches(5.2))
+        tf = body.text_frame
+        tf.word_wrap = True
+        sec_items = by_section.get(sec["key"], [])
+        if not sec_items:
+            p = tf.paragraphs[0]
+            p.text = "（待填入）"
+            p.runs[0].font.size, p.runs[0].font.color.rgb = Pt(15), GRAY
+            continue
+
+        first = True
+        for it in sec_items:
+            p = tf.paragraphs[0] if first else tf.add_paragraph()
+            first = False
+            page = f"（P.{it['page']}）" if it.get("page") else ""
+            p.text = f"· {esc(it['content'])}{page}"
+            p.runs[0].font.size, p.runs[0].font.color.rgb = Pt(15), NAVY
+            p.space_after = Pt(10)
+
+            quote = esc(it.get("quote") or "")
+            if quote and not _same_text(quote, it["content"]):
+                q = tf.add_paragraph()
+                q.text = f"　　{quote[:220]}"
+                q.runs[0].font.size, q.runs[0].font.italic = Pt(12), True
+                q.runs[0].font.color.rgb = GRAY
+                q.space_after = Pt(10)
+
+            # 图表条目：把截图贴进当前页右侧
+            if it.get("image"):
+                fig = FIGURES_DIR / it["image"]
+                if fig.exists():
+                    try:
+                        slide.shapes.add_picture(str(fig), Inches(7.6), Inches(1.7), height=Inches(3.6))
+                    except Exception:
+                        pass
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    buf.seek(0)
+    return Response(
+        buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": _content_disposition(paper.get("title"), "pptx")},
     )
 
 
@@ -1845,6 +2029,20 @@ def _looks_like_garbled_selection(value: str) -> bool:
         return True
     suspicious = len(re.findall(r"[\\\[\]\^_`{|}~]", text))
     return suspicious >= 4 and suspicious / len(text) > 0.06
+
+
+def _same_text(a: str, b: str) -> bool:
+    """判断两段文本是否实质相同（压掉空白与常见标点差异）。
+
+    导出时 content 与 quote 常同源，只差 OCR 归一化或换行，
+    原样比对会让同一段话在一页里印两遍。
+    """
+    def norm(x: str) -> str:
+        return re.sub(r"[\s，,。.；;：:、!！?？（）()\[\]【】\"\'“”‘’—\-]", "", str(x or ""))
+    na, nb = norm(a), norm(b)
+    if not na or not nb:
+        return False
+    return na == nb or na in nb or nb in na
 
 
 def _validated_selection_image(data_url: str) -> str:
