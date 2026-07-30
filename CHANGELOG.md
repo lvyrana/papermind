@@ -2,6 +2,19 @@
 
 ## v0.15.0 - 2026-07-30
 
+### 汇报板导出变成可直接打开的 PPTX
+
+- 汇报板新增真 `PowerPoint` 导出：后端使用 `python-pptx` 生成 `.pptx`，线上部署需安装 `papermind/requirements.txt` 中新增的 `python-pptx>=1.0.0`
+- 保留纯 `Markdown` 导出，作为 Obsidian / Notion / 二次编辑的轻量出口
+- 修正汇报正文与引用重复的问题，避免同一条材料在导出页里出现两遍
+- 书架「已导出」状态不再把“打开过精读台后自动生成的空汇报板”误判为导出，只在有实际汇报内容时显示
+- 前端把汇报板导出工具与地形图计算工具拆出组件文件，恢复 React Fast Refresh lint 规则
+
+#### 验证
+
+- 后端守卫测试 31 项、前端测试 19 项、`npm run lint`、`npm run build` 通过
+- 线上部署后确认服务器 venv 可导入 `pptx`，且 `/api/board/{paper_rowid}/export/md` 与 `/api/board/{paper_rowid}/export/pptx` 路由存在
+
 ### 记忆从黑箱变回卖点：可见 · 可改 · 可删
 
 用户在对话里被 AI 断言「结合你关注的护理资源效率」，而这句话既不认、也查不到出处、更改不了。
