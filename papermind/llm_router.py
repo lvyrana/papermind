@@ -80,6 +80,18 @@ _TASK_MODEL_DEFAULTS = {
 
 _VISION_MODEL_MARKERS = ("qwen3.5-ocr", "qwen-vl-ocr", "qwen3.7")
 
+# 「qwen3.7」是子串匹配，会把 qwen3.7-max 一起放行；但实测该别名不接受 image_url
+# （400 InternalError.Algo.InvalidParameter），带日期的 qwen3.7-max-2026-* 快照反而支持。
+# 放进 OCR 池只会白白多一次 400 往返并拖慢识别，故显式排除。
+_VISION_MODEL_DENYLIST = ("qwen3.7-max",)
+
+
+def _supports_vision(model: str) -> bool:
+    name = model or ""
+    if name in _VISION_MODEL_DENYLIST:
+        return False
+    return any(marker in name for marker in _VISION_MODEL_MARKERS)
+
 
 def _get_task_preferred_models(task: str) -> list[str]:
     env_key = _TASK_MODEL_ENV.get(task or "")
@@ -226,7 +238,7 @@ def _ordered_llm_slots(task: str = "", prefer_model: str = "") -> list[dict]:
     if task == "ocr":
         all_slots = [
             provider for provider in all_slots
-            if any(marker in provider.get("model", "") for marker in _VISION_MODEL_MARKERS)
+            if _supports_vision(provider.get("model", ""))
         ]
     # 自定义通道不参与按任务重排——用户显式配置的模型永远最优先
     custom_slots = [p for p in all_slots if _is_custom_slot(p)]

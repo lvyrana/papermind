@@ -82,6 +82,20 @@ class LLMRouterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(models, ["qwen3.5-ocr", "qwen3.7-plus"])
 
+    def test_vision_model_aliases_match_verified_capabilities(self):
+        cases = {
+            "qwen3.7-max": False,
+            "qwen3.7-max-2026-06-08": True,
+            "qwen3.7-plus": True,
+            "qwen3.5-ocr": True,
+            "qwen-vl-ocr-latest": True,
+            "qwen3.5-flash": False,
+        }
+
+        for model, expected in cases.items():
+            with self.subTest(model=model):
+                self.assertEqual(llm_router._supports_vision(model), expected)
+
 
 class SelectionOcrTests(unittest.IsolatedAsyncioTestCase):
     def test_garbled_selection_detector_rejects_scrambled_font_text(self):
