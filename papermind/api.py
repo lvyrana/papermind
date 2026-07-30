@@ -43,7 +43,7 @@ from src.database import (
     check_rate_limit, increment_rate_limit, get_rate_limit_remaining,
     get_enrichment_cache, save_enrichment_cache,
     increment_recent_events,
-    save_feedback, get_user_stats, get_portrait,
+    save_feedback, get_user_stats, get_portrait, mark_exported,
     get_deep_reading_signals, update_memory_fields, wipe_memory,
     get_stated_memory, save_stated_memory,
     get_self_test, init_self_test, update_self_test,
@@ -1755,6 +1755,7 @@ def api_export_board_marp(paper_rowid: int, request: Request):
         return PlainTextResponse("not found", status_code=404)
     board = get_or_create_board(paper_rowid, why_reading=paper.get("relevance") or "")
     items = get_board_items(paper_rowid)
+    mark_exported(paper_rowid)
     by_section: dict = {}
     for it in items:
         by_section.setdefault(it["section"], []).append(it)
