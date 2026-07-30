@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, BookOpen, MessageCircle, FileText, Search, Trash2, Plus, X, Loader2, FolderOpen } from 'lucide-react'
+import { ArrowLeft, BookOpen, MessageCircle, FileText, Search, Trash2, Plus, X, Loader2, FolderOpen, Pencil, RotateCw, Check } from 'lucide-react'
 import Navbar from '../components/Navbar'
 import { apiGet, apiDelete, apiPost, apiPatch } from '../api'
 
@@ -353,6 +353,7 @@ function PortraitCard({ portrait }) {
   const [memory, setMemory] = useState(null)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState('')
+  const [editing, setEditing] = useState(false)
 
   useEffect(() => {
     if (!open || memory) return
@@ -364,7 +365,7 @@ function PortraitCard({ portrait }) {
   const saveCore = async () => {
     setBusy('save')
     const d = await apiPatch('/memory', { memory_core: draft }).catch(() => null)
-    if (d?.ok) setMemory(m => ({ ...m, memory_core: d.memory_core }))
+    if (d?.ok) { setMemory(m => ({ ...m, memory_core: d.memory_core })); setEditing(false) }
     setBusy('')
   }
   const rebuild = async () => {
@@ -463,35 +464,58 @@ function PortraitCard({ portrait }) {
                 <p className="text-[12px] text-warm-white/50 m-0">读取中…</p>
               ) : (
                 <>
-                  {/* 阅读画像：我观察到的 */}
+                  {/* 阅读画像：默认只读，操作收进右上角图标 */}
                   <div>
-                    <div className="flex items-baseline justify-between mb-2">
+                    <div className="flex items-center justify-between mb-2 gap-3">
                       <p className="text-[10px] uppercase tracking-[0.16em] text-warm-white/45 m-0">
                         阅读画像 · 我观察到的
                       </p>
-                      <span className="text-[10px] text-warm-white/35">
-                        据 {memory.learned_from?.papers ?? 0} 篇精读 · {memory.learned_from?.cards ?? 0} 张卡片
-                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] text-warm-white/35">
+                          据 {memory.learned_from?.papers ?? 0} 篇精读 · {memory.learned_from?.cards ?? 0} 张卡片
+                        </span>
+                        {editing ? (
+                          <>
+                            <button onClick={() => { setDraft(memory.memory_core || ''); setEditing(false) }}
+                              title="取消"
+                              className="w-6 h-6 rounded-lg text-warm-white/45 hover:text-warm-white/85 hover:bg-warm-white/10 flex items-center justify-center transition">
+                              <X size={12}/>
+                            </button>
+                            <button onClick={saveCore} disabled={busy === 'save'}
+                              title="保存"
+                              className="w-6 h-6 rounded-lg text-coral-light hover:bg-warm-white/10 flex items-center justify-center transition disabled:opacity-40">
+                              {busy === 'save' ? <Loader2 size={12} className="animate-spin"/> : <Check size={12}/>}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button onClick={() => setEditing(true)}
+                              title="修改"
+                              className="w-6 h-6 rounded-lg text-warm-white/45 hover:text-warm-white/85 hover:bg-warm-white/10 flex items-center justify-center transition">
+                              <Pencil size={12}/>
+                            </button>
+                            <button onClick={rebuild} disabled={busy === 'rebuild'}
+                              title="按精读历史重新生成"
+                              className="w-6 h-6 rounded-lg text-warm-white/45 hover:text-warm-white/85 hover:bg-warm-white/10 flex items-center justify-center transition disabled:opacity-40">
+                              <RotateCw size={12} className={busy === 'rebuild' ? 'animate-spin' : ''}/>
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
-                    <textarea
-                      value={draft}
-                      onChange={e => setDraft(e.target.value)}
-                      placeholder="还没有足够的精读记录。读几篇、沉淀几张卡片后点「重新生成」。"
-                      className="w-full bg-warm-white/10 rounded-xl px-3 py-2.5 text-[12.5px] leading-[1.8] text-warm-white/90 outline-none resize-none min-h-[96px] placeholder:text-warm-white/30 focus:bg-warm-white/[0.14] transition"/>
-                    <div className="mt-2 flex items-center gap-3 text-[11px]">
-                      <button onClick={saveCore} disabled={busy === 'save' || draft === (memory.memory_core || '')}
-                        className="text-coral-light hover:underline disabled:opacity-35 disabled:no-underline">
-                        {busy === 'save' ? '保存中…' : '保存改写'}
-                      </button>
-                      <button onClick={rebuild} disabled={busy === 'rebuild'}
-                        className="text-warm-white/55 hover:text-warm-white/90 disabled:opacity-35">
-                        {busy === 'rebuild' ? '重新生成中…' : '按精读历史重新生成'}
-                      </button>
-                      <button onClick={wipe} disabled={busy === 'wipe'}
-                        className="ml-auto text-warm-white/40 hover:text-coral-light disabled:opacity-35">
-                        清空全部
-                      </button>
-                    </div>
+                    {editing ? (
+                      <textarea
+                        value={draft}
+                        onChange={e => setDraft(e.target.value)}
+                        autoFocus
+                        className="w-full bg-warm-white/[0.14] rounded-xl px-3 py-2.5 text-[12.5px] leading-[1.8] text-warm-white/90 outline-none resize-none min-h-[110px] ring-1 ring-warm-white/20"/>
+                    ) : (
+                      <div className="bg-warm-white/10 rounded-xl px-3 py-2.5 text-[12.5px] leading-[1.8] text-warm-white/85 min-h-[64px]">
+                        {memory.memory_core
+                          ? memory.memory_core
+                          : <span className="text-warm-white/40">精读记录还不够。读几篇、沉淀几张卡片后，点右上角重新生成。</span>}
+                      </div>
+                    )}
                   </div>
 
                   {/* 你说过的：跨对话保留，每条可删 */}
@@ -501,7 +525,7 @@ function PortraitCard({ portrait }) {
                     </p>
                     {(memory.stated || []).length === 0 ? (
                       <p className="text-[11.5px] text-warm-white/40 m-0">
-                        还没有。你在对话里明确讲过的课题、兴趣会记在这里。
+                        对话中提到的科研经历与研究方向会自动记录在此。
                       </p>
                     ) : (
                       <div className="space-y-1">
@@ -519,9 +543,15 @@ function PortraitCard({ portrait }) {
                     )}
                   </div>
 
-                  <p className="text-[10.5px] text-warm-white/35 leading-relaxed m-0">
-                    这里显示什么，AI 就拿到什么；删空了它就什么背景都不知道。
-                  </p>
+                  <div className="pt-3 border-t border-warm-white/10 flex items-center justify-between gap-3">
+                    <p className="text-[10.5px] text-warm-white/35 leading-relaxed m-0">
+                      以上即 AI 阅读时参考的全部背景，删除后不再参与对话。
+                    </p>
+                    <button onClick={wipe} disabled={busy === 'wipe'}
+                      className="text-[10.5px] text-warm-white/35 hover:text-coral-light transition shrink-0 disabled:opacity-40">
+                      清空全部
+                    </button>
+                  </div>
                 </>
               )}
             </div>
