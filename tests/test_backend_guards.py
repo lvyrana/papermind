@@ -296,7 +296,7 @@ class MemoryServiceTests(unittest.IsolatedAsyncioTestCase):
             "memory_recent": "最近关注肺康复。",
         })
 
-        self.assertIn("长期研究画像：长期关注 COPD。", context)
+        self.assertIn("阅读画像：长期关注 COPD。", context)
         self.assertIn("近期关注变化：最近关注肺康复。", context)
 
 
