@@ -589,5 +589,30 @@ class DeviceIsolationTests(unittest.TestCase):
                 conn.close()
 
 
+class ExportFlagTests(unittest.TestCase):
+    """「已导出」必须只反映真实导出，不能反映「打开过精读台」。
+
+    汇报板行在 GET /api/board/{id} 时惰性创建，而精读台一打开就会调它。
+    曾把 has_export 定义为 EXISTS(presentation_boards)，结果每篇打开过的论文
+    都显示「已导出」。判定只认 saved_papers.last_exported_at。
+    """
+
+    def test_has_export_reads_last_exported_at_not_board_existence(self):
+        source = (ROOT / "papermind" / "src" / "database.py").read_text(encoding="utf-8")
+        start = source.index("def get_saved_papers")
+        block = source[start:start + 1200]
+        self.assertIn("last_exported_at", block,
+                      "has_export 应由 last_exported_at 推导")
+        self.assertNotIn("presentation_boards", block,
+                         "has_export 不得由汇报板是否存在推导——打开精读台就会创建它")
+
+    def test_export_endpoint_marks_exported(self):
+        source = (ROOT / "papermind" / "api.py").read_text(encoding="utf-8")
+        start = source.index("def api_export_board_marp")
+        block = source[start:start + 900]
+        self.assertIn("mark_exported(", block,
+                      "导出接口必须调用 mark_exported，否则「已导出」永远不会亮")
+
+
 if __name__ == "__main__":
     unittest.main()

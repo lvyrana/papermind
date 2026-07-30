@@ -242,6 +242,14 @@ def _ensure_db():
     except sqlite3.OperationalError:
         pass
 
+    # 迁移：给 saved_papers 加 last_exported_at（真实导出时间）
+    # 此前「已导出」判定为「存在 presentation_boards 行」，但该行在打开精读台时
+    # 就被惰性创建了，等于把「打开过」误标成「导出过」。
+    try:
+        conn.execute("ALTER TABLE saved_papers ADD COLUMN last_exported_at TEXT")
+    except sqlite3.OperationalError:
+        pass
+
     # 迁移：给 saved_papers 加 has_pdf 列
     try:
         conn.execute("ALTER TABLE saved_papers ADD COLUMN has_pdf INTEGER NOT NULL DEFAULT 0")
@@ -605,13 +613,23 @@ def get_saved_papers(user_id: str = "") -> list[dict]:
                (SELECT COUNT(*) FROM paper_notes WHERE paper_rowid = sp.id) as note_count,
                (SELECT COUNT(*) FROM paper_chats WHERE paper_rowid = sp.id) as chat_count,
                (SELECT COUNT(*) FROM reading_cards WHERE paper_rowid = sp.id) as card_count,
-               EXISTS(SELECT 1 FROM presentation_boards WHERE paper_rowid = sp.id) as has_export
+               (sp.last_exported_at IS NOT NULL AND sp.last_exported_at != '') as has_export
         FROM saved_papers sp
         WHERE sp.user_id = ?
         ORDER BY sp.saved_at DESC
     """, (user_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def mark_exported(paper_id: int):
+    """记录一次真实导出。判定「已导出」只认这里，不认汇报板是否存在——
+    汇报板在打开精读台时就会惰性创建。"""
+    conn = _ensure_db()
+    conn.execute("UPDATE saved_papers SET last_exported_at = ? WHERE id = ?",
+                 (datetime.now().isoformat(), paper_id))
+    conn.commit()
+    conn.close()
 
 
 def touch_last_read(paper_id: int):
