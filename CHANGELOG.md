@@ -1,5 +1,76 @@
 # Changelog
 
+## v0.16.0 - 2026-07-30
+
+### 导出：真 PPT + 纯 Markdown
+
+「导出 PPT」此前给的是 Marp Markdown——**不是 PPT**，还得先装 Marp CLI 或 VS Code
+插件才能变成幻灯片。名实不符。
+
+- 新增 **PPTX 导出**（`python-pptx`）：真 `.pptx`、16:9、双击即开。封面（标题/作者/期刊/
+  为什么读这篇/汇报人日期）+ 每板块一页；空板块出「（待填入）」——骨架即进度；
+  图表条目贴进对应页右侧。依赖为纯 Python + lxml，**无需 Office 或 Chromium**
+- 新增 **纯 Markdown 导出**：去掉 marp frontmatter、空板块不占位，面向 Obsidian /
+  Notion 等笔记软件，与放映用途分开
+- 前端导出按钮改为格式选单，各带一句用途说明
+
+### 修正文与引用重复
+
+旧逻辑 `quote != esc(content)` 原样比对，拦不住只差空白 / OCR 归一化的同源文本，
+于是同一段话在一页里印两遍。改为 `_same_text()` 压掉空白与标点后再比。
+实测：造一条同源条目，导出中只出现 1 次（旧逻辑 2 次）。
+
+### 「已导出」曾把「打开过精读台」当成导出
+
+`has_export` 原定义为 `EXISTS(presentation_boards)`，但该行是 `GET /api/board/{id}`
+惰性创建的，而精读台一打开就会调它——于是这个标记的真实含义是「打开过」。
+改为记录真实导出事件：`saved_papers.last_exported_at`，仅在导出接口成功时打标。
+**旧数据无法追溯，修复后一律从 0 重新开始。**
+
+### 其他
+
+- 下载文件名带论文标题（原为 `board-{id}.md`，下载多了认不出哪篇是哪篇）；
+  中文文件名按 RFC 5987 用 `filename*` 传 UTF-8——HTTP 头只接受 latin-1，
+  直接放中文会 `UnicodeEncodeError`
+- 「你说过的」接入自动节流：挂在 `update_memory_recent` 之后，共用其
+  「8 次行为或 7 天」阈值，不再需要手动触发；提取失败只打日志，不拖垮主流程
+- 记忆面板按使用反馈收敛：阅读画像默认只读，操作收进右上角 ✎ / ↻ 图标；
+  去掉「保存改写」「按精读历史重新生成」两串长文案；空态与页脚文案重写
+
+### 护栏
+
+- `ExportFlagTests`：`has_export` 必须由 `last_exported_at` 推导，
+  不得由汇报板是否存在推导；导出接口必须调用 `mark_exported`
+- `selectionActions.guard.test.js`：划词工具条的四个操作不得被 OCR 状态阻断
+  （详见 v0.15.1）
+
+---
+
+## v0.15.1 - 2026-07-30
+
+### 划词死锁：OCR 失败/卡住不再让四个操作永久失效
+
+选中文字后四个按钮点了全无反应；识别转一会儿就停，什么也不出现。
+
+PR #3 拆掉的闸门在合并后以 `disabled={selectionActionsDisabled}` 形式重现，
+两个 bug 叠加导致永久死锁：
+
+1. **失败路径不清 `needsOcr`** —— `!data.ok` 与 `.catch()` 只设错误信息，
+   标记保持 true，于是按钮永久变灰；四个 handler 内还各有一道
+   `if (selection.needsOcr) return` 二次堵死（静默 return，点了跟没点一样）
+2. **成功路径用对象身份比较** —— `current === nextSelection` 中途被任何一次
+   `setSelection` 打断就不成立，OCR 结果被**静默丢弃**、标记留 true。
+   表现为「没有报错、看着正常、但点不动」
+
+修法：给每次选区盖 `ocrRequestId` 印章，只认号不认对象身份；三条失败路径统一
+清标记并退回文字层原文；移除按钮 `disabled` 与 handler 内的 OCR 守卫。
+
+**新增回归护栏** `selectionActions.guard.test.js`（4 条断言），并已验证会咬人：
+模拟把闸门装回去，测试立刻失败并打印为什么不该这么改。
+同时新增 `AGENTS.md` 记录不变量——这个坑已被改回去两次。
+
+---
+
 ## v0.15.0 - 2026-07-30
 
 ### 记忆从黑箱变回卖点：可见 · 可改 · 可删
