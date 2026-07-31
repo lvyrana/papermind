@@ -156,6 +156,7 @@ export default function PaperRead() {
   )
   const [summarizing, setSummarizing] = useState(false)
   const [summarized, setSummarized] = useState(false)
+  const [chatSummaryText, setChatSummaryText] = useState('')
   const [bookmarked, setBookmarked] = useState(false)
   const [savedRowId, setSavedRowId] = useState(null)
   const [showExport, setShowExport] = useState(false)
@@ -785,24 +786,6 @@ export default function PaperRead() {
     }
   }
 
-  // ── selection bubble → preload quote ──
-  const askAboutSelection = () => {
-    if (!selection) return
-    setPendingQuote({
-      text: selection.text,
-      page: selection.page,
-      anchor: selection.anchor || {},
-      section: null, // TODO(backend): pdfjs 给的纯文本无 section 信息，需要后端 /papers/<id>/sections 或前端做 outline 匹配
-      createdAt: new Date().toISOString(),
-    })
-    setSelection(null)
-    setChatOpen(true)
-    window.getSelection()?.removeAllRanges()
-    setTimeout(() => {
-      chatInputRef.current?.focus()
-      chatFootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-    }, 80)
-  }
 
   // ── selection bubble → save as reading card ──
   const saveSelectionAsCard = () => {
@@ -871,6 +854,15 @@ export default function PaperRead() {
   const deepReadSelection = () => {
     if (!selection) return
     const selected = selection
+    // 顺带把这段挂进对话待引用：用户读完拆解若想自己追问，
+    // 直接在对话里打字即可，不必再回来点一次（原「问 papermind」的能力）
+    setPendingQuote({
+      text: selected.text,
+      page: selected.page,
+      anchor: selected.anchor || {},
+      section: null,
+      createdAt: new Date().toISOString(),
+    })
     setSelection(null)
     window.getSelection()?.removeAllRanges()
     setMobileTab('chat')
@@ -1118,10 +1110,20 @@ export default function PaperRead() {
         paper_rowid: rowId,
         messages: chatMessages,
       })
-      if (data.ok) { setSummarized(true); triggerRipple(); refreshSavedNotes(rowId); setNotesOpen(true) }
+      if (data.ok) {
+        setSummarized(true); triggerRipple(); refreshSavedNotes(rowId); setNotesOpen(true)
+        // 存下正文：对话总结此前只能进笔记，没有任何入口进汇报板
+        setChatSummaryText(String(data.summary || data.content || '').trim())
+      }
       else setSummarizeError(data.error || '总结失败，请重试。')
     } catch { setSummarizeError('网络错误，请重试。') }
     finally { setSummarizing(false) }
+  }
+
+  // 对话总结 → 汇报板：读出来的判断本该能直接进汇报，不该止步于笔记
+  const sendChatSummaryToBoard = () => {
+    if (!chatSummaryText) return
+    sendToBoard({ content: chatSummaryText, source: 'chat' })
   }
 
   // ── export (unchanged) ──
@@ -1364,16 +1366,13 @@ export default function PaperRead() {
                 )}
                 {(
                   <>
-                    <button
-                      onClick={askAboutSelection}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-navy px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-navy-light transition-colors">
-                      <Sparkles size={13}/>
-                      问 papermind
-                    </button>
+                    {/* 原有「问 papermind」与「精读这段」重复：都是针对这段问 AI，
+                        区别只是前者要用户自己打字。合并为「精读这段」（直接给拆解），
+                        想自己提问的场景已由对话抽屉覆盖。 */}
                     <button
                       onClick={deepReadSelection}
-                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-navy hover:bg-navy/5 transition-colors">
-                      <FileText size={13}/>
+                      className="flex items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-navy px-2.5 py-1.5 text-xs font-medium text-warm-white hover:bg-navy-light transition-colors">
+                      <Sparkles size={13}/>
                       精读这段
                     </button>
                     <button
@@ -1492,6 +1491,8 @@ export default function PaperRead() {
             setNotesOpen={setNotesOpen}
             savedRowId={savedRowId}
             onClearChat={clearChat}
+            onDismissDeepRead={() => { setDeepReadGuide(''); setDeepReadSource(''); setDeepReadError('') }}
+            onSendChatSummaryToBoard={sendChatSummaryToBoard}
             selfTestOpen={selfTestOpen}
             selfTestPreparing={selfTestPreparing}
             selfTestPrepareError={selfTestPrepareError}
@@ -1675,7 +1676,8 @@ function MemoryChannel(props) {
     currentPage, currentPageText, selfTestSourceText, deepReadGuide, deepReadSource,
     deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
     board, onOpenBoard, onExportBoard, boardExporting,
-    onSendDeepReadToBoard, onSendCardToBoard, onDeleteQuote,
+    onSendDeepReadToBoard, onSendCardToBoard, onDeleteQuote, onDismissDeepRead,
+    onSendChatSummaryToBoard,
     savedRowId, selfTestOpen, onOpenSelfTest, onCloseSelfTest, onClearChat,
     selfTestPreparing, selfTestPrepareError, selfTestPrepareProgress,
     onHandoffToChat, onMakeCardFromSelfTest,
@@ -1721,7 +1723,7 @@ function MemoryChannel(props) {
                   </button>
                 )}
                 <button
-                  onClick={() => { setNotesOpen(o => !o); setMoreOpen(false) }}
+                  onClick={() => { const next = !notesOpen; setNotesOpen(next); if (next) setGuideOpen(false); setMoreOpen(false) }}
                   className="w-full text-left px-3 py-1.5 text-[12px] text-navy/80 hover:bg-cream-dark/30 flex items-center gap-2">
                   <FileText size={11}/> 自由笔记{savedNotes.length > 0 ? ` · ${savedNotes.length}` : ''}
                 </button>
@@ -1751,7 +1753,7 @@ function MemoryChannel(props) {
       {/* ── 怎么读这篇（带读，默认收起）── */}
       <div className="shrink-0 border-b border-cream-dark/50">
         <button
-          onClick={() => setGuideOpen(o => !o)}
+          onClick={() => { const next = !guideOpen; setGuideOpen(next); if (next) setNotesOpen(false) }}
           className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-cream-dark/20 transition">
           <span className="flex items-center gap-2 text-[12px] text-navy/75">
             <Sparkles size={12} className="text-coral"/> 怎么读这篇
@@ -1772,6 +1774,7 @@ function MemoryChannel(props) {
             onRun={onRunDeepRead}
             onSave={onSaveDeepRead}
             onSendToBoard={onSendDeepReadToBoard}
+            onDismiss={onDismissDeepRead}
             variant="rail"
           />
         )}
@@ -1983,6 +1986,13 @@ function MemoryChannel(props) {
                     : summarized ? <><FileText size={11}/>已保存到笔记</>
                     : <><FileText size={11}/>把这段对话存为笔记</>}
                 </button>
+                {/* 总结此前只能进笔记，进不了汇报板——读出来的判断本该能直接用于汇报 */}
+                {summarized && onSendChatSummaryToBoard && (
+                  <button onClick={onSendChatSummaryToBoard}
+                    className="w-full py-1.5 rounded-lg text-[11px] font-medium mb-2 flex items-center justify-center gap-1.5 border border-navy/15 text-navy hover:border-mint-deep/50 hover:text-mint-deep transition-colors">
+                    <Presentation size={11}/>把这份总结送到汇报板
+                  </button>
+                )}
                 {summarizeError && <p className="text-[11px] text-coral mb-2 text-center">{summarizeError}</p>}
               </>
             )}
@@ -2016,7 +2026,7 @@ function MemoryChannel(props) {
 
 function DeepReadPanel({
   paper, currentPage, currentPageText, guide, source, mode, loading, error, saved, onRun, onSave,
-  onSendToBoard, variant = 'section',
+  onSendToBoard, onDismiss, variant = 'section',
 }) {
   const hasAbstract = !!paper?.abstract
   const hasPageText = currentPageText.trim().length > 80
@@ -2030,7 +2040,7 @@ function DeepReadPanel({
 
   return (
     <section ref={rootRef} className={variant === 'rail'
-      ? 'px-4 pb-3 max-h-[46vh] overflow-y-auto'
+      ? 'px-4 pb-3 max-h-[32vh] overflow-y-auto'
       : 'px-6 py-4 border-b border-navy/5 bg-gradient-to-b from-warm-white/60 to-transparent'}>
       <SectionHeader
         left={<><Sparkles size={11}/> 精读工作台</>}
@@ -2105,6 +2115,14 @@ function DeepReadPanel({
                   <FileText size={10}/>
                   {saved ? '已保存' : '存笔记'}
                 </button>
+                {/* 结果面板此前没有任何关闭入口：读完一段又读一段，面板越堆越多，
+                    用户既无法继续也无法关掉。 */}
+                {onDismiss && (
+                  <button onClick={onDismiss} title="收起这条结果"
+                    className="w-6 h-6 rounded-lg text-warm-gray/60 hover:text-navy hover:bg-cream-dark/50 flex items-center justify-center transition">
+                    <X size={12}/>
+                  </button>
+                )}
               </span>
             </div>
             <div className="text-[12.5px] leading-relaxed text-navy/84 max-h-[430px] overflow-y-auto px-3.5 py-3.5">
