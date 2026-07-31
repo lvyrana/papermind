@@ -1,7 +1,7 @@
 # PaperMind 小范围试用指南
 
-> 适用场景：向同事/同学开放 PaperMind 试用（局域网或临时部署）。
-> 分两部分：给试用者看的「使用须知」，给主持人（部署者）看的「准备清单」。
+> 适用场景：向护理同行开放 PaperMind 线上试用（papermindapp.com）。
+> 分两部分：**给试用者**的使用须知（可直接转发），**给我自己**的运维清单。
 
 ---
 
@@ -9,8 +9,8 @@
 
 ### 怎么开始
 
-1. 主持人会给你访问地址，**用电脑浏览器**打开即可，无需注册、无需密码。（精读需要划词与 PDF 阅读，手机上不便操作，请用电脑。）
-2. 第一次打开时系统会自动为浏览器分配一个匿名设备 ID。共享密码只负责进入网站；书架、笔记、对话、卡片、PDF 与自测记录按设备 ID 分开。
+1. 我会把访问地址发给你，**用电脑浏览器**打开即可，无需注册、无需密码。（精读需要划词与 PDF 阅读，手机上不便操作，请用电脑。）
+2. 第一次打开时系统会自动为浏览器分配一个匿名设备 ID。书架、笔记、对话、卡片、PDF 与自测记录都按这个 ID 分开，彼此看不到。
 3. 从首页放入一篇 PDF，或粘贴 PMID / DOI / 英文标题，即可开始精读。
 
 ### 换设备 / 换浏览器怎么办
@@ -19,18 +19,18 @@
 
 ### 隐私须知（请务必阅读）
 
-- **数据存在主持人的服务器上**：你的收藏、笔记、对话记录、上传的 PDF 都保存在运行 PaperMind 的服务器上。它们不会因为你清理浏览器而自动删除；试用结束后如需彻底删除，请联系主持人并提供设置页专属链接中的设备 ID。
+- **数据存在我的服务器上**：你的收藏、笔记、对话记录、上传的 PDF 都保存在运行 PaperMind 的服务器上。它们不会因为你清理浏览器而自动删除；试用结束后如需彻底删除，告诉我一声，把设置页里的设备 ID 发我即可。
 - **内容会发送给第三方 AI 服务**：AI 解读、对话、翻译功能会把论文摘要、你的提问、划选的原文片段发送到第三方大模型 API（阿里云通义/智谱/DeepSeek 等）。**请勿在对话和笔记中输入患者隐私、未发表数据、涉密内容**。
 - **上传 PDF 请注意版权**：本地上传的 PDF 仅用于你个人精读，请上传你有权使用的文献。
 - **不是正式账号系统**：匿名设备 ID 主要防止日常误串数据，不能替代正式账号鉴权；请不要存放敏感信息，也不要转发专属链接。
 
 ### 用量限制
 
-为控制 AI 成本，试用期每人每天有用量上限（默认：推荐 8 批次 / AI 对话 20 次 / 翻译 30 次），到达上限后第二天恢复。如果遇到"今日次数已用完"提示属于正常现象。
+为控制 AI 成本，试用期每人每天有用量上限（AI 对话 20 次 / 翻译 30 次），到达上限后第二天恢复。如果遇到"今日次数已用完"提示属于正常现象。
 
 ### 遇到问题 / 提反馈
 
-请按下面模板把反馈发给主持人（微信/邮件均可）：
+请按下面模板把反馈发我（微信/邮件均可）：
 
 ```
 【PaperMind 试用反馈】
@@ -44,7 +44,7 @@
 
 ---
 
-## 二、给主持人：试用准备清单
+## 二、给我自己：运维清单
 
 ### 开放前检查
 
@@ -56,23 +56,28 @@
 - [ ] 后端测试通过：`papermind/.venv_new/bin/python -m unittest discover -s tests`
 - [ ] 用两个不同浏览器或无痕窗口打开，确认两边书架默认互相不可见
 
-### 启动方式（局域网试用）
+### 线上部署（当前方式）
 
 ```bash
-cd papermind        # 仓库根目录下的后端目录
-.venv_new/bin/python -m uvicorn api:app --host 0.0.0.0 --port 8000
+ssh root@124.156.165.216
+sudo bash /opt/papermind/deploy/update.sh
 ```
 
-- `--host 0.0.0.0` 表示局域网内可访问。把 `http://<你的IP>:8000` 发给试用者（macOS 查 IP：系统设置 → Wi-Fi → 详细信息）。
-- 只想自己用时改回 `--host 127.0.0.1`。
-- 如果部署到公网（有域名），务必在 `.env` 设置 `ALLOWED_ORIGINS=https://yourdomain.com` 收紧跨域。
+脚本会拉最新 main、装 Python 依赖、构建前端、`nginx -t` 检查配置、reload nginx、重启后端。
+
+- 站点：`https://papermindapp.com`
+- 试用期已关闭 HTTP Basic Auth（`deploy/nginx-papermind.conf` 与 `-ip.conf` 两份都注释掉了）；
+  结束后取消注释并 `systemctl reload nginx` 即可恢复
+- 新增 Python 依赖（如 `python-pptx`）必须跑一次 update.sh，否则相关功能返回 503
 
 ### 试用期间的日常动作
 
-- **每天备份一次**：`bash scripts/backup_local.sh`（有新 PDF 或图表截图时加 `--with-files`）。产物默认在 `backups/`，保留 30 天。
-- **定期保留异地副本**：可把备份直接写到移动硬盘或受控云盘，例如 `BACKUP_DIR="/Volumes/你的备份盘/PaperMind" bash scripts/backup_local.sh --with-files`。不要把包含试用数据的备份放进公开网盘或 Git 仓库。
-- **观察后端日志**：uvicorn 控制台会打印 LLM 命中的模型和限速触发情况。
-- **健康检查**：浏览器打开 `http://127.0.0.1:8000` 能加载首页即为正常。
+- **备份**：服务器已配置 `papermind-backup.timer` 每日自动备份，无需手动执行。
+  查看：`ls -lh /opt/papermind/backups` / `systemctl status papermind-backup.timer`
+- **观察日志**：`journalctl -u papermind -f`（会打印 LLM 命中的模型与限速触发）
+- **健康检查**：浏览器打开 `https://papermindapp.com` 能加载首页即为正常
+- **异地副本**：定期把 `/opt/papermind/backups` 下的文件拉回本地留存。
+  不要把含试用数据的备份放进公开网盘或 Git 仓库。
 
 ### 收尾动作
 
@@ -95,7 +100,7 @@ python3 scripts/delete_user_data.py --user-id <完整设备UUID> --confirm
 | 主数据库（收藏/笔记/对话/卡片） | `papermind/data/paperdiary.db` |
 | 上传的 PDF | `papermind/data/pdfs/` |
 | 汇报板中的图表截图 | `papermind/data/figures/` |
-| 主持人级 LLM 配置 | `papermind/data/config.json` |
+| 站点级 LLM 配置 | `papermind/data/config.json` |
 | 备份产物 | `backups/`（不入 git） |
 
 `config.json` 可能包含 API Key，备份脚本不会把它放入未加密压缩包。迁移机器时应单独、安全地重新配置密钥。
