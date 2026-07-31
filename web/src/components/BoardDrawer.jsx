@@ -31,7 +31,7 @@ function countBySection(items) {
 }
 
 /* ── 导出按钮：默认给真 PPT，可切 Markdown ── */
-function ExportButton({ onExport, exporting, compact = false }) {
+function ExportButton({ onExport, exporting, compact = false, dropUp = true }) {
   const [open, setOpen] = useState(false)
   const pick = (fmt) => { setOpen(false); onExport(fmt) }
   return (
@@ -47,7 +47,10 @@ function ExportButton({ onExport, exporting, compact = false }) {
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}/>
-          <div className="absolute right-0 bottom-full mb-1.5 z-50 w-52 rounded-xl border border-cream-dark bg-warm-white shadow-[0_12px_32px_-10px_rgba(30,58,95,.32)] p-1.5">
+          {/* 按钮在页面顶部时必须向下弹：向上弹会被浏览器工具栏挡住看不见 */}
+          <div className={`absolute right-0 z-50 w-52 rounded-xl border border-cream-dark bg-warm-white shadow-[0_12px_32px_-10px_rgba(30,58,95,.32)] p-1.5 ${
+            dropUp ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
+          }`}>
             {EXPORT_FORMATS.map(f => (
               <button key={f.key} onClick={() => pick(f.key)}
                 className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-cream transition-colors">
@@ -210,7 +213,7 @@ export default function BoardDrawer({ paper, board, open, onClose, onRefresh, on
             <p className="m-0 mt-0.5 text-[13px] text-navy font-medium truncate">{paper?.title}</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <ExportButton onExport={doExport} exporting={exporting}/>
+            <ExportButton onExport={doExport} exporting={exporting} dropUp={false}/>
             <button onClick={onClose} className="text-warm-gray/70 hover:text-navy p-1"><X size={16}/></button>
           </div>
         </div>
