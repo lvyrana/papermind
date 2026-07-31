@@ -33,7 +33,9 @@ function selectionToolbarBlock() {
   return source.slice(start, end === -1 ? start + 6000 : end)
 }
 
-const SELECTION_ACTIONS = ['askAboutSelection', 'deepReadSelection', 'saveSelectionAsCard', 'sendSelectionToBoard']
+// askAboutSelection 已于 v0.16.2 合并进 deepReadSelection（两者重复：都是针对选中段落问 AI）。
+// 合并不改变本护栏的意图：浮窗上仍在的每个操作都不得被 OCR 状态阻断。
+const SELECTION_ACTIONS = ['deepReadSelection', 'saveSelectionAsCard', 'sendSelectionToBoard']
 
 test('划词工具条的操作按钮不带 disabled', () => {
   const block = selectionToolbarBlock()
