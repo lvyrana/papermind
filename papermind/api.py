@@ -1955,12 +1955,22 @@ def api_export_board_pptx(paper_rowid: int, request: Request):
     # 曾经固定「一板块一页」，内容一多就溢出到页面外（用户实测「方法」页文字跑出画面）。
     # PPT 文本框不会自动分页，只能自己估算行数：按 16:9 正文区高度约容纳 18 行，
     # 一行约 34 个中文字（15pt / 11.5 英寸宽）。超了就新开一页，标题加「（续）」。
-    LINES_PER_SLIDE = 18
-    CHARS_PER_LINE = 34
-    QUOTE_CHARS_PER_LINE = 42          # 引用字号更小，一行能放更多
+    # 正文框 5.2 英寸高，15pt 字行高约 0.25 英寸 → 理论 20 行；
+    # 段后距、标点占位、字体差异都会吃掉空间，故留约 25% 余量。
+    LINES_PER_SLIDE = 15
+    CHARS_PER_LINE = 46                # 11.3 英寸可用宽 / 15pt 字宽 ≈ 54，收紧到 46 更保险
+    QUOTE_CHARS_PER_LINE = 58          # 引用 12pt，一行放得更多
 
     def lines_of(text: str, per_line: int) -> int:
-        return max(1, -(-len(text) // per_line))   # 向上取整
+        """按真实换行逐段折行。
+
+        卡片正文常含小标题和「1. 2. 3.」编号（内部 \n），
+        只用「总字数 ÷ 每行字数」会严重低估行数 —— 这正是修了分页后
+        单页仍然溢出的原因。
+        """
+        if not text:
+            return 1
+        return sum(max(1, -(-len(seg) // per_line)) for seg in text.split("\n"))
 
     def new_section_slide(title: str, cont: bool):
         sl = prs.slides.add_slide(prs.slide_layouts[6])
