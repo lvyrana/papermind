@@ -1961,17 +1961,6 @@ def api_export_board_pptx(paper_rowid: int, request: Request):
     CHARS_PER_LINE = 46                # 11.3 英寸可用宽 / 15pt 字宽 ≈ 54，收紧到 46 更保险
     QUOTE_CHARS_PER_LINE = 58          # 引用 12pt，一行放得更多
 
-    def lines_of(text: str, per_line: int) -> int:
-        """按真实换行逐段折行。
-
-        卡片正文常含小标题和「1. 2. 3.」编号（内部 \n），
-        只用「总字数 ÷ 每行字数」会严重低估行数 —— 这正是修了分页后
-        单页仍然溢出的原因。
-        """
-        if not text:
-            return 1
-        return sum(max(1, -(-len(seg) // per_line)) for seg in text.split("\n"))
-
     def new_section_slide(title: str, cont: bool):
         sl = prs.slides.add_slide(prs.slide_layouts[6])
         hd = sl.shapes.add_textbox(Inches(0.9), Inches(0.55), Inches(11.5), Inches(0.9))
@@ -1998,30 +1987,40 @@ def api_export_board_pptx(paper_rowid: int, request: Request):
             body_text = f"· {esc(it['content'])}{page}"
             quote = esc(it.get("quote") or "")
             has_quote = bool(quote) and not _same_text(quote, it["content"])
-            need = lines_of(body_text, CHARS_PER_LINE) + 1
+            blocks = [
+                (_wrap_ppt_lines(body_text, CHARS_PER_LINE), Pt(15), NAVY, False),
+            ]
             if has_quote:
-                need += lines_of(quote[:220], QUOTE_CHARS_PER_LINE) + 1
+                blocks.append((
+                    _wrap_ppt_lines(f"　　{quote[:220]}", QUOTE_CHARS_PER_LINE),
+                    Pt(12), GRAY, True,
+                ))
 
-            # 放不下就翻页；单条超长时至少独占一页，不会无限翻。
-            # tf is None 表示上一条是图表页，此时按需补开正文页。
-            if tf is None or (used and used + need > LINES_PER_SLIDE):
-                slide, tf = new_section_slide(sec["title"], tf is not None or used > 0 or not first_slide_of_section)
-                used, first = 0, True
+            # 正文和引用都按“实际折行后的行列表”切片。上一版只决定条目之间
+            # 是否翻页，单条 477 字卡片仍会整块塞进一页；这里连单条内部也拆。
+            for block_lines, font_size, color, italic in blocks:
+                remaining = list(block_lines)
+                while remaining:
+                    if tf is None or (used and LINES_PER_SLIDE - used <= 1):
+                        slide, tf = new_section_slide(sec["title"], not first_slide_of_section)
+                        used, first = 0, True
 
-            p = tf.paragraphs[0] if first else tf.add_paragraph()
-            first = False
-            p.text = body_text
-            p.runs[0].font.size, p.runs[0].font.color.rgb = Pt(15), NAVY
-            p.space_after = Pt(10)
-            first_slide_of_section = False
+                    # 每个段落额外预留一行作为段后距，避免“估算刚好”仍贴底。
+                    capacity = max(1, LINES_PER_SLIDE - used - 1)
+                    chunk, remaining = remaining[:capacity], remaining[capacity:]
+                    p = tf.paragraphs[0] if first else tf.add_paragraph()
+                    first = False
+                    p.text = "\n".join(chunk)
+                    p.runs[0].font.size = font_size
+                    p.runs[0].font.color.rgb = color
+                    p.runs[0].font.italic = italic
+                    p.space_after = Pt(10)
+                    used += len(chunk) + 1
+                    first_slide_of_section = False
 
-            if has_quote:
-                q = tf.add_paragraph()
-                q.text = f"　　{quote[:220]}"
-                q.runs[0].font.size, q.runs[0].font.italic = Pt(12), True
-                q.runs[0].font.color.rgb = GRAY
-                q.space_after = Pt(10)
-            used += need
+                    if remaining:
+                        slide, tf = new_section_slide(sec["title"], True)
+                        used, first = 0, True
 
             # 图表条目：单独成页，避免和正文抢空间导致压字
             if it.get("image"):
@@ -2088,6 +2087,20 @@ def _same_text(a: str, b: str) -> bool:
     if not na or not nb:
         return False
     return na == nb or na in nb or nb in na
+
+
+def _wrap_ppt_lines(text: str, per_line: int) -> list[str]:
+    """把真实换行和长行都展开为 PPT 容量估算使用的视觉行。"""
+    visual_lines = []
+    for segment in str(text or "").split("\n"):
+        if not segment:
+            visual_lines.append("")
+            continue
+        visual_lines.extend(
+            segment[start:start + per_line]
+            for start in range(0, len(segment), per_line)
+        )
+    return visual_lines or [""]
 
 
 def _validated_selection_image(data_url: str) -> str:

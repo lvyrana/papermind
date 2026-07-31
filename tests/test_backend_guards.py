@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import base64
 import hashlib
+import io
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -612,6 +613,54 @@ class ExportFlagTests(unittest.TestCase):
         block = source[start:start + 900]
         self.assertIn("mark_exported(", block,
                       "导出接口必须调用 mark_exported，否则「已导出」永远不会亮")
+
+
+class PptxPaginationTests(unittest.TestCase):
+    def test_single_long_multiline_item_is_split_across_slides(self):
+        from pptx import Presentation
+
+        long_item = "\n".join(
+            f"{index}. " + ("护理科研方法与结果解释需要保留原文依据并说明适用边界。" * 3)
+            for index in range(1, 11)
+        )
+        self.assertGreater(len(api._wrap_ppt_lines(f"· {long_item}", 46)), 15)
+
+        paper = {
+            "title": "分页护栏测试",
+            "authors": "测试者",
+            "journal": "测试期刊",
+            "pub_date": "2026",
+            "relevance": "",
+        }
+        board = {
+            "why_reading": "",
+            "sections": [{"key": "methods", "title": "方法"}],
+        }
+        items = [{
+            "section": "methods",
+            "content": long_item,
+            "quote": "",
+            "page": 3,
+            "source": "card",
+            "image": "",
+        }]
+
+        with patch.object(api, "_get_owned_paper_or_none", return_value=paper), \
+             patch.object(api, "get_or_create_board", return_value=board), \
+             patch.object(api, "get_board_items", return_value=items), \
+             patch.object(api, "mark_exported"):
+            response = api.api_export_board_pptx(7, HeaderRequest())
+
+        deck = Presentation(io.BytesIO(response.body))
+        titles = [
+            shape.text
+            for slide in deck.slides
+            for shape in slide.shapes
+            if getattr(shape, "has_text_frame", False)
+            and shape.text in {"方法", "方法（续）"}
+        ]
+        self.assertEqual(titles[0], "方法")
+        self.assertGreaterEqual(titles.count("方法（续）"), 1)
 
 
 if __name__ == "__main__":

@@ -883,6 +883,7 @@ export default function PaperRead() {
     setChatMessages([])
     setPendingQuote(null)
     setSummarized(false)
+    setChatSummaryText('')
     try { localStorage.removeItem(`paper-chat-${sliceId(paper, id)}`) } catch { /* ignore */ }
     if (savedRowId) await apiDelete(`/chat/${savedRowId}`).catch(() => {})
   }
@@ -1083,6 +1084,7 @@ export default function PaperRead() {
     } finally {
       setChatLoading(false)
       setSummarized(false)
+      setChatSummaryText('')
     }
   }
 
@@ -1113,7 +1115,7 @@ export default function PaperRead() {
       if (data.ok) {
         setSummarized(true); triggerRipple(); refreshSavedNotes(rowId); setNotesOpen(true)
         // 存下正文：对话总结此前只能进笔记，没有任何入口进汇报板
-        setChatSummaryText(String(data.summary || data.content || '').trim())
+        setChatSummaryText(String(data.note || data.summary || data.content || '').trim())
       }
       else setSummarizeError(data.error || '总结失败，请重试。')
     } catch { setSummarizeError('网络错误，请重试。') }
