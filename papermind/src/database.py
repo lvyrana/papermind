@@ -1314,6 +1314,17 @@ def get_chat_history(paper_rowid: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def clear_chat_history(paper_rowid: int) -> int:
+    """清空一篇论文的全部对话。聊过的内容有时只是当下随手一问，
+    用户应当能删掉它——不给删除入口等于强迫留痕。"""
+    conn = _ensure_db()
+    cur = conn.execute("DELETE FROM paper_chats WHERE paper_rowid = ?", (paper_rowid,))
+    conn.commit()
+    n = cur.rowcount
+    conn.close()
+    return n
+
+
 def get_all_recent_chats(user_id: str, limit: int = 30) -> list[dict]:
     """获取用户所有论文的最近对话（用于兴趣摘要生成）"""
     conn = _ensure_db()

@@ -40,7 +40,7 @@ from src.database import (
     init_db, save_paper, get_saved_papers, get_saved_paper, touch_last_read,
     delete_saved_paper, update_paper_enrichment, save_note, delete_note, get_note_owner, get_notes, save_chat_message,
     get_saved_categories,
-    get_chat_history, record_reading, get_reading_history,
+    get_chat_history, clear_chat_history, record_reading, get_reading_history,
     get_profile, save_profile, get_latest_search_run,
     check_rate_limit, increment_rate_limit, get_rate_limit_remaining,
     get_enrichment_cache, save_enrichment_cache,
@@ -1951,47 +1951,82 @@ def api_export_board_pptx(paper_rowid: int, request: Request):
     fp.text = "汇报人：＿＿＿＿　　日期：＿＿＿＿"
     fp.runs[0].font.size, fp.runs[0].font.color.rgb = Pt(12), GRAY
 
-    # ── 每个板块一页；空板块也出页，骨架即进度 ──
-    for sec in board["sections"]:
-        slide = prs.slides.add_slide(prs.slide_layouts[6])
-        head = slide.shapes.add_textbox(Inches(0.9), Inches(0.55), Inches(11.5), Inches(0.9))
-        hp = head.text_frame.paragraphs[0]
-        hp.text = sec["title"]
-        hp.runs[0].font.size, hp.runs[0].font.bold, hp.runs[0].font.color.rgb = Pt(26), True, NAVY
+    # ── 板块内容按容量自动分页 ──
+    # 曾经固定「一板块一页」，内容一多就溢出到页面外（用户实测「方法」页文字跑出画面）。
+    # PPT 文本框不会自动分页，只能自己估算行数：按 16:9 正文区高度约容纳 18 行，
+    # 一行约 34 个中文字（15pt / 11.5 英寸宽）。超了就新开一页，标题加「（续）」。
+    LINES_PER_SLIDE = 18
+    CHARS_PER_LINE = 34
+    QUOTE_CHARS_PER_LINE = 42          # 引用字号更小，一行能放更多
 
-        body = slide.shapes.add_textbox(Inches(0.9), Inches(1.6), Inches(11.5), Inches(5.2))
-        tf = body.text_frame
-        tf.word_wrap = True
+    def lines_of(text: str, per_line: int) -> int:
+        return max(1, -(-len(text) // per_line))   # 向上取整
+
+    def new_section_slide(title: str, cont: bool):
+        sl = prs.slides.add_slide(prs.slide_layouts[6])
+        hd = sl.shapes.add_textbox(Inches(0.9), Inches(0.55), Inches(11.5), Inches(0.9))
+        hp_ = hd.text_frame.paragraphs[0]
+        hp_.text = f"{title}（续）" if cont else title
+        hp_.runs[0].font.size, hp_.runs[0].font.bold, hp_.runs[0].font.color.rgb = Pt(26), True, NAVY
+        bd = sl.shapes.add_textbox(Inches(0.9), Inches(1.6), Inches(11.5), Inches(5.2))
+        bd.text_frame.word_wrap = True
+        return sl, bd.text_frame
+
+    for sec in board["sections"]:
         sec_items = by_section.get(sec["key"], [])
+        slide, tf = new_section_slide(sec["title"], False)
+        used, first, first_slide_of_section = 0, True, True
+
         if not sec_items:
             p = tf.paragraphs[0]
             p.text = "（待填入）"
             p.runs[0].font.size, p.runs[0].font.color.rgb = Pt(15), GRAY
             continue
 
-        first = True
         for it in sec_items:
+            page = f"（P.{it['page']}）" if it.get("page") else ""
+            body_text = f"· {esc(it['content'])}{page}"
+            quote = esc(it.get("quote") or "")
+            has_quote = bool(quote) and not _same_text(quote, it["content"])
+            need = lines_of(body_text, CHARS_PER_LINE) + 1
+            if has_quote:
+                need += lines_of(quote[:220], QUOTE_CHARS_PER_LINE) + 1
+
+            # 放不下就翻页；单条超长时至少独占一页，不会无限翻。
+            # tf is None 表示上一条是图表页，此时按需补开正文页。
+            if tf is None or (used and used + need > LINES_PER_SLIDE):
+                slide, tf = new_section_slide(sec["title"], tf is not None or used > 0 or not first_slide_of_section)
+                used, first = 0, True
+
             p = tf.paragraphs[0] if first else tf.add_paragraph()
             first = False
-            page = f"（P.{it['page']}）" if it.get("page") else ""
-            p.text = f"· {esc(it['content'])}{page}"
+            p.text = body_text
             p.runs[0].font.size, p.runs[0].font.color.rgb = Pt(15), NAVY
             p.space_after = Pt(10)
+            first_slide_of_section = False
 
-            quote = esc(it.get("quote") or "")
-            if quote and not _same_text(quote, it["content"]):
+            if has_quote:
                 q = tf.add_paragraph()
                 q.text = f"　　{quote[:220]}"
                 q.runs[0].font.size, q.runs[0].font.italic = Pt(12), True
                 q.runs[0].font.color.rgb = GRAY
                 q.space_after = Pt(10)
+            used += need
 
-            # 图表条目：把截图贴进当前页右侧
+            # 图表条目：单独成页，避免和正文抢空间导致压字
             if it.get("image"):
                 fig = FIGURES_DIR / it["image"]
                 if fig.exists():
                     try:
-                        slide.shapes.add_picture(str(fig), Inches(7.6), Inches(1.7), height=Inches(3.6))
+                        fig_slide, fig_tf = new_section_slide(sec["title"], True)
+                        fp = fig_tf.paragraphs[0]
+                        fp.text = esc(it["content"])[:60] or "图表"
+                        fp.runs[0].font.size, fp.runs[0].font.color.rgb = Pt(13), GRAY
+                        fig_slide.shapes.add_picture(
+                            str(fig), Inches(2.6), Inches(2.2), height=Inches(4.4))
+                        # 图表页已独立成页；后续条目回到「未开新页」状态，
+                        # 等真的有内容时再开，避免留下只有标题的空白页
+                        slide, tf, used, first = None, None, 0, True
                     except Exception:
                         pass
 
@@ -2750,6 +2785,16 @@ async def api_chat(data: ChatRequest, request: Request):
 
 
 # ========== Chat Summary → Notes ==========
+
+@app.delete("/api/chat/{paper_rowid}")
+def api_clear_chat(paper_rowid: int, request: Request):
+    """清空这篇论文的对话记录。"""
+    uid = _get_user_id(request)
+    if not _get_owned_paper_or_none(paper_rowid, uid):
+        return {"ok": False, "error": "not found"}
+    removed = clear_chat_history(paper_rowid)
+    return {"ok": True, "removed": removed}
+
 
 @app.post("/api/chat/summarize")
 async def api_summarize_chat(data: SummarizeChatRequest, request: Request):

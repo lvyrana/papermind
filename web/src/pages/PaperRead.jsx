@@ -4,7 +4,7 @@ import {
   ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2,
   FileText, Download, ExternalLink, Mic, MicOff,
   ChevronDown, ChevronUp, MessageSquare, Quote as QuoteIcon, X, Layers,
-  GripVertical, PanelLeftClose, PanelLeftOpen, Presentation, MoreHorizontal,
+  GripVertical, PanelLeftClose, PanelLeftOpen, Presentation, MoreHorizontal, Trash2,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import { apiGet, apiPost, apiDelete, apiPatch, API_BASE, getUserId } from '../api'
@@ -884,6 +884,17 @@ export default function PaperRead() {
   }
 
   // ── chat message → seed a card (归卡) ──
+  // 清空对话：聊过的东西有时只是随手一问，用户应当能删掉它
+  const clearChat = async () => {
+    if (chatMessages.length === 0) return
+    if (!confirm('清空这篇论文的全部对话记录？不可撤销。')) return
+    setChatMessages([])
+    setPendingQuote(null)
+    setSummarized(false)
+    try { localStorage.removeItem(`paper-chat-${sliceId(paper, id)}`) } catch { /* ignore */ }
+    if (savedRowId) await apiDelete(`/chat/${savedRowId}`).catch(() => {})
+  }
+
   // 自测「不确定 · 转到对话」：带上下文过去，用户不必自己切、自己重述
   const handoffToChat = (prompt, chip) => {
     setChatMessages(prev => [...prev, { role: 'assistant', content: prompt }])
@@ -1480,6 +1491,7 @@ export default function PaperRead() {
             notesOpen={notesOpen}
             setNotesOpen={setNotesOpen}
             savedRowId={savedRowId}
+            onClearChat={clearChat}
             selfTestOpen={selfTestOpen}
             selfTestPreparing={selfTestPreparing}
             selfTestPrepareError={selfTestPrepareError}
@@ -1664,7 +1676,7 @@ function MemoryChannel(props) {
     deepReadMode, deepReading, deepReadError, deepReadSaved, onRunDeepRead, onSaveDeepRead,
     board, onOpenBoard, onExportBoard, boardExporting,
     onSendDeepReadToBoard, onSendCardToBoard, onDeleteQuote,
-    savedRowId, selfTestOpen, onOpenSelfTest, onCloseSelfTest,
+    savedRowId, selfTestOpen, onOpenSelfTest, onCloseSelfTest, onClearChat,
     selfTestPreparing, selfTestPrepareError, selfTestPrepareProgress,
     onHandoffToChat, onMakeCardFromSelfTest,
     speechDraft, onClearSpeechDraft,
@@ -1892,11 +1904,21 @@ function MemoryChannel(props) {
                 <span className="font-mono text-[10px] text-warm-gray/70">{chatMessages.length} 条</span>
               )}
             </span>
-            <button onClick={() => setChatOpen(false)}
-              className="w-7 h-7 rounded-full text-warm-gray hover:text-navy hover:bg-cream-dark/40 flex items-center justify-center transition"
-              aria-label="关闭对话">
-              <X size={14}/>
-            </button>
+            <div className="flex items-center gap-1">
+              {chatMessages.length > 0 && (
+                <button onClick={onClearChat}
+                  className="w-7 h-7 rounded-full text-warm-gray hover:text-coral hover:bg-cream-dark/40 flex items-center justify-center transition"
+                  title="清空对话记录"
+                  aria-label="清空对话记录">
+                  <Trash2 size={13}/>
+                </button>
+              )}
+              <button onClick={() => setChatOpen(false)}
+                className="w-7 h-7 rounded-full text-warm-gray hover:text-navy hover:bg-cream-dark/40 flex items-center justify-center transition"
+                aria-label="关闭对话">
+                <X size={14}/>
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2">
