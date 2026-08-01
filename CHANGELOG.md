@@ -13,6 +13,12 @@ Connector 升级到 `0.3.0`：请求只携带匿名设备 ID，不再生成 `Aut
 插件兼容声明从未经验证的 Zotero 10 收紧到实际测试环境 Zotero 9，同时加入正式图标、主页、插件说明、
 隐私边界和独立构建检查。XPI 会继续使用原插件 ID，确保现有安装可以通过原更新地址升级。
 
+### Zotero Connector 建立独立公开源码仓库
+
+Connector 源码已提取到 [`lvyrana/papermind-zotero`](https://github.com/lvyrana/papermind-zotero)，保留插件自身的
+提交历史，并加入独立 CI、构建检查、变更记录和 Issues 反馈入口。新仓库不提交生成的 XPI，当前测试包仍由
+PaperMind 主站接口分发；正式许可证、GitHub Release、身份令牌和社区市场收录继续作为后续发布门槛。
+
 ### 前端路由依赖落入多项已披露风险区间
 
 发布前生产依赖审计发现 `react-router-dom 7.13.2` 命中反序列化、重定向和拒绝服务等多项安全公告。

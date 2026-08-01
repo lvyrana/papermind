@@ -2,6 +2,8 @@
 
 PaperMind Connector 把 Zotero 中的论文元数据和本地 PDF 一键送入 PaperMind，继续完成结构化精读、证据卡片、苏格拉底自测与汇报整理。
 
+> 后续插件开发与公开发布以 [`lvyrana/papermind-zotero`](https://github.com/lvyrana/papermind-zotero) 为入口。本目录暂时保留为 PaperMind 主站 `0.3.x` 下载接口的部署镜像，正式 GitHub Release 切换完成前需保持同步。
+
 ## 当前能力
 
 - 在 Zotero 文献右键菜单中提供「用 PaperMind 精读」
