@@ -1,5 +1,7 @@
 /**
  * PaperMind Connector — Zotero 插件
+ * Copyright (C) 2026 lvyrana
+ * SPDX-License-Identifier: AGPL-3.0-only
  *
  * 在文献右键菜单加一项「用 PaperMind 精读」：
  *   1. 读取选中条目的元数据 + 最佳 PDF 附件

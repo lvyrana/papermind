@@ -1,3 +1,6 @@
+// Copyright (C) 2026 lvyrana
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
