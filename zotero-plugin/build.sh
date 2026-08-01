@@ -11,7 +11,7 @@ python3 -m json.tool "$PLUGIN_DIR/manifest.json" >/dev/null
 
 (
     cd "$PLUGIN_DIR"
-    zip -X -q -j "$TMP_XPI" manifest.json bootstrap.js
+    zip -X -q -j "$TMP_XPI" manifest.json bootstrap.js icon.svg
 )
 
 mv "$TMP_XPI" "$PLUGIN_DIR/papermind-connector.xpi"

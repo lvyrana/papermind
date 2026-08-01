@@ -7,10 +7,9 @@
  *   3. 用默认浏览器打开 PaperMind 阅读页（带 ?uid= 自动认领设备身份）
  *
  * 首次使用会弹窗要求粘贴 PaperMind 设置页复制的专属链接。
- * 线上私密预览还需填写一次预览账号和密码；本地开发可留空。
  * Tools 菜单里有「PaperMind 连接设置…」可随时修改。
  *
- * 兼容 Zotero 7 – 10（bootstrap 插件架构，参考官方 make-it-red 示例）。
+ * 兼容 Zotero 7 – 9（bootstrap 插件架构，参考官方 make-it-red 示例）。
  */
 
 /* global Zotero, Services, Components */
@@ -20,10 +19,10 @@ var PaperMind = {
   TOOLS_ID: 'papermind-settings-menuitem',
   PREF_BASE: 'extensions.papermind.baseURL',
   PREF_UID: 'extensions.papermind.uid',
-  PREF_USERNAME: 'extensions.papermind.username',
-  PREF_PASSWORD: 'extensions.papermind.password',
+  LEGACY_PREF_USERNAME: 'extensions.papermind.username',
+  LEGACY_PREF_PASSWORD: 'extensions.papermind.password',
   PREF_CONFIG_VERSION: 'extensions.papermind.configVersion',
-  CONFIG_VERSION: 2,
+  CONFIG_VERSION: 3,
   DEFAULT_BASE: 'https://papermindapp.com',
 
   log(msg) {
@@ -42,18 +41,6 @@ var PaperMind = {
     return v || ''
   },
 
-  getUsername() {
-    let v = ''
-    try { v = Zotero.Prefs.get(this.PREF_USERNAME, true) } catch (e) { /* unset */ }
-    return v || ''
-  },
-
-  getPassword() {
-    let v = ''
-    try { v = Zotero.Prefs.get(this.PREF_PASSWORD, true) } catch (e) { /* unset */ }
-    return v || ''
-  },
-
   getConfigVersion() {
     let v = 0
     try { v = Number(Zotero.Prefs.get(this.PREF_CONFIG_VERSION, true)) } catch (e) { /* unset */ }
@@ -69,27 +56,24 @@ var PaperMind = {
   },
 
   isConfigured() {
-    const base = this.getBaseURL()
-    const hasAuth = Boolean(this.getUsername() && this.getPassword())
     return this.getConfigVersion() >= this.CONFIG_VERSION
       && this.isValidUid(this.getUid())
-      && (this.isLocalBase(base) || hasAuth)
   },
 
-  authHeaders(win) {
-    const username = this.getUsername()
-    const password = this.getPassword()
-    if (!username || !password) return {}
+  migrateLegacyConfig() {
+    const uid = this.getUid()
+    if (!this.isValidUid(uid) || this.getConfigVersion() >= this.CONFIG_VERSION) return false
 
-    const bytes = new win.TextEncoder().encode(username + ':' + password)
-    let binary = ''
-    for (const byte of bytes) binary += String.fromCharCode(byte)
-    return { Authorization: 'Basic ' + win.btoa(binary) }
+    // v0.2.x stored the shared preview credentials in Zotero prefs. The site no
+    // longer uses Basic Auth, so clear the stale secret without asking users to reconnect.
+    Zotero.Prefs.set(this.LEGACY_PREF_USERNAME, '', true)
+    Zotero.Prefs.set(this.LEGACY_PREF_PASSWORD, '', true)
+    Zotero.Prefs.set(this.PREF_CONFIG_VERSION, this.CONFIG_VERSION, true)
+    return true
   },
 
-  requestHeaders(win, extra = {}) {
+  requestHeaders(extra = {}) {
     return {
-      ...this.authHeaders(win),
       'X-User-ID': this.getUid(),
       ...extra,
     }
@@ -123,7 +107,7 @@ var PaperMind = {
 
   connectionMessage(error, base) {
     if (error && error.status === 401) {
-      return '连接未通过认证。请打开 Zotero「工具 → PaperMind 连接设置…」，检查专属链接、预览账号和密码。'
+      return '连接未通过设备身份校验。请打开 Zotero「工具 → PaperMind 连接设置…」，重新粘贴专属链接。'
     }
     if (error && error.status === 403) {
       return '当前设备没有这项操作权限。请重新粘贴 PaperMind 设置页里的“我的专属链接”。'
@@ -174,37 +158,15 @@ var PaperMind = {
       return false
     }
 
-    let username = ''
-    let password = ''
-    if (!this.isLocalBase(parsed.base)) {
-      const usernameBox = { value: this.getUsername() || 'papermind' }
-      if (!ps.prompt(win, 'PaperMind 连接设置',
-        '线上私密预览账号：', usernameBox, null, {})) {
-        return false
-      }
-      username = usernameBox.value.trim()
-
-      const passwordBox = { value: this.getPassword() }
-      if (!ps.promptPassword(win, 'PaperMind 连接设置',
-        '线上私密预览密码（只需在这台电脑设置一次）：', passwordBox, null, {})) {
-        return false
-      }
-      password = passwordBox.value
-      if (!username || !password) {
-        ps.alert(win, 'PaperMind', '线上连接需要填写预览账号和密码。')
-        return false
-      }
-    }
-
     Zotero.Prefs.set(this.PREF_BASE, parsed.base, true)
     Zotero.Prefs.set(this.PREF_UID, parsed.uid, true)
-    Zotero.Prefs.set(this.PREF_USERNAME, username, true)
-    Zotero.Prefs.set(this.PREF_PASSWORD, password, true)
+    Zotero.Prefs.set(this.LEGACY_PREF_USERNAME, '', true)
+    Zotero.Prefs.set(this.LEGACY_PREF_PASSWORD, '', true)
     Zotero.Prefs.set(this.PREF_CONFIG_VERSION, this.CONFIG_VERSION, true)
 
     try {
       const resp = await win.fetch(parsed.base + '/api/settings', {
-        headers: this.requestHeaders(win),
+        headers: this.requestHeaders(),
       })
       await this.requireOk(resp, '连接测试')
       ps.alert(win, 'PaperMind', '连接成功。现在可以右键文献 →「用 PaperMind 精读」。')
@@ -265,7 +227,7 @@ var PaperMind = {
       // 1. 保存元数据到 PaperMind 收藏库
       const saveResp = await win.fetch(base + '/api/library/save', {
         method: 'POST',
-        headers: this.requestHeaders(win, { 'Content-Type': 'application/json' }),
+        headers: this.requestHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ paper: this.buildPaper(item), chats: [] }),
       })
       await this.requireOk(saveResp, '保存文献')
@@ -284,7 +246,7 @@ var PaperMind = {
             fd.append('file', new win.Blob([bytes], { type: 'application/pdf' }), 'paper.pdf')
             const upResp = await win.fetch(`${base}/api/library/${saved.id}/pdf`, {
               method: 'POST',
-              headers: this.requestHeaders(win),
+              headers: this.requestHeaders(),
               body: fd,
             })
             await this.requireOk(upResp, '上传 PDF')
@@ -344,6 +306,7 @@ function install() {}
 
 async function startup({ rootURI }) {
   await Zotero.initializationPromise
+  PaperMind.migrateLegacyConfig()
   for (const win of Zotero.getMainWindows()) {
     PaperMind.addToWindow(win)
   }
