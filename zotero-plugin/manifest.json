@@ -1,15 +1,20 @@
 {
   "manifest_version": 2,
   "name": "PaperMind Connector",
-  "version": "0.2.1",
-  "description": "在 Zotero 里选中文献，一键发送到 PaperMind 精读（含 PDF）",
+  "version": "0.3.0",
+  "description": "把 Zotero 论文与 PDF 一键送入 PaperMind，继续结构化精读、卡片沉淀、自测与汇报",
   "author": "雀雀",
+  "homepage_url": "https://papermindapp.com",
+  "icons": {
+    "48": "icon.svg",
+    "96": "icon.svg"
+  },
   "applications": {
     "zotero": {
       "id": "papermind-connector@papermind.local",
       "update_url": "https://papermindapp.com/api/zotero-plugin/update.json",
       "strict_min_version": "6.999",
-      "strict_max_version": "10.99.99"
+      "strict_max_version": "9.*"
     }
   }
 }

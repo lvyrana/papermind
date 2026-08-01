@@ -35,10 +35,6 @@ const PaperMind = sandbox.PaperMind
 const validUid = '123e4567-e89b-42d3-a456-426614174000'
 const win = {
   URL,
-  TextEncoder,
-  btoa(value) {
-    return Buffer.from(value, 'binary').toString('base64')
-  },
 }
 
 test('parses the personal link into origin and UUID v4', () => {
@@ -55,21 +51,30 @@ test('rejects a link without a valid UUID v4', () => {
   )
 })
 
-test('adds Basic Auth and the device header after configuration', () => {
+test('uses only the device header after configuration', () => {
   prefs.set(PaperMind.PREF_BASE, 'https://papermindapp.com')
   prefs.set(PaperMind.PREF_UID, validUid)
-  prefs.set(PaperMind.PREF_USERNAME, 'papermind')
-  prefs.set(PaperMind.PREF_PASSWORD, 'secret')
   prefs.set(PaperMind.PREF_CONFIG_VERSION, PaperMind.CONFIG_VERSION)
 
   assert.equal(PaperMind.isConfigured(), true)
   assert.deepEqual(
-    { ...PaperMind.requestHeaders(win) },
-    {
-      Authorization: 'Basic ' + Buffer.from('papermind:secret').toString('base64'),
-      'X-User-ID': validUid,
-    },
+    { ...PaperMind.requestHeaders() },
+    { 'X-User-ID': validUid },
   )
+})
+
+test('migrates v0.2 configuration without making the user reconnect', () => {
+  prefs.set(PaperMind.PREF_BASE, 'https://papermindapp.com')
+  prefs.set(PaperMind.PREF_UID, validUid)
+  prefs.set(PaperMind.LEGACY_PREF_USERNAME, 'papermind')
+  prefs.set(PaperMind.LEGACY_PREF_PASSWORD, 'old-secret')
+  prefs.set(PaperMind.PREF_CONFIG_VERSION, 2)
+
+  assert.equal(PaperMind.migrateLegacyConfig(), true)
+  assert.equal(prefs.get(PaperMind.LEGACY_PREF_USERNAME), '')
+  assert.equal(prefs.get(PaperMind.LEGACY_PREF_PASSWORD), '')
+  assert.equal(prefs.get(PaperMind.PREF_CONFIG_VERSION), 3)
+  assert.equal(PaperMind.isConfigured(), true)
 })
 
 test('opens Zotero imports explicitly as saved library papers', () => {
