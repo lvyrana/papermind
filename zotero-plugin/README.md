@@ -2,7 +2,7 @@
 
 PaperMind Connector 把 Zotero 中的论文元数据和本地 PDF 一键送入 PaperMind，继续完成结构化精读、证据卡片、苏格拉底自测与汇报整理。
 
-> 后续插件开发与公开发布以 [`lvyrana/papermind-zotero`](https://github.com/lvyrana/papermind-zotero) 为入口。本目录暂时保留为 PaperMind 主站 `0.3.x` 下载接口的部署镜像，正式 GitHub Release 切换完成前需保持同步。
+> 后续插件开发与公开发布以 [`lvyrana/papermind-zotero`](https://github.com/lvyrana/papermind-zotero) 为入口。本目录保留为现有 `0.3.x` 安装使用 PaperMind 主站更新地址时的部署镜像，内容需与正式 Release 保持同步。
 
 ## 当前能力
 
@@ -14,7 +14,7 @@ PaperMind Connector 把 Zotero 中的论文元数据和本地 PDF 一键送入 P
 
 ## 安装与连接
 
-1. 下载 `papermind-connector.xpi`。
+1. 从 [GitHub Releases](https://github.com/lvyrana/papermind-zotero/releases/latest) 下载 `papermind-connector.xpi`。
 2. Zotero →「工具」→「插件」→ 齿轮按钮 →「从文件安装插件」。
 3. 打开 PaperMind 设置页，复制「我的专属链接」。
 4. Zotero →「工具」→「PaperMind 连接设置…」，粘贴该链接。
@@ -28,6 +28,8 @@ PaperMind 当前小范围试用不需要共享访问密码。`0.2.x` 升级到 `
 
 匿名设备 ID 用于区分书架、笔记、卡片和对话，但不是正式账号。专属链接包含该设备 ID，不应公开转发。
 
+详细隐私、安全与支持边界见独立仓库的 [PRIVACY](https://github.com/lvyrana/papermind-zotero/blob/main/PRIVACY.md)、[SECURITY](https://github.com/lvyrana/papermind-zotero/blob/main/SECURITY.md) 和 [SUPPORT](https://github.com/lvyrana/papermind-zotero/blob/main/SUPPORT.md)。
+
 ## 开发
 
 ```bash
@@ -36,4 +38,10 @@ bash zotero-plugin/build.sh
 unzip -l zotero-plugin/papermind-connector.xpi
 ```
 
-当前版本以 Zotero 9 为实际验证上限。公开插件市场发布前，仍需完成正式身份、隐私政策、许可证、双语界面和独立 GitHub Release。
+当前版本以 Zotero 9 为实际验证上限。公开插件市场发布前，仍需完成正式身份、双语界面和多版本兼容测试。
+
+## 许可证
+
+PaperMind Connector 源码采用 [GNU Affero General Public License v3.0 only](LICENSE)（`AGPL-3.0-only`）。许可证仅适用于 Zotero 插件源码，不代表 PaperMind Web 服务或后端代码采用相同许可证。
+
+Copyright (C) 2026 lvyrana.
