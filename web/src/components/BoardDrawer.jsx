@@ -110,7 +110,7 @@ export function BoardRail({ board, onOpen, onExport, exporting, variant = 'secti
 }
 
 /* ── 板块选单（送到汇报时弹出） ───────────────────────────── */
-export function BoardSectionPicker({ board, seed, onPick, onCancel, sending }) {
+export function BoardSectionPicker({ board, seed, onPick, onCancel, sending, error = '' }) {
   if (!seed || !board) return null
   const counts = countBySection(board.items || [])
   return (
@@ -147,6 +147,12 @@ export function BoardSectionPicker({ board, seed, onPick, onCancel, sending }) {
         {sending && (
           <p className="mt-2 mb-0 text-[11px] text-warm-gray/60 inline-flex items-center gap-1">
             <Loader2 size={10} className="animate-spin"/> 正在投递…
+          </p>
+        )}
+        {/* 失败必须说话：静默失败会被当成「点了没反应」，用户只能反复点同一个板块 */}
+        {!sending && error && (
+          <p className="mt-2 mb-0 text-[11px] text-coral-deep leading-snug">
+            {error}（可重新点选板块重试）
           </p>
         )}
       </div>
