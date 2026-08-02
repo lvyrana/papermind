@@ -1,7 +1,7 @@
 import { createElement, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft, Star, FileText, Link2, Check, Download, MessageCircle, Shield,
-  Save, Sparkles, Mic, X, Cpu, Loader2, ListFilter,
+  Save, Sparkles, Mic, X, Cpu, Loader2, ListFilter, ExternalLink,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
@@ -622,19 +622,23 @@ function RangePicker({ value, onChange }) {
 // ═════════════════════════════════════════════════════════════
 // CUSTOM LLM — 自定义 AI 模型（v0.10）
 // ═════════════════════════════════════════════════════════════
+// apply：各服务商创建 API Key 的控制台地址，供「获取 API Key」直达
 const LLM_PRESETS = [
-  { key: 'openrouter', label: 'OpenRouter', base: 'https://openrouter.ai/api/v1',
-    hint: '一个 key 用遍 Claude / GPT / Gemini / DeepSeek 等几乎所有模型（国外服务，走代理）' },
   { key: 'deepseek', label: 'DeepSeek', base: 'https://api.deepseek.com',
-    hint: 'deepseek-chat / deepseek-reasoner，性价比高' },
+    hint: 'deepseek-chat / deepseek-reasoner，性价比高',
+    apply: 'https://platform.deepseek.com/api_keys' },
   { key: 'glm', label: '智谱 GLM', base: 'https://open.bigmodel.cn/api/paas/v4',
-    hint: 'glm 系列，有免费档位' },
+    hint: 'glm 系列，有免费档位',
+    apply: 'https://open.bigmodel.cn/usercenter/apikeys' },
   { key: 'qwen', label: '阿里云通义', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    hint: 'qwen 系列——内置免费额度到期后可以换成自己的 key 续用' },
+    hint: 'qwen 系列——内置免费额度到期后可以换成自己的 key 续用',
+    apply: 'https://bailian.console.aliyun.com/?apiKey=1' },
   { key: 'moonshot', label: 'Kimi', base: 'https://api.moonshot.cn/v1',
-    hint: 'kimi 系列，长上下文' },
+    hint: 'kimi 系列，长上下文',
+    apply: 'https://platform.moonshot.cn/console/api-keys' },
   { key: 'siliconflow', label: '硅基流动', base: 'https://api.siliconflow.cn/v1',
-    hint: '聚合大量国产开源模型' },
+    hint: '聚合大量国产开源模型',
+    apply: 'https://cloud.siliconflow.cn/account/ak' },
   { key: 'custom', label: '自定义', base: '',
     hint: '任何 OpenAI 兼容接口都可以，填以 /v1 结尾的地址' },
 ]
@@ -642,7 +646,7 @@ const LLM_PRESETS = [
 function CustomLLMCard() {
   const [canManage, setCanManage] = useState(null)
   const [enabled, setEnabled] = useState(false)
-  const [preset, setPreset] = useState('openrouter')
+  const [preset, setPreset] = useState(LLM_PRESETS[0].key)
   const [baseUrl, setBaseUrl] = useState(LLM_PRESETS[0].base)
   const [apiKey, setApiKey] = useState('')          // 始终只存新输入；空 = 沿用已存
   const [keyMasked, setKeyMasked] = useState('')
@@ -776,7 +780,15 @@ function CustomLLMCard() {
           </button>
         ))}
       </div>
-      <p className="text-[11.5px] text-warm-gray/80 mb-4 px-1">{presetDef.hint}</p>
+      <p className="text-[11.5px] text-warm-gray/80 mb-4 px-1">
+        {presetDef.hint}
+        {presetDef.apply && (
+          <a href={presetDef.apply} target="_blank" rel="noopener noreferrer"
+            className="ml-2 inline-flex items-center gap-0.5 text-coral hover:text-coral-light whitespace-nowrap">
+            获取 API Key <ExternalLink size={10} />
+          </a>
+        )}
+      </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
         <div>

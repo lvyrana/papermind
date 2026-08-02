@@ -226,7 +226,7 @@ class UpdateCardRequest(BaseModel):
 
 class CustomLLMRequest(BaseModel):
     enabled: bool = True
-    preset: str = Field(default="openrouter", max_length=40)
+    preset: str = Field(default="deepseek", max_length=40)
     base_url: str = Field(max_length=300)
     api_key: str = Field(default="", max_length=300)  # 空 = 保留已存的 key
     model: str = Field(default="", max_length=200)

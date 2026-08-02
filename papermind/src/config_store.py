@@ -57,7 +57,7 @@ def get_api_settings_safe() -> dict:
 
 CUSTOM_PROVIDER_DEFAULTS = {
     "enabled": False,
-    "preset": "openrouter",
+    "preset": "deepseek",
     "base_url": "",
     "api_key": "",
     "model": "",
