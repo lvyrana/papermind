@@ -217,7 +217,7 @@ export default function Settings() {
     finally { setExporting(false) }
   }
   const handleForgetDevice = () => {
-    if (!confirm('确定要让当前浏览器退出这个匿名身份吗？\n\n这只会清除当前浏览器里的设备编号，不会删除主持人电脑上的收藏、笔记、对话或 PDF。如需彻底删除，请联系主持人。')) return
+    if (!confirm('确定要让当前浏览器退出这个匿名身份吗？\n\n退出后本浏览器将获得新的设备编号，需凭之前复制的同步链接才能重新访问原有数据。')) return
     try {
       clearUserId()
       const nextUrl = new URL(window.location.href)
@@ -307,10 +307,6 @@ export default function Settings() {
               <span className="w-1.5 h-1.5 rounded-full bg-mint mt-1 flex-shrink-0" />
               <span>每人每天最多 {usage ? usage.chat.limit : '—'} 次 AI 对话、{usage ? usage.translate.limit : '—'} 次翻译</span>
             </div>
-            <div className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-mint mt-1 flex-shrink-0" />
-              <span>AI 服务配置由试用主持人统一管理，所有设备使用同一条服务链</span>
-            </div>
           </div>
         </div>
 
@@ -346,14 +342,14 @@ export default function Settings() {
               <p className="text-xs text-warm-gray mt-0.5">
                 {uidUnavailable
                   ? '当前浏览器暂时无法读取设备 ID，建议刷新或切换常规浏览模式。'
-                  : '新设备默认使用独立空间；只有打开你的专属链接时才会同步这份数据。'}
+                  : '新设备默认使用独立的数据空间，只有通过下方链接访问才会同步这份数据。'}
               </p>
             </div>
           </div>
           <button onClick={handleCopyLink} disabled={!uid}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-coral text-warm-white text-xs font-medium hover:bg-coral-light transition-colors disabled:opacity-40">
             {linkCopied ? <Check size={13} /> : <Link2 size={13} />}
-            {linkCopied ? '链接已复制' : '复制我的专属链接'}
+            {linkCopied ? '链接已复制' : '复制同步链接'}
           </button>
         </div>
 
@@ -364,19 +360,19 @@ export default function Settings() {
             <IconBlock icon={Shield} color="gray" />
             <div className="flex-1 min-w-0">
               <h2 className="text-navy font-semibold text-sm">隐私与安全</h2>
-              <p className="text-xs text-warm-gray mt-0.5">试用数据保存在运行 PaperMind 的服务器上</p>
+              <p className="text-xs text-warm-gray mt-0.5">数据保存在运行 PaperMind 的服务器上</p>
             </div>
           </div>
           <div className="flex items-start justify-between gap-4 py-3 border-t border-cream-dark/60">
             <div>
               <p className="text-sm font-medium text-navy">匿名设备编号</p>
-              <p className="text-xs text-warm-gray mt-0.5">用于区分试用者数据；专属链接等同于这台设备的数据凭证</p>
+              <p className="text-xs text-warm-gray mt-0.5">用于区分各设备的数据，同步链接包含该编号，请勿公开分享</p>
             </div>
           </div>
           <div className="flex items-start justify-between gap-4 py-3 border-t border-cream-dark/60">
             <div>
               <p className="text-sm font-medium text-navy">退出当前设备身份</p>
-              <p className="text-xs text-warm-gray mt-0.5">只清除本浏览器的设备编号；彻底删除数据需联系主持人</p>
+              <p className="text-xs text-warm-gray mt-0.5">清除本浏览器的设备编号，需凭同步链接才能重新访问</p>
             </div>
             <button onClick={handleForgetDevice}
               className="flex-shrink-0 px-4 py-1.5 rounded-xl border border-coral/40 text-coral text-xs hover:bg-coral/5 transition-colors">

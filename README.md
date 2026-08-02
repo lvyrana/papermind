@@ -6,7 +6,7 @@
 
 - **项目名称**: PaperMind
 - **启动时间**: 2026 年 3 月 25 日
-- **当前版本**: v0.16.4
+- **当前版本**: v0.16.6
 - **独立开发**: 雀雀（主导设计、需求定义、产品决策、测试与迭代）
 - **开发方式**: 使用 AI 编程工具（Claude）辅助代码实现
 
@@ -51,7 +51,7 @@
 | 前端 | React 19 + Vite + Tailwind CSS 4 + Lucide Icons |
 | 后端 | Python + FastAPI + SQLite + systemd/nginx 部署 |
 | 数据源 | PubMed E-utilities + Semantic Scholar API |
-| AI | 主持人可配置自定义 API（OpenRouter / DeepSeek / 智谱 / 通义 / Kimi / 硅基流动 / OpenAI 兼容接口）→ 内置：阿里云通义（同 key 多模型顺序回退）→ 智谱 GLM → DeepSeek |
+| AI | 可在设置页配置自定义 API（OpenRouter / DeepSeek / 智谱 / 通义 / Kimi / 硅基流动 / OpenAI 兼容接口）→ 内置：阿里云通义（同 key 多模型顺序回退）→ 智谱 GLM → DeepSeek |
 
 ## v0.5.9 相比 v0.5 的主要变化
 
