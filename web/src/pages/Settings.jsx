@@ -1,7 +1,7 @@
 import { createElement, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeft, Star, FileText, Link2, Check, Download, MessageCircle, Shield,
-  Save, Sparkles, Mic, X, Cpu, Loader2, ListFilter,
+  Save, Sparkles, Mic, X, Cpu, Loader2, ListFilter, ExternalLink,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/Navbar'
@@ -217,7 +217,7 @@ export default function Settings() {
     finally { setExporting(false) }
   }
   const handleForgetDevice = () => {
-    if (!confirm('确定要让当前浏览器退出这个匿名身份吗？\n\n这只会清除当前浏览器里的设备编号，不会删除主持人电脑上的收藏、笔记、对话或 PDF。如需彻底删除，请联系主持人。')) return
+    if (!confirm('确定要让当前浏览器退出这个匿名身份吗？\n\n退出后本浏览器将获得新的设备编号，需凭之前复制的同步链接才能重新访问原有数据。')) return
     try {
       clearUserId()
       const nextUrl = new URL(window.location.href)
@@ -307,10 +307,6 @@ export default function Settings() {
               <span className="w-1.5 h-1.5 rounded-full bg-mint mt-1 flex-shrink-0" />
               <span>每人每天最多 {usage ? usage.chat.limit : '—'} 次 AI 对话、{usage ? usage.translate.limit : '—'} 次翻译</span>
             </div>
-            <div className="flex items-start gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-mint mt-1 flex-shrink-0" />
-              <span>AI 服务配置由试用主持人统一管理，所有设备使用同一条服务链</span>
-            </div>
           </div>
         </div>
 
@@ -346,14 +342,14 @@ export default function Settings() {
               <p className="text-xs text-warm-gray mt-0.5">
                 {uidUnavailable
                   ? '当前浏览器暂时无法读取设备 ID，建议刷新或切换常规浏览模式。'
-                  : '新设备默认使用独立空间；只有打开你的专属链接时才会同步这份数据。'}
+                  : '新设备默认使用独立的数据空间，只有通过下方链接访问才会同步这份数据。'}
               </p>
             </div>
           </div>
           <button onClick={handleCopyLink} disabled={!uid}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-coral text-warm-white text-xs font-medium hover:bg-coral-light transition-colors disabled:opacity-40">
             {linkCopied ? <Check size={13} /> : <Link2 size={13} />}
-            {linkCopied ? '链接已复制' : '复制我的专属链接'}
+            {linkCopied ? '链接已复制' : '复制同步链接'}
           </button>
         </div>
 
@@ -364,19 +360,19 @@ export default function Settings() {
             <IconBlock icon={Shield} color="gray" />
             <div className="flex-1 min-w-0">
               <h2 className="text-navy font-semibold text-sm">隐私与安全</h2>
-              <p className="text-xs text-warm-gray mt-0.5">试用数据保存在运行 PaperMind 的服务器上</p>
+              <p className="text-xs text-warm-gray mt-0.5">数据保存在运行 PaperMind 的服务器上</p>
             </div>
           </div>
           <div className="flex items-start justify-between gap-4 py-3 border-t border-cream-dark/60">
             <div>
               <p className="text-sm font-medium text-navy">匿名设备编号</p>
-              <p className="text-xs text-warm-gray mt-0.5">用于区分试用者数据；专属链接等同于这台设备的数据凭证</p>
+              <p className="text-xs text-warm-gray mt-0.5">用于区分各设备的数据，同步链接包含该编号，请勿公开分享</p>
             </div>
           </div>
           <div className="flex items-start justify-between gap-4 py-3 border-t border-cream-dark/60">
             <div>
               <p className="text-sm font-medium text-navy">退出当前设备身份</p>
-              <p className="text-xs text-warm-gray mt-0.5">只清除本浏览器的设备编号；彻底删除数据需联系主持人</p>
+              <p className="text-xs text-warm-gray mt-0.5">清除本浏览器的设备编号，需凭同步链接才能重新访问</p>
             </div>
             <button onClick={handleForgetDevice}
               className="flex-shrink-0 px-4 py-1.5 rounded-xl border border-coral/40 text-coral text-xs hover:bg-coral/5 transition-colors">
@@ -626,19 +622,23 @@ function RangePicker({ value, onChange }) {
 // ═════════════════════════════════════════════════════════════
 // CUSTOM LLM — 自定义 AI 模型（v0.10）
 // ═════════════════════════════════════════════════════════════
+// apply：各服务商创建 API Key 的控制台地址，供「获取 API Key」直达
 const LLM_PRESETS = [
-  { key: 'openrouter', label: 'OpenRouter', base: 'https://openrouter.ai/api/v1',
-    hint: '一个 key 用遍 Claude / GPT / Gemini / DeepSeek 等几乎所有模型（国外服务，走代理）' },
   { key: 'deepseek', label: 'DeepSeek', base: 'https://api.deepseek.com',
-    hint: 'deepseek-chat / deepseek-reasoner，性价比高' },
+    hint: 'deepseek-chat / deepseek-reasoner，性价比高',
+    apply: 'https://platform.deepseek.com/api_keys' },
   { key: 'glm', label: '智谱 GLM', base: 'https://open.bigmodel.cn/api/paas/v4',
-    hint: 'glm 系列，有免费档位' },
+    hint: 'glm 系列，有免费档位',
+    apply: 'https://open.bigmodel.cn/usercenter/apikeys' },
   { key: 'qwen', label: '阿里云通义', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    hint: 'qwen 系列——内置免费额度到期后可以换成自己的 key 续用' },
+    hint: 'qwen 系列——内置免费额度到期后可以换成自己的 key 续用',
+    apply: 'https://bailian.console.aliyun.com/?apiKey=1' },
   { key: 'moonshot', label: 'Kimi', base: 'https://api.moonshot.cn/v1',
-    hint: 'kimi 系列，长上下文' },
+    hint: 'kimi 系列，长上下文',
+    apply: 'https://platform.moonshot.cn/console/api-keys' },
   { key: 'siliconflow', label: '硅基流动', base: 'https://api.siliconflow.cn/v1',
-    hint: '聚合大量国产开源模型' },
+    hint: '聚合大量国产开源模型',
+    apply: 'https://cloud.siliconflow.cn/account/ak' },
   { key: 'custom', label: '自定义', base: '',
     hint: '任何 OpenAI 兼容接口都可以，填以 /v1 结尾的地址' },
 ]
@@ -646,7 +646,7 @@ const LLM_PRESETS = [
 function CustomLLMCard() {
   const [canManage, setCanManage] = useState(null)
   const [enabled, setEnabled] = useState(false)
-  const [preset, setPreset] = useState('openrouter')
+  const [preset, setPreset] = useState(LLM_PRESETS[0].key)
   const [baseUrl, setBaseUrl] = useState(LLM_PRESETS[0].base)
   const [apiKey, setApiKey] = useState('')          // 始终只存新输入；空 = 沿用已存
   const [keyMasked, setKeyMasked] = useState('')
@@ -780,7 +780,15 @@ function CustomLLMCard() {
           </button>
         ))}
       </div>
-      <p className="text-[11.5px] text-warm-gray/80 mb-4 px-1">{presetDef.hint}</p>
+      <p className="text-[11.5px] text-warm-gray/80 mb-4 px-1">
+        {presetDef.hint}
+        {presetDef.apply && (
+          <a href={presetDef.apply} target="_blank" rel="noopener noreferrer"
+            className="ml-2 inline-flex items-center gap-0.5 text-coral hover:text-coral-light whitespace-nowrap">
+            获取 API Key <ExternalLink size={10} />
+          </a>
+        )}
+      </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
         <div>

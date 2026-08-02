@@ -48,14 +48,13 @@ function ExportButton({ onExport, exporting, compact = false, dropUp = true }) {
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)}/>
           {/* 按钮在页面顶部时必须向下弹：向上弹会被浏览器工具栏挡住看不见 */}
-          <div className={`absolute right-0 z-50 w-52 rounded-xl border border-cream-dark bg-warm-white shadow-[0_12px_32px_-10px_rgba(30,58,95,.32)] p-1.5 ${
+          <div className={`absolute right-0 z-50 w-36 rounded-xl border border-cream-dark bg-warm-white shadow-[0_12px_32px_-10px_rgba(30,58,95,.32)] p-1.5 ${
             dropUp ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
           }`}>
             {EXPORT_FORMATS.map(f => (
               <button key={f.key} onClick={() => pick(f.key)}
                 className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-cream transition-colors">
                 <span className="block text-[12.5px] text-navy font-medium">{f.label}</span>
-                <span className="block text-[10.5px] text-warm-gray/80 mt-0.5">{f.hint}</span>
               </button>
             ))}
           </div>

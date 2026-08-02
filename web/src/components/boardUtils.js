@@ -22,8 +22,8 @@ export const CARD_SECTION_MAP = {
 }
 
 export const EXPORT_FORMATS = [
-  { key: 'pptx', label: 'PowerPoint', hint: '.pptx · 双击即开，可直接讲', ext: 'pptx' },
-  { key: 'md', label: 'Markdown', hint: '.md · 粘进 Obsidian / Notion', ext: 'md' },
+  { key: 'pptx', label: 'PowerPoint', ext: 'pptx' },
+  { key: 'md', label: 'Markdown', ext: 'md' },
 ]
 
 export async function downloadBoard(paperRowid, title, format = 'pptx') {

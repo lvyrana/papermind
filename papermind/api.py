@@ -115,9 +115,12 @@ init_db()
 
 # 每日限速配置（可在 .env 中覆盖）
 DAILY_RECOMMEND_LIMIT = int(os.environ.get("DAILY_RECOMMEND_LIMIT", "5"))
-DAILY_CHAT_LIMIT = int(os.environ.get("DAILY_CHAT_LIMIT", "20"))
-DAILY_TRANSLATE_LIMIT = int(os.environ.get("DAILY_TRANSLATE_LIMIT", "30"))
-# 全局每日 AI 对话熔断（所有用户之和，超了暂停服务）
+# chat 额度被四个入口共用：对话、精读带读、选区/整页 OCR、卡片草稿与自测。
+# 一篇论文走完自测就要按页 OCR（7 页 = 7 次），旧的 20 次读一两篇即耗尽，故提高到 60。
+DAILY_CHAT_LIMIT = int(os.environ.get("DAILY_CHAT_LIMIT", "60"))
+DAILY_TRANSLATE_LIMIT = int(os.environ.get("DAILY_TRANSLATE_LIMIT", "120"))
+# 全局每日 AI 熔断（所有用户之和，超了暂停服务）。这是成本兜底：chat 走 qwen3.7-max，
+# 单价比 flash 高一个量级，提高这个值等于按倍数抬高每日成本上限，需按预算显式决定。
 GLOBAL_DAILY_CHAT_LIMIT = int(os.environ.get("GLOBAL_DAILY_CHAT_LIMIT", "500"))
 OWNER_UID = os.environ.get("OWNER_UID", "").strip().lower()
 MAX_ENRICH_ATTEMPTS = 5
@@ -223,7 +226,7 @@ class UpdateCardRequest(BaseModel):
 
 class CustomLLMRequest(BaseModel):
     enabled: bool = True
-    preset: str = Field(default="openrouter", max_length=40)
+    preset: str = Field(default="deepseek", max_length=40)
     base_url: str = Field(max_length=300)
     api_key: str = Field(default="", max_length=300)  # 空 = 保留已存的 key
     model: str = Field(default="", max_length=200)
