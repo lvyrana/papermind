@@ -200,6 +200,7 @@ export default function PaperRead() {
   const [boardOpen, setBoardOpen] = useState(false)
   const [boardSeed, setBoardSeed] = useState(null) // {content, quote, page, source, defaultSection?} → 板块选单
   const [boardSending, setBoardSending] = useState(false)
+  const [boardError, setBoardError] = useState('')  // 投递失败/超时的可见原因
   const [boardExporting, setBoardExporting] = useState(false)
 
   // — refs —
@@ -554,6 +555,7 @@ export default function PaperRead() {
   // 各入口（划词/带读/卡片/对话）调用：塞 seed → 弹板块选单
   // 未收藏时先自动收藏（board 惰性创建依赖 rowId），选单等 board 加载后出现
   const sendToBoard = async (seed) => {
+    setBoardError('')
     setBoardSeed(seed)
     if (!board) {
       const rowId = await ensureSaved()
@@ -562,23 +564,48 @@ export default function PaperRead() {
     }
   }
 
+  const closeBoardPicker = () => {
+    setBoardError('')
+    setBoardSeed(null)
+  }
+
+  // 投递必须有超时：无超时的裸 fetch 一旦被网络卡住就永远转圈，
+  // 用户既看不到原因也无法重试（boardSending 会把后续点击全部吞掉）
+  const BOARD_SEND_TIMEOUT_MS = 30_000
+
   const pickBoardSection = async (sectionKey) => {
     if (!boardSeed || boardSending) return
     setBoardSending(true)
+    setBoardError('')
     try {
       const rowId = await ensureSaved()
-      if (!rowId) return
+      if (!rowId) {
+        setBoardError('这篇论文还没能收藏成功，请稍后重试。')
+        return
+      }
       let ok = false
+      let failReason = ''
       if (boardSeed.imageBlob) {
         // 图表截图走 multipart，后端存图 + 建 source=figure 条目
         const fd = new FormData()
         fd.append('file', boardSeed.imageBlob, 'figure.png')
         fd.append('section', sectionKey)
         if (boardSeed.page) fd.append('page', String(boardSeed.page))
-        const res = await fetch(`${API_BASE}/board/${rowId}/figures`, {
-          method: 'POST', headers: { 'X-User-ID': getUserId() }, body: fd,
-        })
-        ok = (await res.json())?.ok
+        const controller = new AbortController()
+        const timer = window.setTimeout(() => controller.abort(), BOARD_SEND_TIMEOUT_MS)
+        let d
+        try {
+          const res = await fetch(`${API_BASE}/board/${rowId}/figures`, {
+            method: 'POST', headers: { 'X-User-ID': getUserId() }, body: fd,
+            signal: controller.signal,
+          })
+          if (!res.ok) throw new Error(`API error: ${res.status}`)
+          d = await res.json()
+        } finally {
+          window.clearTimeout(timer)
+        }
+        ok = d?.ok
+        failReason = d?.error || ''
       } else {
         const d = await apiPost(`/board/${rowId}/items`, {
           section: sectionKey,
@@ -586,15 +613,22 @@ export default function PaperRead() {
           quote: (boardSeed.quote || '').slice(0, 4000),
           page: boardSeed.page ?? null,
           source: boardSeed.source || 'manual',
-        })
+        }, { timeoutMs: BOARD_SEND_TIMEOUT_MS })
         ok = d?.ok
+        failReason = d?.error || ''
       }
       if (ok) {
         if (boardSeed.imageUrl) URL.revokeObjectURL(boardSeed.imageUrl)
         setBoardSeed(null)
         refreshBoard(rowId)
+      } else {
+        setBoardError(failReason || '投递失败，请重试。')
       }
-    } catch { /* ignore */ }
+    } catch (e) {
+      setBoardError(e?.name === 'AbortError'
+        ? '投递超时，可能是网络不稳定。请重试。'
+        : '投递失败，请检查网络后重试。')
+    }
     finally { setBoardSending(false) }
   }
 
@@ -1526,8 +1560,9 @@ export default function PaperRead() {
         board={board}
         seed={boardSeed}
         onPick={pickBoardSection}
-        onCancel={() => setBoardSeed(null)}
+        onCancel={closeBoardPicker}
         sending={boardSending}
+        error={boardError}
       />
 
       {/* ─── tour ─── */}
