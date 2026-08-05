@@ -4,14 +4,15 @@ import { BrowserRouter } from 'react-router-dom'
 import * as Sentry from '@sentry/react'
 import './index.css'
 import App from './App.jsx'
+import AppErrorFallback from './components/AppErrorFallback.jsx'
 
 Sentry.init({
   dsn: 'https://39227cf5c32da9021aeec27894287888@o4511246689304576.ingest.us.sentry.io/4511246705623040',
   integrations: [
     Sentry.browserTracingIntegration(),
     Sentry.replayIntegration({
-      maskAllText: false,
-      blockAllMedia: false,
+      maskAllText: true,
+      blockAllMedia: true,
     }),
   ],
   tracesSampleRate: 0.1,       // 10% 请求追踪，节省配额
@@ -21,8 +22,10 @@ Sentry.init({
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
+    <Sentry.ErrorBoundary fallback={<AppErrorFallback />}>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </Sentry.ErrorBoundary>
   </StrictMode>,
 )

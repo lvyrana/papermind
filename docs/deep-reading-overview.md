@@ -104,7 +104,7 @@ PaperMind v1.0 的重心已从「每天帮你发现论文」翻转为「**帮你
 
 | 功能 | 前端 | 后端 |
 |---|---|---|
-| PDF 渲染/文字层/划词 | `web/src/components/PdfViewer.jsx`（pdfjs-dist 5.x 自研封装，onSelection 回调视口坐标） | `/api/pdf-url`（OA 查找+代理）、`/api/pdf-proxy`、`/api/library/{id}/pdf`（上传/读取） |
+| PDF 渲染/文字层/划词 | `web/src/components/PdfViewer.jsx`（pdfjs-dist 5.x 自研封装，当前页前后各 2 页窗口化 canvas，onSelection 回调视口坐标） | `/api/pdf-url`（OA 查找+代理）、`/api/pdf-proxy`、`/api/library/{id}/pdf`（上传/读取） |
 | 阅读页三栏 | `web/src/pages/PaperRead.jsx`（约 1600 行：左 RailContent / 右 MemoryChannel） | `/api/library/{id}`（论文+对话+笔记一次取回） |
 | 精读工作台三模式 | PaperRead 内 `runDeepRead(mode, text, page)`，当前页文本来自 pdfjs `getTextContent` | `/api/deep-read/guide`（按模式拼陪读 prompt + 研究者画像，task=chat 走 qwen3.7-plus） |
 | 划词浮窗三按钮 | PaperRead `selection` state + fixed 定位浮窗 | 问→`/api/chat`；精读这段→`/api/deep-read/guide`(selection)；存卡→`/api/cards` |

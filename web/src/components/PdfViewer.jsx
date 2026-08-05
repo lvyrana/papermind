@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from 'react'
 import { ChevronLeft, ChevronRight, Loader2, ZoomIn, ZoomOut, AlertCircle, Download, Crop } from 'lucide-react'
+import * as Sentry from '@sentry/react'
 import { getUserId } from '../api'
 
 /* ─────────────────────────────────────────────────────────────
@@ -20,6 +21,7 @@ import { getUserId } from '../api'
 
 import * as pdfjsLib from 'pdfjs-dist'
 import { shouldOcrSelection } from '../utils/selectionText'
+import { getPdfRenderWindow, hasRenderablePdfPages } from '../utils/pdfRendering'
 // Vite 专属语法：?url 导入资源得到最终构建后的 URL，绕过 import 解析
 // 如果项目用 webpack/parcel，看 README 末尾的替代方案
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
@@ -112,15 +114,38 @@ const PdfViewer = forwardRef(function PdfViewer(
   const pagesContainerRef = useRef(null)
   const pdfRef = useRef(null)
   const pageRefs = useRef({})  // pageNum -> { canvasEl, textLayerEl, viewport, scale }
+  const renderWindowRef = useRef(new Set([1, 2, 3]))
+  const pinnedPagesRef = useRef(new Set())
+  const layoutGenerationRef = useRef(0)
+  const reportedErrorsRef = useRef(new Set())
   const highlightsRef = useRef([])
   const [numPages, setNumPages] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
+  const currentPageRef = useRef(1)
   const [scale, setScale] = useState(DEFAULT_SCALE)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [snipping, setSnipping] = useState(false)   // 图表截取模式
   const [snipBox, setSnipBox] = useState(null)      // 拖拽中的选框（视口坐标）
   const snipStartRef = useRef(null)
+
+  const reportPdfError = useCallback((stage, error, pageNumber = null) => {
+    const normalized = error instanceof Error ? error : new Error(String(error || 'Unknown PDF error'))
+    const key = `${stage}:${pageNumber || 0}:${normalized.name}:${normalized.message}`
+    if (reportedErrorsRef.current.has(key)) return
+    reportedErrorsRef.current.add(key)
+    Sentry.withScope(scope => {
+      scope.setTag('component', 'PdfViewer')
+      scope.setTag('pdf_stage', stage)
+      if (pageNumber) scope.setTag('pdf_page', String(pageNumber))
+      scope.setExtra('pdf_page_count', pdfRef.current?.numPages || 0)
+      scope.setExtra('pdf_same_origin', (() => {
+        try { return new URL(url, window.location.href).origin === window.location.origin }
+        catch { return false }
+      })())
+      Sentry.captureException(normalized)
+    })
+  }, [url])
 
   // ── 图表截取：接管鼠标，框选 → 从页 canvas 裁剪出 PNG ──
   useEffect(() => {
@@ -489,10 +514,14 @@ const PdfViewer = forwardRef(function PdfViewer(
     if (!url) return
     let cancelled = false
     // pdfjs loading is an external task lifecycle; reset UI state when the source changes.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoading(true)
     setError(null)
+    setNumPages(0)
+    setCurrentPage(1)
+    currentPageRef.current = 1
     pageRefs.current = {}
+    pinnedPagesRef.current.clear()
+    reportedErrorsRef.current.clear()
 
     let task = null
     const controller = new AbortController()
@@ -521,12 +550,17 @@ const PdfViewer = forwardRef(function PdfViewer(
 
       const pdf = await task.promise
       if (cancelled) return
+      if (!hasRenderablePdfPages(pdf.numPages)) {
+        await pdf.destroy().catch(() => {})
+        throw new Error('PDF 没有可显示的页面，文件可能已损坏')
+      }
       pdfRef.current = pdf
       setNumPages(pdf.numPages)
       setLoading(false)
     })().catch(err => {
       if (cancelled || err?.name === 'AbortError') return
       // CORS / 404 / 文件不是 PDF 都会到这
+      reportPdfError('document-load', err)
       setError(err.message || '加载失败')
       setLoading(false)
     })
@@ -541,152 +575,260 @@ const PdfViewer = forwardRef(function PdfViewer(
         pdfRef.current = null
       }
     }
-  }, [url])
+  }, [reportPdfError, url])
+
+  const releasePage = useCallback((pageNum) => {
+    const info = pageRefs.current[pageNum]
+    if (!info || info.renderingPromise || !info.rendered) return
+    if (info.canvas) {
+      info.canvas.width = 0
+      info.canvas.height = 0
+    }
+    info.wrapEl?.replaceChildren()
+    Object.assign(info, {
+      canvas: null,
+      highlightLayer: null,
+      textLayer: null,
+      activeSelectionLayer: null,
+      textItems: null,
+      rendered: false,
+      renderTask: null,
+    })
+  }, [])
 
   // ── render one page into the pages container ──
   const renderPage = useCallback(async (pageNum, theScale) => {
-    if (!pdfRef.current || pageRefs.current[pageNum]) return
-    try {
-      const page = await pdfRef.current.getPage(pageNum)
-      const viewport = page.getViewport({ scale: theScale })
+    const info = pageRefs.current[pageNum]
+    if (!pdfRef.current || !info) return false
+    if (info.rendered) return true
+    if (info.renderingPromise) return info.renderingPromise
 
-      const pageWrap = document.createElement('div')
-      pageWrap.className = 'pdf-page-wrap'
-      pageWrap.style.cssText = `
-        position: relative;
-        width: ${viewport.width}px;
-        height: ${viewport.height}px;
-        margin: 0 auto 16px;
-        background: #fbfaf7;
-        box-shadow: 0 2px 4px rgba(30,58,95,.06), 0 12px 30px -16px rgba(30,58,95,.18);
-        border: 1px solid rgba(30,58,95,.08);
-        border-radius: 4px;
-        overflow: hidden;
-      `
-      pageWrap.dataset.pageNum = String(pageNum)
+    const renderPromise = Promise.resolve().then(async () => {
+      try {
+        const page = info.page || await pdfRef.current.getPage(pageNum)
+        const viewport = page.getViewport({ scale: theScale })
+        if (info.generation !== layoutGenerationRef.current) return false
 
-      const outputScale = getCanvasOutputScale(viewport)
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.floor(viewport.width * outputScale)
-      canvas.height = Math.floor(viewport.height * outputScale)
-      canvas.style.cssText = `
-        display:block;
-        width:${viewport.width}px;
-        height:${viewport.height}px;
-      `
+        const outputScale = getCanvasOutputScale(viewport)
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.floor(viewport.width * outputScale)
+        canvas.height = Math.floor(viewport.height * outputScale)
+        canvas.style.cssText = `display:block; width:${viewport.width}px; height:${viewport.height}px;`
 
-      const textLayer = document.createElement('div')
-      textLayer.className = 'textLayer'
-      textLayer.style.cssText = `
-        position:absolute; inset:0;
-        width:${viewport.width}px; height:${viewport.height}px;
-        line-height:1;
-        z-index:2;
-      `
-      // pdf_viewer.css 里文字 span 的定位全部乘以 --scale-factor；
-      // 不设置时按 1 倍铺文字层、画布却按实际缩放渲染，选区整体错位
-      textLayer.style.setProperty('--scale-factor', String(theScale))
-      // pdf.js 5.x 改名 --total-scale-factor：span 字号 = 它 × --font-height。
-      // 不设则 calc 失效、字号回退浏览器默认 16px——透明文字比画布字形高一截，
-      // 原生选区变胖、鼠标命中测试跳行（"划词不精准"的真正根因）
-      textLayer.style.setProperty('--total-scale-factor', String(theScale))
+        const textLayer = document.createElement('div')
+        textLayer.className = 'textLayer'
+        textLayer.style.cssText = `
+          position:absolute; inset:0;
+          width:${viewport.width}px; height:${viewport.height}px;
+          line-height:1;
+          z-index:2;
+        `
+        textLayer.style.setProperty('--scale-factor', String(theScale))
+        textLayer.style.setProperty('--total-scale-factor', String(theScale))
 
-      const highlightLayer = document.createElement('div')
-      highlightLayer.className = 'quoteHighlightLayer'
-      highlightLayer.style.cssText = `
-        position:absolute; inset:0;
-        width:${viewport.width}px; height:${viewport.height}px;
-        pointer-events:none;
-        z-index:1;
-      `
+        const highlightLayer = document.createElement('div')
+        highlightLayer.className = 'quoteHighlightLayer'
+        highlightLayer.style.cssText = `
+          position:absolute; inset:0;
+          width:${viewport.width}px; height:${viewport.height}px;
+          pointer-events:none;
+          z-index:1;
+        `
 
-      const activeSelectionLayer = document.createElement('div')
-      activeSelectionLayer.className = 'activeSelectionLayer'
-      activeSelectionLayer.style.cssText = `
-        position:absolute; inset:0;
-        width:${viewport.width}px; height:${viewport.height}px;
-        pointer-events:none;
-        z-index:3;
-      `
+        const activeSelectionLayer = document.createElement('div')
+        activeSelectionLayer.className = 'activeSelectionLayer'
+        activeSelectionLayer.style.cssText = `
+          position:absolute; inset:0;
+          width:${viewport.width}px; height:${viewport.height}px;
+          pointer-events:none;
+          z-index:3;
+        `
 
-      pageWrap.appendChild(canvas)
-      pageWrap.appendChild(highlightLayer)
-      pageWrap.appendChild(textLayer)
-      pageWrap.appendChild(activeSelectionLayer)
-      pagesContainerRef.current?.appendChild(pageWrap)
+        info.wrapEl.replaceChildren(canvas, highlightLayer, textLayer, activeSelectionLayer)
+        const ctx = canvas.getContext('2d')
+        if (!ctx) throw new Error('浏览器无法创建 PDF 画布')
+        const transform = outputScale !== 1
+          ? [outputScale, 0, 0, outputScale, 0, 0]
+          : null
+        const renderTask = page.render({ canvasContext: ctx, viewport, transform })
+        info.renderTask = renderTask
+        await renderTask.promise
 
-      const ctx = canvas.getContext('2d')
-      const transform = outputScale !== 1
-        ? [outputScale, 0, 0, outputScale, 0, 0]
-        : null
-      await page.render({ canvasContext: ctx, viewport, transform }).promise
+        const textContent = await page.getTextContent()
+        if (pdfjsLib.TextLayer) {
+          const tl = new pdfjsLib.TextLayer({
+            textContentSource: textContent,
+            container: textLayer,
+            viewport,
+          })
+          await tl.render()
+        } else if (typeof pdfjsLib.renderTextLayer === 'function') {
+          await pdfjsLib.renderTextLayer({
+            textContentSource: textContent,
+            container: textLayer,
+            viewport,
+            textDivs: [],
+          }).promise.catch(() => {})
+        }
 
-      const textContent = await page.getTextContent()
-      if (pdfjsLib.TextLayer) {
-        // pdfjs 5.x API
-        const tl = new pdfjsLib.TextLayer({
-          textContentSource: textContent,
-          container: textLayer,
+        if (info.generation !== layoutGenerationRef.current) return false
+        Object.assign(info, {
+          page,
+          canvas,
+          highlightLayer,
+          textLayer,
+          activeSelectionLayer,
           viewport,
+          scale: theScale,
+          outputScale,
+          textItems: textContent.items,
+          rendered: true,
+          error: '',
         })
-        await tl.render()
-      } else if (typeof pdfjsLib.renderTextLayer === 'function') {
-        // 4.x 兼容
-        await pdfjsLib.renderTextLayer({
-          textContentSource: textContent,
-          container: textLayer,
-          viewport,
-          textDivs: [],
-        }).promise.catch(() => {})
+        paintPageHighlights(pageNum)
+        onTextReady?.(pageNum, textContent)
+        return true
+      } catch (err) {
+        if (info.generation !== layoutGenerationRef.current) return false
+        console.warn(`PDF page ${pageNum} render failed:`, err)
+        reportPdfError('page-render', err, pageNum)
+        info.error = err?.message || '页面渲染失败'
+        const failure = document.createElement('div')
+        failure.className = 'absolute inset-0 flex flex-col items-center justify-center gap-2 bg-warm-white px-6 text-center'
+        const title = document.createElement('p')
+        title.className = 'text-sm text-navy'
+        title.textContent = `第 ${pageNum} 页没有成功显示`
+        const detail = document.createElement('p')
+        detail.className = 'text-xs text-warm-gray'
+        detail.textContent = '可能是浏览器内存不足或 PDF 页面结构异常。'
+        const retry = document.createElement('button')
+        retry.type = 'button'
+        retry.className = 'text-xs text-coral underline underline-offset-4'
+        retry.textContent = '重新加载 PDF'
+        retry.addEventListener('click', () => window.location.reload(), { once: true })
+        failure.append(title, detail, retry)
+        info.wrapEl.replaceChildren(failure)
+        return false
+      } finally {
+        if (pageRefs.current[pageNum] === info) {
+          info.renderTask = null
+          info.renderingPromise = null
+          if (
+            info.rendered
+            && !renderWindowRef.current.has(pageNum)
+            && !pinnedPagesRef.current.has(pageNum)
+          ) releasePage(pageNum)
+        }
       }
+    })
+    info.renderingPromise = renderPromise
+    return renderPromise
+  }, [onTextReady, paintPageHighlights, releasePage, reportPdfError])
 
-      pageRefs.current[pageNum] = {
-        wrapEl: pageWrap, canvas, highlightLayer, textLayer, activeSelectionLayer,
-        viewport, scale: theScale, outputScale,
-        // PDF 空间文字条目（transform/width/height），高亮按真实字形坐标绘制用
-        textItems: textContent.items,
-      }
-      paintPageHighlights(pageNum)
-      onTextReady?.(pageNum, textContent)
-    } catch (err) {
-      // 单页渲染失败不影响其它页
-      console.warn(`PDF page ${pageNum} render failed:`, err)
-    }
-  }, [onTextReady, paintPageHighlights])
-
-  // ── render all pages whenever pdf or scale changes ──
+  // ── build lightweight page shells; render only the nearby canvas window ──
   useEffect(() => {
     if (!pdfRef.current || loading) return
-    // 清空容器
+    const generation = layoutGenerationRef.current + 1
+    layoutGenerationRef.current = generation
+    for (const info of Object.values(pageRefs.current)) {
+      if (info.canvas) {
+        info.canvas.width = 0
+        info.canvas.height = 0
+      }
+    }
     if (pagesContainerRef.current) {
       pagesContainerRef.current.innerHTML = ''
     }
     pageRefs.current = {}
-    // 顺序渲染（避免一次创建过多 canvas 卡死）
+    pinnedPagesRef.current.clear()
+    renderWindowRef.current = new Set(getPdfRenderWindow(currentPageRef.current, numPages))
     let cancelled = false
     ;(async () => {
       for (let p = 1; p <= numPages; p++) {
         if (cancelled) return
-        await renderPage(p, scale)
+        try {
+          const page = await pdfRef.current.getPage(p)
+          if (cancelled || generation !== layoutGenerationRef.current) return
+          const viewport = page.getViewport({ scale })
+          const pageWrap = document.createElement('div')
+          pageWrap.className = 'pdf-page-wrap'
+          pageWrap.style.cssText = `
+            position:relative;
+            width:${viewport.width}px;
+            height:${viewport.height}px;
+            margin:0 auto 16px;
+            background:#fbfaf7;
+            box-shadow:0 2px 4px rgba(30,58,95,.06), 0 12px 30px -16px rgba(30,58,95,.18);
+            border:1px solid rgba(30,58,95,.08);
+            border-radius:4px;
+            overflow:hidden;
+          `
+          pageWrap.dataset.pageNum = String(p)
+          pageRefs.current[p] = {
+            page,
+            wrapEl: pageWrap,
+            viewport,
+            scale,
+            generation,
+            rendered: false,
+            renderingPromise: null,
+          }
+          pagesContainerRef.current?.appendChild(pageWrap)
+
+          if (renderWindowRef.current.has(p)) {
+            await renderPage(p, scale)
+          } else if (numPages <= 30) {
+            // 自测需要全文文字，但文字提取不需要为每页创建常驻 canvas。
+            const textContent = await page.getTextContent()
+            if (!cancelled && generation === layoutGenerationRef.current) {
+              onTextReady?.(p, textContent)
+            }
+          }
+        } catch (err) {
+          if (cancelled || generation !== layoutGenerationRef.current) return
+          reportPdfError('page-prepare', err, p)
+          const fallback = document.createElement('div')
+          fallback.className = 'pdf-page-wrap flex items-center justify-center text-sm text-warm-gray'
+          fallback.style.cssText = 'width:760px;height:980px;margin:0 auto 16px;background:#fbfaf7;'
+          fallback.dataset.pageNum = String(p)
+          fallback.textContent = `第 ${p} 页无法读取`
+          pagesContainerRef.current?.appendChild(fallback)
+        }
       }
     })()
-    return () => { cancelled = true }
-  }, [numPages, scale, loading, renderPage])
+    return () => {
+      cancelled = true
+      layoutGenerationRef.current += 1
+    }
+  }, [loading, numPages, onTextReady, renderPage, reportPdfError, scale])
+
+  useEffect(() => {
+    if (!pdfRef.current || loading || !numPages) return
+    const desiredPages = new Set(getPdfRenderWindow(currentPage, numPages))
+    renderWindowRef.current = desiredPages
+    desiredPages.forEach(pageNum => { void renderPage(pageNum, scale) })
+    Object.keys(pageRefs.current).forEach(value => {
+      const pageNum = Number(value)
+      if (!desiredPages.has(pageNum) && !pinnedPagesRef.current.has(pageNum)) {
+        releasePage(pageNum)
+      }
+    })
+  }, [currentPage, loading, numPages, releasePage, renderPage, scale])
 
   // ── intersection observer: 同步 currentPage ──
   useEffect(() => {
     if (!pagesContainerRef.current || numPages === 0) return
     const io = new IntersectionObserver(entries => {
-      for (const e of entries) {
-        if (e.isIntersecting && e.intersectionRatio > 0.5) {
-          const n = parseInt(e.target.dataset.pageNum, 10)
-          if (n) {
-            setCurrentPage(n)
-            onPageChange?.(n)
-          }
-        }
+      const visible = entries
+        .filter(entry => entry.isIntersecting && entry.intersectionRatio >= 0.1)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)
+      const n = parseInt(visible[0]?.target?.dataset?.pageNum, 10)
+      if (n) {
+        currentPageRef.current = n
+        setCurrentPage(n)
+        onPageChange?.(n)
       }
-    }, { root: containerRef.current, threshold: [0.5] })
+    }, { root: containerRef.current, threshold: [0.1, 0.25, 0.5] })
 
     // mutation observer：等页 wrap 出现后再 observe
     const mo = new MutationObserver(() => {
@@ -828,12 +970,24 @@ const PdfViewer = forwardRef(function PdfViewer(
 
   // ── imperative API ──
   const goToPage = useCallback((n) => {
-    const wrap = pageRefs.current[n]?.wrapEl
+    const target = Math.min(numPages || 1, Math.max(1, Number(n) || 1))
+    currentPageRef.current = target
+    setCurrentPage(target)
+    const desiredPages = new Set(getPdfRenderWindow(target, numPages))
+    renderWindowRef.current = desiredPages
+    desiredPages.forEach(pageNum => { void renderPage(pageNum, scale) })
+    Object.keys(pageRefs.current).forEach(value => {
+      const pageNum = Number(value)
+      if (!desiredPages.has(pageNum) && !pinnedPagesRef.current.has(pageNum)) {
+        releasePage(pageNum)
+      }
+    })
+    const wrap = pageRefs.current[target]?.wrapEl
     if (wrap && containerRef.current) {
       const offset = wrap.offsetTop - 20
       containerRef.current.scrollTo({ top: offset, behavior: 'smooth' })
     }
-  }, [])
+  }, [numPages, releasePage, renderPage, scale])
 
   const highlightQuote = useCallback((quoteOrId) => {
     const quote = typeof quoteOrId === 'object'
@@ -856,22 +1010,38 @@ const PdfViewer = forwardRef(function PdfViewer(
   }, [goToPage])
 
   const capturePageImage = useCallback((pageNum = currentPage) => {
-    const source = pageRefs.current[Number(pageNum)]?.canvas
-    if (!source) return ''
+    const target = Number(pageNum)
+    const info = pageRefs.current[target]
+    const source = info?.canvas
+    if (!source) {
+      if (info?.error) pinnedPagesRef.current.delete(target)
+      else if (info) {
+        pinnedPagesRef.current.add(target)
+        void renderPage(target, scale)
+      }
+      return ''
+    }
+    const finishCapture = (dataUrl) => {
+      pinnedPagesRef.current.delete(target)
+      if (!renderWindowRef.current.has(target)) {
+        window.setTimeout(() => releasePage(target), 0)
+      }
+      return dataUrl
+    }
     const maxPixels = 3_000_000
     const ratio = Math.min(1, Math.sqrt(maxPixels / Math.max(1, source.width * source.height)))
-    if (ratio === 1) return source.toDataURL('image/jpeg', 0.9)
+    if (ratio === 1) return finishCapture(source.toDataURL('image/jpeg', 0.9))
 
     const output = document.createElement('canvas')
     output.width = Math.max(1, Math.round(source.width * ratio))
     output.height = Math.max(1, Math.round(source.height * ratio))
     const context = output.getContext('2d')
-    if (!context) return ''
+    if (!context) return finishCapture('')
     context.fillStyle = '#ffffff'
     context.fillRect(0, 0, output.width, output.height)
     context.drawImage(source, 0, 0, output.width, output.height)
-    return output.toDataURL('image/jpeg', 0.9)
-  }, [currentPage])
+    return finishCapture(output.toDataURL('image/jpeg', 0.9))
+  }, [currentPage, releasePage, renderPage, scale])
 
   useImperativeHandle(ref, () => ({
     goToPage,
