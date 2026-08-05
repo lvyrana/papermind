@@ -19,7 +19,7 @@ import { getUserId } from '../api'
      - 父组件 mount 前必须先 import 本文件，本文件会一次性配置 GlobalWorkerOptions
    ───────────────────────────────────────────────────────────── */
 
-import * as pdfjsLib from 'pdfjs-dist'
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { shouldOcrSelection } from '../utils/selectionText'
 import {
   getPdfCanvasOutputScaleCandidates,
@@ -29,7 +29,7 @@ import {
 } from '../utils/pdfRendering'
 // Vite 专属语法：?url 导入资源得到最终构建后的 URL，绕过 import 解析
 // 如果项目用 webpack/parcel，看 README 末尾的替代方案
-import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import workerSrc from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 
 if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
   // Query version also invalidates any browser-cached response that predates
@@ -39,7 +39,7 @@ if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
 
 // 引入 pdfjs 自带的 text layer 样式（让 textDivs 透明覆盖在 canvas 上）
 // 5.x 路径是 pdfjs-dist/web/pdf_viewer.css；4.x 路径相同
-import 'pdfjs-dist/web/pdf_viewer.css'
+import 'pdfjs-dist/legacy/web/pdf_viewer.css'
 
 const DEFAULT_SCALE = 1.4
 const MIN_SCALE = 0.6

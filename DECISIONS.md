@@ -7,12 +7,13 @@ PaperMind 的每一个决策都来自"为什么这样做"的思考过程，而�
 ## 为什么 PDF.js 首页失败时要提供原生 PDF 出口，而不是只让用户重载（2026-08-05）
 
 v0.16.7 已把长 PDF 的风险从“整篇画布常驻内存”降到“当前页附近窗口化渲染”，但试用者仍可能遇到第 1 页
-canvas 渲染失败。这个失败点已经不是上传、读取或文字层问题，而是浏览器执行 `page.render()` 时没有成功
-把某一页画出来：原因可能是低配 Windows 机器的 canvas/GPU 限制，也可能是单页 PDF 结构异常。此时继续
-让用户反复点“重新加载”没有意义，因为同一个浏览器、同一页结构、同一缩放下大概率仍会失败。
+canvas 渲染失败。Sentry 随后捕获到 `TypeError: this[#t].getOrInsertComputed is not a function`，指向
+`pdfjs-dist@5.7.284` 普通构建使用的 `Map.prototype.getOrInsertComputed`。部分 Windows 试用环境尚不支持
+这个较新的运行时能力，所以问题不是上传、读取、文字层或 OCR，而是 PDF.js 代码本身在旧浏览器里先崩掉。
 
-因此页级渲染失败先做自动降级：限制异常大页面的 CSS 尺寸，并按多个 canvas 像素比例重试，优先用略低清晰度
-换取可见内容。若首页仍失败，PaperMind 不把用户关在 PDF.js 错误页里，而是给出浏览器原生 PDF 阅读器出口。
+因此主路径改用 `pdfjs-dist/legacy` 的主包、worker 和文字层 CSS，让 PDF.js 自己带上所需 polyfill；同时页级
+渲染失败仍做自动降级：限制异常大页面的 CSS 尺寸，并按多个 canvas 像素比例重试，优先用略低清晰度换取
+可见内容。若首页仍失败，PaperMind 不把用户关在 PDF.js 错误页里，而是给出浏览器原生 PDF 阅读器出口。
 原生阅读器不能承载 PaperMind 的划词、卡片和自测，但它能让试用者继续查看原文；这比假装“重载可以修好”
 更诚实，也能减少试用流失。
 
