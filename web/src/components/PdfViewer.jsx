@@ -21,7 +21,12 @@ import { getUserId } from '../api'
 
 import * as pdfjsLib from 'pdfjs-dist'
 import { shouldOcrSelection } from '../utils/selectionText'
-import { getPdfRenderWindow, hasRenderablePdfPages } from '../utils/pdfRendering'
+import {
+  getPdfCanvasOutputScaleCandidates,
+  getPdfRenderScale,
+  getPdfRenderWindow,
+  hasRenderablePdfPages,
+} from '../utils/pdfRendering'
 // Vite 专属语法：?url 导入资源得到最终构建后的 URL，绕过 import 解析
 // 如果项目用 webpack/parcel，看 README 末尾的替代方案
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
@@ -39,8 +44,6 @@ import 'pdfjs-dist/web/pdf_viewer.css'
 const DEFAULT_SCALE = 1.4
 const MIN_SCALE = 0.6
 const MAX_SCALE = 3.0
-const MAX_CANVAS_DPR = 2
-const MAX_CANVAS_PIXELS = 6_000_000
 
 function normalizeSelectedText(value) {
   return String(value || '')
@@ -94,14 +97,6 @@ function captureSelectionImage(pageInfo, rects) {
   return crop.toDataURL('image/jpeg', 0.92)
 }
 
-function getCanvasOutputScale(viewport) {
-  const deviceScale = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR)
-  const cssPixels = viewport.width * viewport.height
-  if (cssPixels <= 0) return 1
-  const pixelLimitedScale = Math.sqrt(MAX_CANVAS_PIXELS / cssPixels)
-  return Math.max(1, Math.min(deviceScale, pixelLimitedScale))
-}
-
 const PdfViewer = forwardRef(function PdfViewer(
   {
     url, originalUrl, onSelection, onPageChange, onTextReady, sectionHint,
@@ -125,6 +120,7 @@ const PdfViewer = forwardRef(function PdfViewer(
   const [scale, setScale] = useState(DEFAULT_SCALE)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [firstPageRenderError, setFirstPageRenderError] = useState(null)
   const [snipping, setSnipping] = useState(false)   // 图表截取模式
   const [snipBox, setSnipBox] = useState(null)      // 拖拽中的选框（视口坐标）
   const snipStartRef = useRef(null)
@@ -516,6 +512,7 @@ const PdfViewer = forwardRef(function PdfViewer(
     // pdfjs loading is an external task lifecycle; reset UI state when the source changes.
     setLoading(true)
     setError(null)
+    setFirstPageRenderError(null)
     setNumPages(0)
     setCurrentPage(1)
     currentPageRef.current = 1
@@ -606,53 +603,85 @@ const PdfViewer = forwardRef(function PdfViewer(
     const renderPromise = Promise.resolve().then(async () => {
       try {
         const page = info.page || await pdfRef.current.getPage(pageNum)
-        const viewport = page.getViewport({ scale: theScale })
+        const baseViewport = page.getViewport({ scale: 1 })
+        const safeScale = getPdfRenderScale(theScale, baseViewport)
+        const viewport = page.getViewport({ scale: safeScale })
         if (info.generation !== layoutGenerationRef.current) return false
 
-        const outputScale = getCanvasOutputScale(viewport)
-        const canvas = document.createElement('canvas')
-        canvas.width = Math.floor(viewport.width * outputScale)
-        canvas.height = Math.floor(viewport.height * outputScale)
-        canvas.style.cssText = `display:block; width:${viewport.width}px; height:${viewport.height}px;`
+        let canvas = null
+        let highlightLayer = null
+        let textLayer = null
+        let activeSelectionLayer = null
+        let outputScale = 1
+        let lastRenderError = null
+        const outputScaleCandidates = getPdfCanvasOutputScaleCandidates(
+          viewport,
+          window.devicePixelRatio || 1,
+        )
 
-        const textLayer = document.createElement('div')
-        textLayer.className = 'textLayer'
-        textLayer.style.cssText = `
-          position:absolute; inset:0;
-          width:${viewport.width}px; height:${viewport.height}px;
-          line-height:1;
-          z-index:2;
-        `
-        textLayer.style.setProperty('--scale-factor', String(theScale))
-        textLayer.style.setProperty('--total-scale-factor', String(theScale))
+        for (const candidate of outputScaleCandidates) {
+          outputScale = candidate
+          canvas = document.createElement('canvas')
+          canvas.width = Math.max(1, Math.floor(viewport.width * outputScale))
+          canvas.height = Math.max(1, Math.floor(viewport.height * outputScale))
+          canvas.style.cssText = `display:block; width:${viewport.width}px; height:${viewport.height}px;`
 
-        const highlightLayer = document.createElement('div')
-        highlightLayer.className = 'quoteHighlightLayer'
-        highlightLayer.style.cssText = `
-          position:absolute; inset:0;
-          width:${viewport.width}px; height:${viewport.height}px;
-          pointer-events:none;
-          z-index:1;
-        `
+          textLayer = document.createElement('div')
+          textLayer.className = 'textLayer'
+          textLayer.style.cssText = `
+            position:absolute; inset:0;
+            width:${viewport.width}px; height:${viewport.height}px;
+            line-height:1;
+            z-index:2;
+          `
+          textLayer.style.setProperty('--scale-factor', String(safeScale))
+          textLayer.style.setProperty('--total-scale-factor', String(safeScale))
 
-        const activeSelectionLayer = document.createElement('div')
-        activeSelectionLayer.className = 'activeSelectionLayer'
-        activeSelectionLayer.style.cssText = `
-          position:absolute; inset:0;
-          width:${viewport.width}px; height:${viewport.height}px;
-          pointer-events:none;
-          z-index:3;
-        `
+          highlightLayer = document.createElement('div')
+          highlightLayer.className = 'quoteHighlightLayer'
+          highlightLayer.style.cssText = `
+            position:absolute; inset:0;
+            width:${viewport.width}px; height:${viewport.height}px;
+            pointer-events:none;
+            z-index:1;
+          `
 
-        info.wrapEl.replaceChildren(canvas, highlightLayer, textLayer, activeSelectionLayer)
-        const ctx = canvas.getContext('2d')
-        if (!ctx) throw new Error('浏览器无法创建 PDF 画布')
-        const transform = outputScale !== 1
-          ? [outputScale, 0, 0, outputScale, 0, 0]
-          : null
-        const renderTask = page.render({ canvasContext: ctx, viewport, transform })
-        info.renderTask = renderTask
-        await renderTask.promise
+          activeSelectionLayer = document.createElement('div')
+          activeSelectionLayer.className = 'activeSelectionLayer'
+          activeSelectionLayer.style.cssText = `
+            position:absolute; inset:0;
+            width:${viewport.width}px; height:${viewport.height}px;
+            pointer-events:none;
+            z-index:3;
+          `
+
+          info.wrapEl.replaceChildren(canvas, highlightLayer, textLayer, activeSelectionLayer)
+          const ctx = canvas.getContext('2d')
+          if (!ctx) throw new Error('浏览器无法创建 PDF 画布')
+          const transform = outputScale !== 1
+            ? [outputScale, 0, 0, outputScale, 0, 0]
+            : null
+          try {
+            const renderTask = page.render({ canvasContext: ctx, viewport, transform })
+            info.renderTask = renderTask
+            await renderTask.promise
+            lastRenderError = null
+            break
+          } catch (renderErr) {
+            lastRenderError = renderErr
+            info.renderTask = null
+            canvas.width = 0
+            canvas.height = 0
+            canvas = null
+            highlightLayer = null
+            textLayer = null
+            activeSelectionLayer = null
+          }
+        }
+
+        if (lastRenderError || !canvas || !textLayer || !highlightLayer || !activeSelectionLayer) {
+          throw lastRenderError || new Error('PDF 页面渲染失败')
+        }
 
         const textContent = await page.getTextContent()
         if (pdfjsLib.TextLayer) {
@@ -679,7 +708,8 @@ const PdfViewer = forwardRef(function PdfViewer(
           textLayer,
           activeSelectionLayer,
           viewport,
-          scale: theScale,
+          scale: safeScale,
+          requestedScale: theScale,
           outputScale,
           textItems: textContent.items,
           rendered: true,
@@ -692,6 +722,12 @@ const PdfViewer = forwardRef(function PdfViewer(
         if (info.generation !== layoutGenerationRef.current) return false
         console.warn(`PDF page ${pageNum} render failed:`, err)
         reportPdfError('page-render', err, pageNum)
+        if (pageNum === 1) {
+          setFirstPageRenderError({
+            name: err?.name || 'PDFRenderError',
+            message: err?.message || '页面渲染失败',
+          })
+        }
         info.error = err?.message || '页面渲染失败'
         const failure = document.createElement('div')
         failure.className = 'absolute inset-0 flex flex-col items-center justify-center gap-2 bg-warm-white px-6 text-center'
@@ -700,13 +736,21 @@ const PdfViewer = forwardRef(function PdfViewer(
         title.textContent = `第 ${pageNum} 页没有成功显示`
         const detail = document.createElement('p')
         detail.className = 'text-xs text-warm-gray'
-        detail.textContent = '可能是浏览器内存不足或 PDF 页面结构异常。'
+        detail.textContent = err?.name
+          ? `可能是浏览器内存不足或 PDF 页面结构异常（${err.name}）。`
+          : '可能是浏览器内存不足或 PDF 页面结构异常。'
+        const nativeLink = document.createElement('a')
+        nativeLink.href = originalUrl || url
+        nativeLink.target = '_blank'
+        nativeLink.rel = 'noreferrer'
+        nativeLink.className = 'text-xs text-navy underline underline-offset-4'
+        nativeLink.textContent = '用浏览器打开 PDF'
         const retry = document.createElement('button')
         retry.type = 'button'
         retry.className = 'text-xs text-coral underline underline-offset-4'
         retry.textContent = '重新加载 PDF'
         retry.addEventListener('click', () => window.location.reload(), { once: true })
-        failure.append(title, detail, retry)
+        failure.append(title, detail, nativeLink, retry)
         info.wrapEl.replaceChildren(failure)
         return false
       } finally {
@@ -723,7 +767,7 @@ const PdfViewer = forwardRef(function PdfViewer(
     })
     info.renderingPromise = renderPromise
     return renderPromise
-  }, [onTextReady, paintPageHighlights, releasePage, reportPdfError])
+  }, [onTextReady, originalUrl, paintPageHighlights, releasePage, reportPdfError, url])
 
   // ── build lightweight page shells; render only the nearby canvas window ──
   useEffect(() => {
@@ -1162,6 +1206,18 @@ const PdfViewer = forwardRef(function PdfViewer(
                 </label>
               )}
             </div>
+          </div>
+        )}
+        {!error && firstPageRenderError && (
+          <div className="max-w-xl mx-auto mb-4 bg-warm-white border border-coral/20 rounded-2xl px-5 py-4 text-center shadow-sm">
+            <p className="text-sm text-navy mb-1">当前浏览器没有成功显示 PDF 首页</p>
+            <p className="text-xs text-warm-gray mb-3 leading-relaxed">
+              可先用浏览器原生 PDF 阅读器打开。错误类型：{firstPageRenderError.name}
+            </p>
+            <a href={originalUrl || url} target="_blank" rel="noreferrer"
+              className="inline-flex items-center text-xs px-3 py-1.5 rounded-full border border-navy/15 text-navy hover:bg-navy/5">
+              用浏览器打开 PDF
+            </a>
           </div>
         )}
         <div ref={pagesContainerRef}/>
