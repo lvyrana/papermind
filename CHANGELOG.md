@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.16.9 - 2026-08-06
+
+### 部署后仍可能上报旧前端 PDF 错误
+
+试用者在刷新后 PDF 已恢复正常，但 23 点 Sentry 仍出现同一类 `getOrInsertComputed` 前端错误。线上确认旧的
+hash bundle 已经从服务器删除，新 bundle 与 legacy PDF.js worker 已发布；但首页与 `/paper/...` 的
+`index.html` 响应没有显式 `Cache-Control`，浏览器或中间缓存仍可能短时间复用旧入口，或者用户保持旧页面
+不关闭，继续运行已加载的旧 JS。
+
+Nginx 的 SPA 入口现在明确返回 `Cache-Control: no-cache, no-store, must-revalidate`、`Pragma: no-cache`
+和 `Expires: 0`；带 hash 的 `/assets/` 仍保持 30 天 `public, immutable`。这样部署后普通刷新会重新取
+`index.html`，再由新入口引用新 bundle，避免已修复的前端兼容问题继续以“新错误”的形式出现在 Sentry。
+
+更新脚本只对线上 Certbot 管理过的 Nginx 站点配置做定点补丁，不整文件覆盖 HTTPS 段；修改前自动备份真实
+配置，并新增静态护栏测试，确保 HTML 不缓存、hash 资源长缓存这两个策略不会被后续改回去。
+
 ## v0.16.8 - 2026-08-05
 
 ### PDF 首页渲染失败后缺少继续阅读出口

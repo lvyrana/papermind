@@ -36,6 +36,19 @@ cp "$PROJECT_DIR/deploy/papermind.service" /etc/systemd/system/papermind.service
 cp "$PROJECT_DIR/deploy/papermind-backup.service" /etc/systemd/system/papermind-backup.service
 cp "$PROJECT_DIR/deploy/papermind-backup.timer" /etc/systemd/system/papermind-backup.timer
 chmod +x "$PROJECT_DIR/deploy/backup.sh"
+
+ensure_spa_no_cache() {
+    local conf="$1"
+    [ -f "$conf" ] || return 0
+    if grep -q 'Cache-Control "no-cache, no-store, must-revalidate"' "$conf"; then
+        return 0
+    fi
+    cp "$conf" "$conf.bak.$(date +%s)"
+    perl -0pi -e 's/location \/ \{\n\s*try_files \$uri \$uri\/ \/index\.html;\n\s*\}/location \/ {\n        add_header Cache-Control "no-cache, no-store, must-revalidate" always;\n        add_header Pragma "no-cache" always;\n        add_header Expires "0" always;\n        try_files \$uri \$uri\/ \/index.html;\n    }/g' "$conf"
+}
+
+ensure_spa_no_cache /etc/nginx/sites-available/papermind
+ensure_spa_no_cache /etc/nginx/sites-available/papermind-domain
 systemctl daemon-reload
 systemctl enable papermind-backup.timer >/dev/null 2>&1 || true
 systemctl restart papermind-backup.timer
