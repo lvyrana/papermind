@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react'
-import { useParams, useLocation, Link } from 'react-router-dom'
+import { useParams, useLocation, Link, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Sparkles, Send, BookmarkPlus, Bookmark, Loader2,
   FileText, Download, ExternalLink, Mic, MicOff,
@@ -128,6 +128,7 @@ function ReasonGlyph({ size = 11 }) {
 export default function PaperRead() {
   const { id } = useParams()
   const location = useLocation()
+  const navigate = useNavigate()
   const forceLibraryPaper = new URLSearchParams(location.search).get('library') === '1'
   const [paper, setPaper] = useState(location.state?.paper || null)
   const [paperLoading, setPaperLoading] = useState(!location.state?.paper)
@@ -788,15 +789,23 @@ export default function PaperRead() {
     setShowProjectPicker(false)
     try {
       const data = await apiPost('/library/save', { paper, chats: chatMessages })
-      setSavedRowId(data.id)
-      localStorage.setItem(`paper-bookmark-${sliceId(paper, id)}`, String(data.id))
+      const nextRowId = data.id
+      setSavedRowId(nextRowId)
+      if (String(nextRowId) !== String(id)) {
+        setPdfUrl(null)
+        setPdfOriginalUrl(null)
+        setPdfUrlError(null)
+        setPdfUrlLoading(true)
+        navigate(`/paper/${nextRowId}?library=1`, { replace: true, state: { paper } })
+      }
+      localStorage.setItem(`paper-bookmark-${sliceId(paper, nextRowId)}`, String(nextRowId))
       setBookmarked(true)
       triggerRipple()
       if (projectId !== null) {
-        apiPatch(`/library/${data.id}/project`, { project_id: projectId }).catch(() => {})
+        apiPatch(`/library/${nextRowId}/project`, { project_id: projectId }).catch(() => {})
       }
       if (notes) {
-        apiPost('/notes', { paper_rowid: data.id, content: notes })
+        apiPost('/notes', { paper_rowid: nextRowId, content: notes })
           .then(d => { if (d?.ok && d.id) setManualNoteId(d.id) })
           .catch(() => {})
       }

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.16.10 - 2026-08-06
+
+### 取消收藏后立即重存可能触发旧 PDF 加载错误
+
+Sentry 23 点附近新增 `TypeError: Failed to fetch`，发生在 Windows 微信内置浏览器的 `/paper/16`，阶段为
+`PdfViewer document-load`。事件面包屑显示用户先取消收藏 `/api/library/16`，随后又把同一论文保存成新的
+库记录 `/api/library/21`，但阅读页 URL 仍停留在 `/paper/16`，旧 PDF viewer 继续尝试加载
+`/api/library/16/pdf`。在微信内置浏览器环境下，这条已经过期的加载链路更容易表现为 fetch 失败。
+
+阅读页现在在保存成功且后端返回的新 rowId 与当前 URL 不一致时，立即用 `replace` 跳转到
+`/paper/{newId}?library=1`，同时清空旧 PDF URL、错误和加载状态，让 PDF viewer 只围绕新的库记录重建。
+新增静态护栏测试，避免后续改动重新留下“数据已换新、URL 仍指旧记录”的竞态。
+
 ## v0.16.9 - 2026-08-06
 
 ### 部署后仍可能上报旧前端 PDF 错误
